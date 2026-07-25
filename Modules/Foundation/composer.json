@@ -1,0 +1,19 @@
+{
+    "name": "chabok/foundation",
+    "description": "Chabok module using the approved layered structure.",
+    "type": "library",
+    "license": "proprietary",
+    "require": {
+        "firebase/php-jwt": "^7.1"
+    },
+    "autoload": {
+        "psr-4": {
+            "Modules\\Foundation\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Modules\\Foundation\\Tests\\": "tests/"
+        }
+    }
+}
