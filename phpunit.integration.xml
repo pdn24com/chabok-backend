@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<phpunit xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:noNamespaceSchemaLocation="vendor/phpunit/phpunit/phpunit.xsd"
+         bootstrap="vendor/autoload.php"
+         colors="true">
+    <testsuites>
+        <testsuite name="MySQL and Redis Integration">
+            <directory>tests/Integration</directory>
+        </testsuite>
+    </testsuites>
+    <source>
+        <include>
+            <directory>app</directory>
+            <directory>Modules</directory>
+        </include>
+    </source>
+    <php>
+        <env name="APP_ENV" value="testing"/>
+        <env name="APP_KEY" value="base64:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="/>
+        <env name="APP_MAINTENANCE_DRIVER" value="file"/>
+        <env name="CACHE_STORE" value="redis"/>
+        <env name="CHABOK_JWT_SECRET" value="stage-three-test-secret-with-at-least-32-bytes"/>
+        <env name="BRANCH_PANEL_ORIGINS" value="http://localhost:5173,http://localhost:4173"/>
+        <env name="LOCAL_HTTP_ALLOWED" value="true"/>
+        <env name="DB_CONNECTION" value="mysql"/>
+        <env name="DB_HOST" value="mysql"/>
+        <env name="DB_PORT" value="3306"/>
+        <env name="DB_DATABASE" value="chabok_test"/>
+        <env name="DB_USERNAME" value="chabok"/>
+        <env name="DB_PASSWORD" value="chabok-local-only"/>
+        <env name="REDIS_CLIENT" value="phpredis"/>
+        <env name="REDIS_HOST" value="redis"/>
+        <env name="REDIS_PORT" value="6379"/>
+        <env name="REDIS_DB" value="15"/>
+        <env name="REDIS_CACHE_DB" value="15"/>
+        <env name="MAIL_MAILER" value="array"/>
+        <env name="QUEUE_CONNECTION" value="sync"/>
+        <env name="SESSION_DRIVER" value="array"/>
+    </php>
+</phpunit>

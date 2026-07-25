@@ -75,6 +75,17 @@ final class ApiFoundationTest extends TestCase
             ]);
     }
 
+    public function test_http_is_allowed_only_by_the_explicit_local_exception(): void
+    {
+        config()->set('chabok.branch_panel.local_http_allowed', false);
+
+        $this->getJson('/api/v1/foundation/success')
+            ->assertStatus(403)
+            ->assertJsonPath('error_code', 'FORBIDDEN');
+
+        $this->getJson('https://localhost/api/v1/foundation/success')->assertOk();
+    }
+
     public function test_invalid_correlation_and_node_headers_use_validation_envelope(): void
     {
         $this->withHeader('X-Correlation-ID', 'not-a-uuid')

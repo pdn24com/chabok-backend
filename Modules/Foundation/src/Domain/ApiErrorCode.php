@@ -15,6 +15,7 @@ enum ApiErrorCode: string
     case ResourceNotFound = 'RESOURCE_NOT_FOUND';
     case MethodNotAllowed = 'METHOD_NOT_ALLOWED';
     case Conflict = 'CONFLICT';
+    case IdempotencyKeyReused = 'IDEMPOTENCY_KEY_REUSED';
     case RateLimited = 'RATE_LIMITED';
     case InternalServerError = 'INTERNAL_SERVER_ERROR';
 }

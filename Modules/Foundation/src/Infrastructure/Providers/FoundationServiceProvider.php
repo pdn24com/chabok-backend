@@ -9,6 +9,10 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\ServiceProvider;
 use Modules\Foundation\Application\Contracts\AccessTokenService;
+use Modules\Foundation\Application\Contracts\NodeAccessValidator;
+use Modules\Foundation\Application\Contracts\TransactionManager;
+use Modules\Foundation\Infrastructure\Persistence\LaravelTransactionManager;
+use Modules\Foundation\Infrastructure\Authorization\DenyNodeAccessValidator;
 use Modules\Foundation\Infrastructure\Security\FirebaseAccessTokenService;
 
 final class FoundationServiceProvider extends ServiceProvider
@@ -16,10 +20,13 @@ final class FoundationServiceProvider extends ServiceProvider
     public function register(): void
     {
         $this->app->singleton(AccessTokenService::class, FirebaseAccessTokenService::class);
+        $this->app->singleton(TransactionManager::class, LaravelTransactionManager::class);
+        $this->app->singleton(NodeAccessValidator::class, DenyNodeAccessValidator::class);
     }
 
     public function boot(): void
     {
+        $this->loadMigrationsFrom(dirname(__DIR__, 3).'/database/migrations');
         $this->validateDeploymentConfiguration();
 
         RateLimiter::for('auth-login', fn (Request $request): Limit => Limit::perMinute(10)

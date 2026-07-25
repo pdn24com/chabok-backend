@@ -1,4 +1,9 @@
 {
     "ArchitectureProof": true,
-    "Foundation": true
+    "Foundation": true,
+    "Organization": true,
+    "User": true,
+    "Identity": true,
+    "Audit": true,
+    "Outbox": true
 }

@@ -21,11 +21,15 @@ final class ApiResponder
         array $meta = [],
         int $status = 200,
     ): JsonResponse {
-        return response()->json([
+        $correlationId = self::correlationId($request);
+
+        $response = response()->json([
             'data' => $data,
             'meta' => (object) $meta,
-            'correlation_id' => self::correlationId($request),
-        ], $status);
+            'correlation_id' => $correlationId,
+        ], $status)->header('X-Correlation-ID', $correlationId);
+
+        return self::attachConfiguredCors($request, $response);
     }
 
     /**
@@ -45,10 +49,10 @@ final class ApiResponder
 
         return self::success($request, $items, [
             'pagination' => [
-                'current_page' => $paginator->currentPage(),
-                'per_page' => $paginator->perPage(),
+                'page' => $paginator->currentPage(),
+                'page_size' => $paginator->perPage(),
                 'total' => $paginator->total(),
-                'last_page' => $paginator->lastPage(),
+                'total_pages' => $paginator->lastPage(),
             ],
         ]);
     }
@@ -65,17 +69,34 @@ final class ApiResponder
         array $fieldErrors = [],
         array $details = [],
     ): JsonResponse {
-        return response()->json([
+        $correlationId = self::correlationId($request);
+
+        $response = response()->json([
             'error_code' => $errorCode instanceof ApiErrorCode ? $errorCode->value : $errorCode,
             'message' => $message,
             'field_errors' => (object) $fieldErrors,
             'details' => (object) $details,
-            'correlation_id' => self::correlationId($request),
-        ], $status);
+            'correlation_id' => $correlationId,
+        ], $status)->header('X-Correlation-ID', $correlationId);
+
+        return self::attachConfiguredCors($request, $response);
     }
 
     private static function correlationId(Request $request): string
     {
         return (string) $request->attributes->get('correlation_id', '');
+    }
+
+    private static function attachConfiguredCors(Request $request, JsonResponse $response): JsonResponse
+    {
+        $origin = (string) $request->header('Origin', '');
+        if ($origin !== '' && in_array($origin, (array) config('chabok.branch_panel.origins', []), true)) {
+            $response->headers->set('Access-Control-Allow-Origin', $origin);
+            $response->headers->set('Access-Control-Allow-Credentials', 'true');
+            $response->headers->set('Access-Control-Expose-Headers', 'X-Correlation-ID');
+            $response->headers->set('Vary', 'Origin');
+        }
+
+        return $response;
     }
 }

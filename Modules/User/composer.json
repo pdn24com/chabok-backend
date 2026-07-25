@@ -1,0 +1,16 @@
+{
+    "name": "chabok/user",
+    "description": "Chabok module using the approved layered structure.",
+    "type": "library",
+    "license": "proprietary",
+    "autoload": {
+        "psr-4": {
+            "Modules\\User\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Modules\\User\\Tests\\": "tests/"
+        }
+    }
+}
