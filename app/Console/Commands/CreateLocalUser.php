@@ -8,7 +8,6 @@ use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
-use Modules\Authorization\Application\AuthorizationCatalog;
 use Modules\Authorization\Infrastructure\Database\Seeders\AuthorizationCatalogSeeder;
 use RuntimeException;
 
@@ -16,7 +15,8 @@ final class CreateLocalUser extends Command
 {
     protected $signature = 'chabok:local-user
         {--identifier=branch.manager.local : Globally unique local username}
-        {--display-name=Local Branch Manager : Display name for the local account}';
+        {--display-name=Local Branch Manager : Display name for the local account}
+        {--allow-insecure-local-password : Explicitly allow a weak password in local/testing only}';
 
     protected $description = 'Create or update a local-only Branch Manager login and organization fixture';
 
@@ -46,7 +46,8 @@ final class CreateLocalUser extends Command
             return self::FAILURE;
         }
 
-        if (! $this->validPassword($password)) {
+        $allowInsecure = (bool) $this->option('allow-insecure-local-password');
+        if (! $allowInsecure && ! $this->validPassword($password)) {
             $this->error('Password must contain at least 12 characters with upper, lower, number, and symbol.');
 
             return self::FAILURE;
@@ -147,40 +148,42 @@ final class CreateLocalUser extends Command
                 ],
             );
 
-            $roleId = (string) DB::table('roles')
-                ->where('owner_key', 'GLOBAL')
-                ->where('role_code', 'branch_manager')
-                ->value('role_id');
-            if ($roleId === '') {
-                throw new RuntimeException('The Branch Manager role was not seeded.');
+            foreach (['branch_manager', 'manifest_approver'] as $roleCode) {
+                $roleId = (string) DB::table('roles')
+                    ->where('owner_key', 'GLOBAL')
+                    ->where('role_code', $roleCode)
+                    ->value('role_id');
+                if ($roleId === '') {
+                    throw new RuntimeException("The {$roleCode} role was not seeded.");
+                }
+
+                $slot = hash('sha256', "{$userId}|{$roleId}|NODE|{$nodeId}");
+                DB::table('user_role_assignments')->updateOrInsert(
+                    ['active_slot' => $slot],
+                    [
+                        'assignment_id' => $this->existingId(
+                            'user_role_assignments',
+                            'active_slot',
+                            $slot,
+                            'assignment_id',
+                        ),
+                        'hq_id' => $hqId,
+                        'user_id' => $userId,
+                        'role_id' => $roleId,
+                        'scope_type' => 'NODE',
+                        'scope_id' => $nodeId,
+                        'includes_descendants' => false,
+                        'status' => 'ACTIVE',
+                        'assigned_by' => null,
+                        'revoked_by' => null,
+                        'revoked_at' => null,
+                        'created_at' => $now,
+                        'updated_at' => $now,
+                    ],
+                );
             }
 
-            $slot = hash('sha256', "{$userId}|{$roleId}|NODE|{$nodeId}");
-            DB::table('user_role_assignments')->updateOrInsert(
-                ['active_slot' => $slot],
-                [
-                    'assignment_id' => $this->existingId(
-                        'user_role_assignments',
-                        'active_slot',
-                        $slot,
-                        'assignment_id',
-                    ),
-                    'hq_id' => $hqId,
-                    'user_id' => $userId,
-                    'role_id' => $roleId,
-                    'scope_type' => 'NODE',
-                    'scope_id' => $nodeId,
-                    'includes_descendants' => false,
-                    'status' => 'ACTIVE',
-                    'assigned_by' => null,
-                    'revoked_by' => null,
-                    'revoked_at' => null,
-                    'created_at' => $now,
-                    'updated_at' => $now,
-                ],
-            );
-
-            foreach (array_values(array_unique(AuthorizationCatalog::permissions())) as $moduleCode) {
+            foreach (['Foundation', 'IAM', 'Consignment', 'Parcel', 'Manifest'] as $moduleCode) {
                 DB::table('tenant_module_entitlements')->updateOrInsert(
                     ['hq_id' => $hqId, 'module_code' => $moduleCode],
                     [
@@ -218,6 +221,9 @@ final class CreateLocalUser extends Command
             ],
         );
         $this->warn('The password was accepted from hidden input/environment and was not printed or stored in source.');
+        if ($allowInsecure) {
+            $this->warn('The explicit insecure-local password exception was used. This account must never be promoted.');
+        }
 
         return self::SUCCESS;
     }
