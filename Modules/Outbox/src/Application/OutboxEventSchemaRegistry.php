@@ -72,6 +72,23 @@ final class OutboxEventSchemaRegistry
             'iam.role.cloned' => ['role_id' => 'string', 'source_role_id' => 'string'],
             'iam.role.permissions_replaced' => ['role_id' => 'string'],
             'iam.user.assignments_changed' => ['user_id' => 'string'],
+            'consignment.created' => [
+                'consignment_id' => 'string',
+                'version' => 'string',
+                'status' => 'string',
+                'pricing_version_id' => 'string',
+            ],
+            'consignment.updated' => [
+                'consignment_id' => 'string',
+                'version' => 'string',
+                'status' => 'string',
+                'pricing_version_id' => 'string',
+            ],
+            'consignment.pricing.accepted' => [
+                'consignment_id' => 'string',
+                'version' => 'string',
+                'pricing_version_id' => 'string',
+            ],
         ];
     }
 }

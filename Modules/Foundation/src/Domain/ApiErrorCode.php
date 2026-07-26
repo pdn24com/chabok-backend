@@ -20,7 +20,13 @@ enum ApiErrorCode: string
     case ResourceNotFound = 'RESOURCE_NOT_FOUND';
     case MethodNotAllowed = 'METHOD_NOT_ALLOWED';
     case Conflict = 'CONFLICT';
+    case VersionConflict = 'VERSION_CONFLICT';
     case IdempotencyKeyReused = 'IDEMPOTENCY_KEY_REUSED';
+    case ConsignmentNotEditable = 'CONSIGNMENT_NOT_EDITABLE';
+    case PricingUnavailable = 'PRICING_UNAVAILABLE';
+    case PricingRejected = 'PRICING_REJECTED';
+    case PricingQuoteExpired = 'PRICING_QUOTE_EXPIRED';
+    case PricingQuoteMismatch = 'PRICING_QUOTE_MISMATCH';
     case RateLimited = 'RATE_LIMITED';
     case InternalServerError = 'INTERNAL_SERVER_ERROR';
 }

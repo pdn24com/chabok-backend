@@ -46,4 +46,21 @@ return [
             (string) env('DETERMINISTIC_NOTIFICATION_FAIL_EVENT_IDS', ''),
         ))),
     ],
+    'consignment' => [
+        'quote_ttl_seconds' => 900,
+        'editable_statuses' => ['CFM', 'PD'],
+        'legacy_pricing' => [
+            'base_url' => (string) env('LEGACY_PRICING_BASE_URL', ''),
+            'username' => (string) env('LEGACY_PRICING_USERNAME', ''),
+            'password' => (string) env('LEGACY_PRICING_PASSWORD', ''),
+            'token_ttl_seconds' => (int) env('LEGACY_PRICING_TOKEN_TTL_SECONDS', 300),
+            'token_field' => (string) env('LEGACY_PRICING_TOKEN_FIELD', ''),
+            'connect_timeout_seconds' => 3,
+            'request_timeout_seconds' => 10,
+            'origin_codes' => json_decode((string) env('LEGACY_PRICING_ORIGIN_CODES_JSON', '{}'), true) ?: [],
+            'destination_codes' => json_decode((string) env('LEGACY_PRICING_DESTINATION_CODES_JSON', '{}'), true) ?: [],
+            'party_codes' => json_decode((string) env('LEGACY_PRICING_PARTY_CODES_JSON', '{}'), true) ?: [],
+            'input_values' => json_decode((string) env('LEGACY_PRICING_INPUT_VALUES_JSON', '{}'), true) ?: [],
+        ],
+    ],
 ];

@@ -62,7 +62,11 @@ final class IdempotentCommand
                 );
                 $payload['correlation_id'] = (string) $request->attributes->get('correlation_id');
 
-                return response()->json($payload, (int) $existing->response_status);
+                return response()->json($payload, (int) $existing->response_status)
+                    ->header(
+                        'X-Correlation-ID',
+                        (string) $request->attributes->get('correlation_id'),
+                    );
             }
 
             $recordId = (string) Str::uuid();
@@ -80,8 +84,15 @@ final class IdempotentCommand
             ]);
 
             $response = $next($request);
-            if (! $response instanceof JsonResponse || $response->getStatusCode() >= 400) {
+            if (! $response instanceof JsonResponse) {
                 throw new \LogicException('Idempotent commands must return a successful JSON response.');
+            }
+            if ($response->getStatusCode() >= 400) {
+                // Validation/domain failures are not command completions and
+                // must keep their public response instead of becoming a 500.
+                DB::table('idempotency_records')->where('record_id', $recordId)->delete();
+
+                return $response;
             }
             DB::table('idempotency_records')->where('record_id', $recordId)->update([
                 'state' => 'COMPLETED',

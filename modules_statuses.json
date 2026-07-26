@@ -7,5 +7,6 @@
     "Audit": true,
     "Outbox": true,
     "Authorization": true,
-    "Notification": true
+    "Notification": true,
+    "Consignment": true
 }
