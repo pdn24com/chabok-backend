@@ -9,6 +9,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Modules\Foundation\Application\Contracts\AccessTokenService;
 use Modules\Foundation\Application\Contracts\AuditWriter;
+use Modules\Foundation\Application\Contracts\AuthorizationContextResolver;
 use Modules\Foundation\Application\Contracts\OutboxWriter;
 use Modules\Foundation\Application\Contracts\TransactionManager;
 use Modules\Foundation\Domain\ApiErrorCode;
@@ -35,6 +36,7 @@ final readonly class IdentityService implements IdentityProvisioner, UserSession
         private AuditWriter $audit,
         private OutboxWriter $outbox,
         private PlatformContextValidator $platformContext,
+        private AuthorizationContextResolver $authorizationContext,
     ) {}
 
     /** @return array{payload: array<string, mixed>, refresh_token: string, refresh_expires_at: \DateTimeImmutable} */
@@ -579,7 +581,7 @@ final readonly class IdentityService implements IdentityProvisioner, UserSession
                     'session_id' => $sessionId,
                     'must_change_password' => (bool) $user['must_change_password'],
                     'user' => $this->publicUser($user),
-                    'context' => $this->emptyContext($user['hq_id']),
+                    'context' => $this->authorizationContext->resolve($principal),
                 ],
                 'refresh_token' => $raw,
                 'refresh_expires_at' => \DateTimeImmutable::createFromMutable($expiresAt),
@@ -665,21 +667,6 @@ final readonly class IdentityService implements IdentityProvisioner, UserSession
         }
 
         return $public;
-    }
-
-    /** @return array<string, mixed> */
-    private function emptyContext(?string $hqId): array
-    {
-        return [
-            'hq_id' => $hqId,
-            'is_platform_admin' => false,
-            'role_codes' => [],
-            'permissions' => [],
-            'scopes' => [],
-            'accessible_node_ids' => [],
-            'module_entitlements' => [],
-            'default_node_id' => null,
-        ];
     }
 
     private function iso(string $value): string

@@ -295,7 +295,7 @@ final class AuthenticationSecurityTest extends MySqlRedisTestCase
         $this->assertDatabaseCount('user_sessions', 0);
     }
 
-    public function test_unvalidated_node_selection_is_fail_closed_until_s0_04(): void
+    public function test_unauthorized_node_selection_returns_scope_denial(): void
     {
         $tenant = $this->tenant();
         $this->user($tenant['hq_id'], 'node-user');
@@ -305,7 +305,7 @@ final class AuthenticationSecurityTest extends MySqlRedisTestCase
             ->withHeader('X-Node-Id', (string) \Illuminate\Support\Str::uuid())
             ->getJson('/api/v1/me')
             ->assertStatus(403)
-            ->assertJsonPath('error_code', 'FORBIDDEN');
+            ->assertJsonPath('error_code', 'SCOPE_ACCESS_DENIED');
     }
 
     public function test_login_rate_limit_is_enforced_by_redis(): void

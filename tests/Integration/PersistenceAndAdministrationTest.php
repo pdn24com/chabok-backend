@@ -119,11 +119,11 @@ final class PersistenceAndAdministrationTest extends MySqlRedisTestCase
             $this->fail('Cross-tenant user access should have been denied.');
         } catch (\Modules\Foundation\Domain\ApiException $exception) {
             $this->assertSame(403, $exception->httpStatus);
-            $this->assertSame('FORBIDDEN', $exception->errorCode->value);
+            $this->assertSame('TENANT_ACCESS_DENIED', $exception->errorCode->value);
         }
     }
 
-    public function test_production_user_administration_binding_is_fail_closed_until_s0_04(): void
+    public function test_user_administration_requires_an_effective_permission(): void
     {
         $tenant = $this->tenant();
         $actor = $this->user($tenant['hq_id'], 'closed-admin');
@@ -183,6 +183,17 @@ final class PersistenceAndAdministrationTest extends MySqlRedisTestCase
         $this->app->instance(UserAdministrationAuthorizer::class, new class implements UserAdministrationAuthorizer {
             public function assertCan(AuthenticatedPrincipal $actor, string $permission, string $hqId): void {}
         });
+        $this->app->instance(InitialAssignmentWriter::class, new class implements InitialAssignmentWriter {
+            public function assign(
+                string $hqId,
+                string $userId,
+                string $actorId,
+                array $assignments,
+                string $correlationId,
+            ): void {
+                throw new \LogicException('Simulated assignment boundary failure.');
+            }
+        });
         $principal = new AuthenticatedPrincipal($actor['user_id'], (string) Str::uuid(), $tenant['hq_id'], false);
 
         try {
@@ -201,7 +212,7 @@ final class PersistenceAndAdministrationTest extends MySqlRedisTestCase
             ], '66666666-6666-4666-8666-666666666666');
             $this->fail('Unavailable assignment boundary must abort the whole create transaction.');
         } catch (\LogicException $exception) {
-            $this->assertStringContainsString('S0-04', $exception->getMessage());
+            $this->assertStringContainsString('assignment boundary failure', $exception->getMessage());
         }
 
         $this->assertDatabaseMissing('users', ['normalized_username' => 'rolled-back-user']);
@@ -242,7 +253,7 @@ final class PersistenceAndAdministrationTest extends MySqlRedisTestCase
             public function assertCan(AuthenticatedPrincipal $actor, string $permission, string $hqId): void {}
         });
         $this->app->instance(InitialAssignmentWriter::class, new class implements InitialAssignmentWriter {
-            public function assign(string $hqId, string $userId, string $actorId, array $assignments): void {}
+            public function assign(string $hqId, string $userId, string $actorId, array $assignments, string $correlationId): void {}
         });
     }
 }

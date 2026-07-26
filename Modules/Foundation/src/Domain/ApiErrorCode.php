@@ -10,6 +10,11 @@ enum ApiErrorCode: string
     case AuthenticationRequired = 'AUTHENTICATION_REQUIRED';
     case InvalidCredentials = 'INVALID_CREDENTIALS';
     case Forbidden = 'FORBIDDEN';
+    case TenantAccessDenied = 'TENANT_ACCESS_DENIED';
+    case EntitlementDisabled = 'ENTITLEMENT_DISABLED';
+    case PermissionDenied = 'PERMISSION_DENIED';
+    case ScopeAccessDenied = 'SCOPE_ACCESS_DENIED';
+    case DelegationDenied = 'DELEGATION_DENIED';
     case OriginNotAllowed = 'ORIGIN_NOT_ALLOWED';
     case PasswordChangeRequired = 'PASSWORD_CHANGE_REQUIRED';
     case ResourceNotFound = 'RESOURCE_NOT_FOUND';

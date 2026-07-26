@@ -14,5 +14,6 @@ interface InitialAssignmentWriter
         string $userId,
         string $actorId,
         array $assignments,
+        string $correlationId,
     ): void;
 }

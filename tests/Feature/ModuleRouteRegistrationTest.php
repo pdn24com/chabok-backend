@@ -9,7 +9,7 @@ use Tests\TestCase;
 
 final class ModuleRouteRegistrationTest extends TestCase
 {
-    public function test_s0_03_registers_only_the_approved_implemented_operation_set(): void
+    public function test_s0_04_registers_the_complete_approved_operation_set(): void
     {
         $routes = collect(app('router')->getRoutes()->getRoutes())
             ->filter(fn (Route $route): bool => str_starts_with($route->uri(), 'api/v1/'))
@@ -19,11 +19,19 @@ final class ModuleRouteRegistrationTest extends TestCase
             ->all();
 
         $expected = [
+            'DELETE /api/v1/iam/users/{userId}/role-assignments/{assignmentId}',
             'DELETE /api/v1/me/sessions/{sessionId}',
+            'GET /api/v1/context/nodes',
+            'GET /api/v1/iam/module-entitlements',
+            'GET /api/v1/iam/permissions',
+            'GET /api/v1/iam/roles',
+            'GET /api/v1/iam/roles/{roleId}',
             'GET /api/v1/iam/users',
             'GET /api/v1/iam/users/{userId}',
             'GET /api/v1/me',
+            'GET /api/v1/me/context',
             'GET /api/v1/me/sessions',
+            'PATCH /api/v1/iam/roles/{roleId}',
             'PATCH /api/v1/iam/users/{userId}',
             'PATCH /api/v1/me/profile',
             'POST /api/v1/auth/login',
@@ -35,16 +43,18 @@ final class ModuleRouteRegistrationTest extends TestCase
             'POST /api/v1/auth/password/change',
             'POST /api/v1/auth/password/reset',
             'POST /api/v1/auth/refresh',
+            'POST /api/v1/iam/roles/{roleId}/clone',
             'POST /api/v1/iam/users',
             'POST /api/v1/iam/users/{userId}/activate',
             'POST /api/v1/iam/users/{userId}/deactivate',
             'POST /api/v1/iam/users/{userId}/invite',
             'POST /api/v1/iam/users/{userId}/revoke-sessions',
+            'POST /api/v1/iam/users/{userId}/role-assignments',
             'POST /api/v1/iam/users/{userId}/suspend',
             'POST /api/v1/iam/users/{userId}/temporary-password',
+            'PUT /api/v1/iam/roles/{roleId}/permissions',
         ];
         sort($expected);
         $this->assertSame($expected, $routes);
-
     }
 }

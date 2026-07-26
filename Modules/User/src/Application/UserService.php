@@ -84,7 +84,13 @@ final readonly class UserService
                 $channel = $mode === 'SMS_INVITATION' ? 'SMS' : 'EMAIL';
                 $this->identity->createInvitation($row, $channel, $actor->userId, $correlationId);
             }
-            $this->assignments->assign($hqId, $userId, $actor->userId, $input['assignments']);
+            $this->assignments->assign(
+                $hqId,
+                $userId,
+                $actor->userId,
+                $input['assignments'],
+                $correlationId,
+            );
             $public = $this->publicUser($row);
             $this->audit->write($hqId, $actor->userId, 'USER_CREATED', 'USER', $userId, $correlationId, after: $public);
             $this->outbox->write($hqId, 'USER', $userId, 'iam.user.created', $correlationId, [
@@ -280,7 +286,7 @@ final readonly class UserService
     private function requireTenant(AuthenticatedPrincipal $actor): string
     {
         if ($actor->hqId === null) {
-            throw new ApiException(ApiErrorCode::Forbidden, 403, 'Access denied.');
+            throw new ApiException(ApiErrorCode::TenantAccessDenied, 403, 'Access denied.');
         }
 
         return $actor->hqId;
@@ -292,7 +298,7 @@ final readonly class UserService
             throw new ApiException(ApiErrorCode::ResourceNotFound, 404, 'Resource not found.');
         }
         if ($user['hq_id'] !== $hqId) {
-            throw new ApiException(ApiErrorCode::Forbidden, 403, 'Access denied.');
+            throw new ApiException(ApiErrorCode::TenantAccessDenied, 403, 'Access denied.');
         }
     }
 

@@ -14,6 +14,7 @@ final class UnavailableInitialAssignmentWriter implements InitialAssignmentWrite
         string $userId,
         string $actorId,
         array $assignments,
+        string $correlationId,
     ): void {
         throw new LogicException('S0-04 initial assignment writer is not available.');
     }
