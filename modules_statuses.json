@@ -8,5 +8,6 @@
     "Outbox": true,
     "Authorization": true,
     "Notification": true,
-    "Consignment": true
+    "Consignment": true,
+    "Manifest": true
 }

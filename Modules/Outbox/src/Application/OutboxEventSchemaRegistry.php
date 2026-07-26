@@ -89,6 +89,16 @@ final class OutboxEventSchemaRegistry
                 'version' => 'string',
                 'pricing_version_id' => 'string',
             ],
+            'manifest.created' => [
+                'manifest_id' => 'string',
+                'manifest_status' => 'string',
+                'version' => 'string',
+            ],
+            'manifest.closed' => [
+                'manifest_id' => 'string',
+                'manifest_status' => 'string',
+                'succeeded_count' => 'string',
+            ],
         ];
     }
 }

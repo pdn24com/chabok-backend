@@ -1,0 +1,11 @@
+{
+    "name": "Manifest",
+    "alias": "manifest",
+    "description": "Tenant-scoped Manifest Command Station V2 vertical slice.",
+    "keywords": ["manifest", "parcel", "status"],
+    "priority": 11,
+    "providers": [
+        "Modules\\Manifest\\Infrastructure\\Providers\\ManifestServiceProvider"
+    ],
+    "files": []
+}

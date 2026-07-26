@@ -24,6 +24,9 @@ final class ModuleRouteRegistrationTest extends TestCase
             'GET /api/v1/context/nodes',
             'GET /api/v1/consignments',
             'GET /api/v1/consignments/{consignmentId}',
+            'GET /api/v1/manifests',
+            'GET /api/v1/manifests/{manifestId}',
+            'GET /api/v1/manifests/{manifestId}/eligible-parcels',
             'GET /api/v1/iam/module-entitlements',
             'GET /api/v1/iam/permissions',
             'GET /api/v1/iam/roles',
@@ -36,6 +39,7 @@ final class ModuleRouteRegistrationTest extends TestCase
             'PATCH /api/v1/iam/roles/{roleId}',
             'PATCH /api/v1/consignments/{consignmentId}',
             'PATCH /api/v1/iam/users/{userId}',
+            'PATCH /api/v1/manifests/{manifestId}',
             'PATCH /api/v1/me/profile',
             'POST /api/v1/auth/login',
             'POST /api/v1/auth/logout',
@@ -57,6 +61,10 @@ final class ModuleRouteRegistrationTest extends TestCase
             'POST /api/v1/iam/users/{userId}/role-assignments',
             'POST /api/v1/iam/users/{userId}/suspend',
             'POST /api/v1/iam/users/{userId}/temporary-password',
+            'POST /api/v1/manifests',
+            'POST /api/v1/manifests/{manifestId}/confirm',
+            'POST /api/v1/manifests/{manifestId}/parcels',
+            'POST /api/v1/manifests/{manifestId}/validate',
             'PUT /api/v1/iam/roles/{roleId}/permissions',
         ];
         sort($expected);

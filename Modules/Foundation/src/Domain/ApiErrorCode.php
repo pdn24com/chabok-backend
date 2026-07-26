@@ -23,6 +23,8 @@ enum ApiErrorCode: string
     case VersionConflict = 'VERSION_CONFLICT';
     case IdempotencyKeyReused = 'IDEMPOTENCY_KEY_REUSED';
     case ConsignmentNotEditable = 'CONSIGNMENT_NOT_EDITABLE';
+    case ManifestNotEditable = 'MANIFEST_NOT_EDITABLE';
+    case ManifestNoSuccessfulParcels = 'MANIFEST_NO_SUCCESSFUL_PARCELS';
     case PricingUnavailable = 'PRICING_UNAVAILABLE';
     case PricingRejected = 'PRICING_REJECTED';
     case PricingQuoteExpired = 'PRICING_QUOTE_EXPIRED';
