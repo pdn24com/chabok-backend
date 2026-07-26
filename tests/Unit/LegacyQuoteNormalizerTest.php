@@ -11,6 +11,24 @@ use PHPUnit\Framework\TestCase;
 
 final class LegacyQuoteNormalizerTest extends TestCase
 {
+    public function test_it_normalizes_the_exact_sanitized_provider_fixture(): void
+    {
+        $fixture = json_decode(
+            (string) file_get_contents(dirname(__DIR__).'/Fixtures/LegacyPricing/quote-success.json'),
+            true,
+            flags: JSON_THROW_ON_ERROR,
+        );
+
+        $options = (new LegacyQuoteNormalizer())->normalize($fixture);
+
+        self::assertCount(2, $options);
+        self::assertTrue($options[0]['available']);
+        self::assertSame('7', $options[0]['external_method_code']);
+        self::assertSame(2500, $options[0]['total_amount']);
+        self::assertSame('2026-08-01', $options[0]['delivery_windows'][0]['gregorian_date']);
+        self::assertFalse($options[1]['available']);
+    }
+
     public function test_it_normalizes_available_and_unavailable_options_with_exact_irr_lines(): void
     {
         $options = (new LegacyQuoteNormalizer())->normalize([
@@ -24,9 +42,11 @@ final class LegacyQuoteNormalizerTest extends TestCase
                     'currency' => 'IRR',
                     'quote' => '2500',
                     'deliveryTimeWindow' => [[
-                        'date' => '2026-08-01',
-                        'jalali_date' => 'snapshot',
-                        'times' => ['11:00 - 13:00'],
+                        'gregorian' => '2026-08-01',
+                        'jalali' => '۱۴۰۵/۰۵/۱۰',
+                        'week' => 'شنبه',
+                        'month' => 'مرداد',
+                        'time' => ['11:00 - 13:00'],
                     ]],
                     'price' => [
                         'zone' => '2',
@@ -57,6 +77,10 @@ final class LegacyQuoteNormalizerTest extends TestCase
         self::assertSame(2500, $options[0]['total_amount']);
         self::assertSame(2500, array_sum(array_column($options[0]['charge_lines'], 'amount')));
         self::assertSame('2026-08-01', $options[0]['delivery_windows'][0]['gregorian_date']);
+        self::assertSame('۱۴۰۵/۰۵/۱۰', $options[0]['delivery_windows'][0]['jalali_display_date']);
+        self::assertSame('شنبه', $options[0]['delivery_windows'][0]['persian_weekday_label']);
+        self::assertSame('مرداد', $options[0]['delivery_windows'][0]['persian_month_label']);
+        self::assertSame(['11:00 - 13:00'], $options[0]['delivery_windows'][0]['time_ranges']);
         self::assertFalse($options[1]['available']);
         self::assertSame('Pricing method unavailable.', $options[1]['unavailable_reason']);
         self::assertStringNotContainsString('localized', $options[1]['unavailable_reason']);

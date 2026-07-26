@@ -102,8 +102,7 @@ final readonly class LegacyCorePricingAdapter implements PricingQuoteProvider
         $config = $this->config();
         $username = (string) ($config['username'] ?? '');
         $password = (string) ($config['password'] ?? '');
-        $tokenField = (string) ($config['token_field'] ?? '');
-        if ($username === '' || $password === '' || $tokenField === '') {
+        if ($username === '' || $password === '') {
             $this->unavailable();
         }
         $input = json_encode([
@@ -122,11 +121,15 @@ final readonly class LegacyCorePricingAdapter implements PricingQuoteProvider
             $this->unavailable();
         }
         $payload = $response->json();
-        $token = is_array($payload) ? ($payload[$tokenField] ?? null) : null;
+        if (! is_array($payload) || ($payload['result'] ?? null) !== true) {
+            $this->unavailable();
+        }
+        $user = $payload['objects']['user'] ?? null;
+        $token = is_array($user) ? ($user['token'] ?? null) : null;
         if (! is_string($token) || trim($token) === '') {
             $this->unavailable();
         }
-        $ttl = max(30, min(3600, (int) ($config['token_ttl_seconds'] ?? 300)));
+        $ttl = $this->tokenTtl(is_array($user) ? ($user['expiry'] ?? null) : null);
         Redis::connection('cache')->setex(
             $this->tokenKey(),
             $ttl,
@@ -134,6 +137,39 @@ final readonly class LegacyCorePricingAdapter implements PricingQuoteProvider
         );
 
         return $token;
+    }
+
+    private function tokenTtl(mixed $expiry): int
+    {
+        $config = $this->config();
+        $configuredTtl = max(30, min(3600, (int) ($config['token_ttl_seconds'] ?? 300)));
+        if ($expiry === null || $expiry === '') {
+            return $configuredTtl;
+        }
+        if (! is_string($expiry)) {
+            $this->unavailable();
+        }
+
+        $timezone = (string) ($config['expiry_timezone'] ?? 'UTC');
+        try {
+            $zone = new \DateTimeZone($timezone);
+            $expiresAt = \DateTimeImmutable::createFromFormat('!Y-m-d H:i:s', $expiry, $zone);
+        } catch (\Throwable) {
+            $this->unavailable();
+        }
+        $errors = \DateTimeImmutable::getLastErrors();
+        if ($expiresAt === false || (is_array($errors)
+            && (($errors['warning_count'] ?? 0) > 0 || ($errors['error_count'] ?? 0) > 0))) {
+            $this->unavailable();
+        }
+
+        $skew = max(5, min(120, (int) ($config['expiry_skew_seconds'] ?? 30)));
+        $providerTtl = $expiresAt->getTimestamp() - now()->getTimestamp() - $skew;
+        if ($providerTtl < 1) {
+            $this->unavailable();
+        }
+
+        return min($configuredTtl, $providerTtl);
     }
 
     private function client(): \Illuminate\Http\Client\PendingRequest

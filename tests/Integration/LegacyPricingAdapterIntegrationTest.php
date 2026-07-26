@@ -33,15 +33,19 @@ final class LegacyPricingAdapterIntegrationTest extends MySqlRedisTestCase
         Http::fake(function (Request $request) use (&$quoteCalls, $freshToken): \GuzzleHttp\Promise\PromiseInterface {
             $path = (string) parse_url($request->url(), PHP_URL_PATH);
             if ($path === '/login') {
-                return Http::response(['session_token' => $freshToken], 200);
+                $fixture = $this->fixture('login-success');
+                $fixture['objects']['user']['token'] = $freshToken;
+                $fixture['objects']['user']['expiry'] = now()->addMinutes(10)->format('Y-m-d H:i:s');
+
+                return Http::response($fixture, 200);
             }
             if ($path === '/getQuote') {
                 $quoteCalls++;
                 if ($quoteCalls === 1) {
-                    return Http::response(['result' => false], 401);
+                    return Http::response($this->fixture('quote-invalid-token'), 401);
                 }
 
-                return Http::response($this->successfulQuote(), 200);
+                return Http::response($this->fixture('quote-success'), 200);
             }
 
             return Http::response([], 500);
@@ -52,12 +56,40 @@ final class LegacyPricingAdapterIntegrationTest extends MySqlRedisTestCase
         );
 
         $this->assertSame(2, $quoteCalls);
-        $this->assertCount(1, $options);
+        $this->assertCount(2, $options);
         $this->assertSame(2500, $options[0]['total_amount']);
+        $this->assertFalse($options[1]['available']);
         $encrypted = (string) Redis::connection('cache')->get('chabok:legacy-pricing:token');
         $this->assertStringNotContainsString($freshToken, $encrypted);
         $this->assertSame($freshToken, Crypt::decryptString($encrypted));
         Http::assertSentCount(3);
+    }
+
+    public function test_login_rejection_fails_closed_without_quote_or_credential_disclosure(): void
+    {
+        $nodeId = (string) Str::uuid();
+        $hqId = (string) Str::uuid();
+        $this->configure(Str::random(24), Str::random(48), $nodeId, $hqId);
+        Http::fake([
+            'https://api-zap.chabok.app/login*' => Http::response(
+                $this->fixture('login-rejected'),
+                403,
+            ),
+        ]);
+
+        try {
+            $this->app->make(PricingQuoteProvider::class)->calculate(
+                $this->normalizedInput($nodeId, $hqId),
+            );
+            $this->fail('Rejected provider login must fail closed.');
+        } catch (ApiException $exception) {
+            $this->assertSame(ApiErrorCode::PricingUnavailable, $exception->errorCode);
+            $this->assertSame('Pricing is temporarily unavailable.', $exception->getMessage());
+        }
+        Http::assertSentCount(1);
+        Http::assertNotSent(
+            static fn (Request $request): bool => parse_url($request->url(), PHP_URL_PATH) === '/getQuote',
+        );
     }
 
     public function test_cross_host_redirect_and_missing_mappings_fail_closed_without_fallback_price(): void
@@ -69,7 +101,6 @@ final class LegacyPricingAdapterIntegrationTest extends MySqlRedisTestCase
             'base_url' => 'https://api-zap.chabok.app',
             'username' => Str::random(24),
             'password' => Str::random(48),
-            'token_field' => 'session_token',
             'origin_codes' => [],
             'destination_codes' => [],
             'party_codes' => [],
@@ -118,8 +149,9 @@ final class LegacyPricingAdapterIntegrationTest extends MySqlRedisTestCase
             'base_url' => 'https://api-zap.chabok.app',
             'username' => $username,
             'password' => $password,
-            'token_field' => 'session_token',
             'token_ttl_seconds' => 300,
+            'expiry_timezone' => 'UTC',
+            'expiry_skew_seconds' => 30,
             'origin_codes' => [$nodeId => 'origin-test-code'],
             'destination_codes' => ['ir|tehran|tehran' => 'destination-test-code'],
             'party_codes' => [$hqId => [
@@ -154,32 +186,11 @@ final class LegacyPricingAdapterIntegrationTest extends MySqlRedisTestCase
     }
 
     /** @return array<string, mixed> */
-    private function successfulQuote(): array
+    private function fixture(string $name): array
     {
-        return [
-            'result' => true,
-            'objects' => [[
-                'result' => true,
-                'method_no' => '7',
-                'method_name' => 'Sanitized method',
-                'currency' => 'IRR',
-                'quote' => '2500',
-                'deliveryTimeWindow' => [],
-                'price' => [
-                    'zone' => '2',
-                    'fld_Manual_Cost' => 2000,
-                    'fld_Pack_Cost' => 0,
-                    'fld_Charge_Cost' => 0,
-                    'fld_Manual_Insurance' => 0,
-                    'fld_Lab_Cost' => 0,
-                    'fld_Agency_Cost_From' => 0,
-                    'fld_Agency_Cost' => 0,
-                    'fld_Manual_VAT' => 500,
-                    'fld_Total_Cost' => 2500,
-                    'price_list' => '4',
-                    'min_ins' => 100,
-                ],
-            ]],
-        ];
+        $path = dirname(__DIR__)."/Fixtures/LegacyPricing/{$name}.json";
+        $decoded = json_decode((string) file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+
+        return is_array($decoded) ? $decoded : [];
     }
 }

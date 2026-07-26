@@ -172,17 +172,17 @@ final class LegacyQuoteNormalizer
             if (! is_array($item)) {
                 continue;
             }
-            $date = $item['gregorian_date'] ?? $item['date'] ?? null;
+            $date = $item['gregorian'] ?? null;
             if (! is_string($date) || \DateTimeImmutable::createFromFormat('!Y-m-d', $date) === false) {
                 continue;
             }
-            $ranges = $item['time_ranges'] ?? $item['times'] ?? $item['time'] ?? [];
+            $ranges = $item['time'] ?? [];
             $ranges = is_string($ranges) ? [$ranges] : (is_array($ranges) ? $ranges : []);
             $ranges = array_values(array_filter($ranges, static fn ($range): bool => is_string($range) && $range !== ''));
             $normalized[] = [
                 'gregorian_date' => $date,
-                'jalali_display_date' => $this->snapshot($item['jalali_display_date'] ?? $item['jalali_date'] ?? null),
-                'persian_weekday_label' => $this->snapshot($item['weekday'] ?? null),
+                'jalali_display_date' => $this->snapshot($item['jalali'] ?? null),
+                'persian_weekday_label' => $this->snapshot($item['week'] ?? null),
                 'persian_month_label' => $this->snapshot($item['month'] ?? null),
                 'time_ranges' => $ranges,
             ];
