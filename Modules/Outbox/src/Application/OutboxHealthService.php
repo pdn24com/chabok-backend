@@ -5,7 +5,9 @@ declare(strict_types=1);
 namespace Modules\Outbox\Application;
 
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Redis;
+use Modules\Foundation\Application\SensitiveDataRedactor;
 
 final class OutboxHealthService
 {
@@ -16,7 +18,12 @@ final class OutboxHealthService
         try {
             DB::selectOne('SELECT 1 AS healthy');
             $components['mysql'] = 'UP';
-        } catch (\Throwable) {
+        } catch (\Throwable $exception) {
+            Log::warning('readiness_component_down', [
+                'component' => 'mysql',
+                'exception_class' => $exception::class,
+                'reason' => SensitiveDataRedactor::message($exception->getMessage()),
+            ]);
         }
         try {
             if (Redis::connection()->ping()) {
@@ -25,7 +32,12 @@ final class OutboxHealthService
             if (Redis::connection('cache')->get('chabok:outbox:heartbeat') !== null) {
                 $components['outbox_worker'] = 'UP';
             }
-        } catch (\Throwable) {
+        } catch (\Throwable $exception) {
+            Log::warning('readiness_component_down', [
+                'component' => 'redis',
+                'exception_class' => $exception::class,
+                'reason' => SensitiveDataRedactor::message($exception->getMessage()),
+            ]);
         }
 
         return [

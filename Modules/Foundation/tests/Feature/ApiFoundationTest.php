@@ -6,13 +6,17 @@ namespace Modules\Foundation\Tests\Feature;
 
 use Closure;
 use Illuminate\Http\Request;
+use Illuminate\Log\Logger as LaravelLogger;
 use Illuminate\Support\Facades\Route;
+use Monolog\Handler\TestHandler;
+use Monolog\Logger as MonologLogger;
 use Modules\Foundation\Application\ApiResponder;
 use Modules\Foundation\Application\Contracts\AccessTokenService;
 use Modules\Foundation\Application\SensitiveDataRedactor;
 use Modules\Foundation\Domain\ApiException;
 use Modules\Foundation\Domain\AuthenticatedPrincipal;
 use Modules\Foundation\Infrastructure\Http\RefreshCookieFactory;
+use Modules\Foundation\Infrastructure\Logging\RedactSensitiveLogContext;
 use Symfony\Component\HttpFoundation\Response;
 use Tests\TestCase;
 
@@ -232,6 +236,34 @@ final class ApiFoundationTest extends TestCase
         self::assertSame('value', $context['nested']['safe']);
         self::assertStringNotContainsString('abc.def.ghi', $message);
         self::assertStringNotContainsString('hunter2', $message);
+    }
+
+    public function test_laravel_log_tap_redacts_runtime_records(): void
+    {
+        $handler = new TestHandler();
+        $monolog = new MonologLogger('redaction-test');
+        $monolog->pushHandler($handler);
+        $logger = new LaravelLogger($monolog);
+
+        (new RedactSensitiveLogContext())($logger);
+        $logger->info(
+            'Authorization=Bearer abc.def.ghi password=hunter2',
+            ['refresh_token' => 'opaque-refresh-secret', 'safe' => 'value'],
+        );
+
+        $records = $handler->getRecords();
+        self::assertCount(1, $records);
+
+        $serialized = json_encode([
+            'message' => $records[0]->message,
+            'context' => $records[0]->context,
+        ], JSON_THROW_ON_ERROR);
+
+        self::assertStringContainsString('[REDACTED]', $serialized);
+        self::assertStringContainsString('value', $serialized);
+        self::assertStringNotContainsString('abc.def.ghi', $serialized);
+        self::assertStringNotContainsString('hunter2', $serialized);
+        self::assertStringNotContainsString('opaque-refresh-secret', $serialized);
     }
 }
 
