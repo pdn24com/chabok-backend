@@ -69,7 +69,16 @@ final class LocalUserCommandTest extends MySqlRedisTestCase
             ->sort()
             ->values()
             ->all();
-        $this->assertSame(['branch_manager', 'manifest_approver'], $roles);
+        $this->assertSame(['branch_manager', 'hq_admin', 'manifest_approver'], $roles);
+        $hqAdmin = DB::table('user_role_assignments as ura')
+            ->join('roles as r', 'r.role_id', '=', 'ura.role_id')
+            ->where('ura.user_id', $user->user_id)
+            ->where('r.role_code', 'hq_admin')
+            ->where('ura.status', 'ACTIVE')
+            ->first(['ura.scope_type', 'ura.scope_id']);
+        $this->assertNotNull($hqAdmin);
+        $this->assertSame('TENANT', $hqAdmin->scope_type);
+        $this->assertNull($hqAdmin->scope_id);
         $this->assertDatabaseHas('user_sessions', [
             'session_id' => $sessionId,
             'revoked_reason' => 'LOCAL_CREDENTIAL_RESET',

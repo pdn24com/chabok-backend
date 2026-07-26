@@ -148,7 +148,13 @@ final class CreateLocalUser extends Command
                 ],
             );
 
-            foreach (['branch_manager', 'manifest_approver'] as $roleCode) {
+            $roleAssignments = [
+                ['role_code' => 'hq_admin', 'scope_type' => 'TENANT', 'scope_id' => null],
+                ['role_code' => 'branch_manager', 'scope_type' => 'NODE', 'scope_id' => $nodeId],
+                ['role_code' => 'manifest_approver', 'scope_type' => 'NODE', 'scope_id' => $nodeId],
+            ];
+            foreach ($roleAssignments as $roleAssignment) {
+                $roleCode = $roleAssignment['role_code'];
                 $roleId = (string) DB::table('roles')
                     ->where('owner_key', 'GLOBAL')
                     ->where('role_code', $roleCode)
@@ -157,7 +163,9 @@ final class CreateLocalUser extends Command
                     throw new RuntimeException("The {$roleCode} role was not seeded.");
                 }
 
-                $slot = hash('sha256', "{$userId}|{$roleId}|NODE|{$nodeId}");
+                $scopeType = $roleAssignment['scope_type'];
+                $scopeId = $roleAssignment['scope_id'];
+                $slot = hash('sha256', "{$userId}|{$roleId}|{$scopeType}|".($scopeId ?? ''));
                 DB::table('user_role_assignments')->updateOrInsert(
                     ['active_slot' => $slot],
                     [
@@ -170,8 +178,8 @@ final class CreateLocalUser extends Command
                         'hq_id' => $hqId,
                         'user_id' => $userId,
                         'role_id' => $roleId,
-                        'scope_type' => 'NODE',
-                        'scope_id' => $nodeId,
+                        'scope_type' => $scopeType,
+                        'scope_id' => $scopeId,
                         'includes_descendants' => false,
                         'status' => 'ACTIVE',
                         'assigned_by' => null,

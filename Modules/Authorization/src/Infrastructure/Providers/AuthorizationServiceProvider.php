@@ -10,11 +10,13 @@ use Modules\Authorization\Infrastructure\Adapters\AuthorizationInitialAssignment
 use Modules\Authorization\Infrastructure\Adapters\AuthorizationNodeAccessValidator;
 use Modules\Authorization\Infrastructure\Adapters\AuthorizationPlatformContextValidator;
 use Modules\Authorization\Infrastructure\Adapters\AuthorizationUserAdministrationAuthorizer;
+use Modules\Authorization\Infrastructure\Adapters\AuthorizationUserAssignmentReader;
 use Modules\Foundation\Application\Contracts\AuthorizationContextResolver;
 use Modules\Foundation\Application\Contracts\NodeAccessValidator;
 use Modules\Identity\Application\Contracts\PlatformContextValidator;
 use Modules\User\Application\Contracts\InitialAssignmentWriter;
 use Modules\User\Application\Contracts\UserAdministrationAuthorizer;
+use Modules\User\Application\Contracts\UserAssignmentReader;
 
 final class AuthorizationServiceProvider extends ServiceProvider
 {
@@ -26,6 +28,7 @@ final class AuthorizationServiceProvider extends ServiceProvider
         $this->app->singleton(PlatformContextValidator::class, AuthorizationPlatformContextValidator::class);
         $this->app->singleton(UserAdministrationAuthorizer::class, AuthorizationUserAdministrationAuthorizer::class);
         $this->app->singleton(InitialAssignmentWriter::class, AuthorizationInitialAssignmentWriter::class);
+        $this->app->singleton(UserAssignmentReader::class, AuthorizationUserAssignmentReader::class);
     }
 
     public function boot(): void

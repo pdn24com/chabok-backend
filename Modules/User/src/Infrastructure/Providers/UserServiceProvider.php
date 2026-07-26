@@ -7,9 +7,11 @@ namespace Modules\User\Infrastructure\Providers;
 use Illuminate\Support\ServiceProvider;
 use Modules\User\Application\Contracts\InitialAssignmentWriter;
 use Modules\User\Application\Contracts\UserAdministrationAuthorizer;
+use Modules\User\Application\Contracts\UserAssignmentReader;
 use Modules\User\Application\Contracts\UserStore;
 use Modules\User\Infrastructure\Authorization\DenyUserAdministrationAuthorizer;
 use Modules\User\Infrastructure\Authorization\UnavailableInitialAssignmentWriter;
+use Modules\User\Infrastructure\Authorization\UnavailableUserAssignmentReader;
 use Modules\User\Infrastructure\Persistence\MySqlUserStore;
 
 final class UserServiceProvider extends ServiceProvider
@@ -24,6 +26,10 @@ final class UserServiceProvider extends ServiceProvider
         $this->app->singleton(
             InitialAssignmentWriter::class,
             UnavailableInitialAssignmentWriter::class,
+        );
+        $this->app->singleton(
+            UserAssignmentReader::class,
+            UnavailableUserAssignmentReader::class,
         );
     }
 

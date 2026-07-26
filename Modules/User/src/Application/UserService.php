@@ -15,6 +15,7 @@ use Modules\Foundation\Domain\AuthenticatedPrincipal;
 use Modules\User\Application\Contracts\IdentityProvisioner;
 use Modules\User\Application\Contracts\InitialAssignmentWriter;
 use Modules\User\Application\Contracts\UserAdministrationAuthorizer;
+use Modules\User\Application\Contracts\UserAssignmentReader;
 use Modules\User\Application\Contracts\UserSessionManager;
 use Modules\User\Application\Contracts\UserStore;
 use Modules\User\Domain\IdentifierNormalizer;
@@ -28,6 +29,7 @@ final readonly class UserService
         private UserLifecyclePolicy $lifecycle,
         private UserAdministrationAuthorizer $authorizer,
         private InitialAssignmentWriter $assignments,
+        private UserAssignmentReader $assignmentReader,
         private IdentityProvisioner $identity,
         private UserSessionManager $sessions,
         private TransactionManager $transactions,
@@ -126,7 +128,7 @@ final readonly class UserService
 
         return [
             'user' => $this->publicUser($user),
-            'assignments' => [],
+            'assignments' => $this->assignmentReader->forUser($hqId, $userId),
             'invitation_status' => $invitation,
             'sessions' => $this->sessions->listSessions($userId),
         ];

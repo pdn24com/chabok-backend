@@ -13,6 +13,7 @@ use Modules\Authorization\Infrastructure\Adapters\AuthorizationInitialAssignment
 use Modules\Authorization\Infrastructure\Adapters\AuthorizationNodeAccessValidator;
 use Modules\Authorization\Infrastructure\Adapters\AuthorizationPlatformContextValidator;
 use Modules\Authorization\Infrastructure\Adapters\AuthorizationUserAdministrationAuthorizer;
+use Modules\Authorization\Infrastructure\Adapters\AuthorizationUserAssignmentReader;
 use Modules\Authorization\Infrastructure\Database\Seeders\AuthorizationCatalogSeeder;
 use Modules\Foundation\Application\Contracts\NodeAccessValidator;
 use Modules\Foundation\Domain\ApiErrorCode;
@@ -21,6 +22,7 @@ use Modules\Foundation\Domain\AuthenticatedPrincipal;
 use Modules\Identity\Application\Contracts\PlatformContextValidator;
 use Modules\User\Application\Contracts\InitialAssignmentWriter;
 use Modules\User\Application\Contracts\UserAdministrationAuthorizer;
+use Modules\User\Application\Contracts\UserAssignmentReader;
 
 final class AuthorizationIntegrationTest extends MySqlRedisTestCase
 {
@@ -63,6 +65,10 @@ final class AuthorizationIntegrationTest extends MySqlRedisTestCase
         $this->assertInstanceOf(
             AuthorizationInitialAssignmentWriter::class,
             $this->app->make(InitialAssignmentWriter::class),
+        );
+        $this->assertInstanceOf(
+            AuthorizationUserAssignmentReader::class,
+            $this->app->make(UserAssignmentReader::class),
         );
         $this->assertInstanceOf(
             AuthorizationNodeAccessValidator::class,
@@ -313,6 +319,12 @@ final class AuthorizationIntegrationTest extends MySqlRedisTestCase
                 'includes_descendants' => false,
             ]]],
         )->assertCreated()->json('data.0.assignment_id');
+        $this->withToken($token)
+            ->getJson("/api/v1/iam/users/{$target['user_id']}")
+            ->assertOk()
+            ->assertJsonPath('data.assignments.0.assignment_id', $created)
+            ->assertJsonPath('data.assignments.0.role_id', $roleId)
+            ->assertJsonPath('data.assignments.0.scope_type', 'TENANT');
         $this->withToken($token)->deleteJson(
             "/api/v1/iam/users/{$target['user_id']}/role-assignments/{$created}",
         )->assertOk()->assertJsonPath('data.success', true);
