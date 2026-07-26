@@ -32,4 +32,18 @@ return [
         'auth.logout',
         'auth.logout-all',
     ],
+    'outbox' => [
+        'max_attempts' => (int) env('OUTBOX_MAX_ATTEMPTS', 5),
+        'base_backoff_seconds' => (int) env('OUTBOX_BASE_BACKOFF_SECONDS', 5),
+        'max_backoff_seconds' => (int) env('OUTBOX_MAX_BACKOFF_SECONDS', 900),
+        'claim_timeout_seconds' => (int) env('OUTBOX_CLAIM_TIMEOUT_SECONDS', 120),
+        'heartbeat_ttl_seconds' => (int) env('OUTBOX_HEARTBEAT_TTL_SECONDS', 180),
+    ],
+    'notifications' => [
+        'driver' => 'deterministic',
+        'fail_event_ids' => array_values(array_filter(explode(
+            ',',
+            (string) env('DETERMINISTIC_NOTIFICATION_FAIL_EVENT_IDS', ''),
+        ))),
+    ],
 ];

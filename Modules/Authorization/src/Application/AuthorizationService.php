@@ -390,18 +390,40 @@ final readonly class AuthorizationService implements AuthorizationContextResolve
     }
 
     /** @return list<array{module_code: string, status: string}> */
-    public function listEntitlements(AuthenticatedPrincipal $actor): array
+    public function listEntitlements(
+        AuthenticatedPrincipal $actor,
+        string $correlationId,
+    ): array
     {
         if ($actor->hqId === null) {
             $this->assertPermission($actor, 'iam.entitlements.view');
-            return DB::table('tenant_module_entitlements')->orderBy('hq_id')->orderBy('module_code')
+            $rows = DB::table('tenant_module_entitlements')->orderBy('hq_id')->orderBy('module_code')
                 ->get(['module_code', 'status'])->map(fn ($row): array => (array) $row)->all();
+            $this->audit->write(
+                null,
+                $actor->userId,
+                'ENTITLEMENTS_VIEWED',
+                'PLATFORM',
+                null,
+                $correlationId,
+            );
+
+            return $rows;
         }
         $this->assertPermission($actor, 'iam.entitlements.view', $actor->hqId);
-
-        return DB::table('tenant_module_entitlements')->where('hq_id', $actor->hqId)
+        $rows = DB::table('tenant_module_entitlements')->where('hq_id', $actor->hqId)
             ->orderBy('module_code')->get(['module_code', 'status'])
             ->map(fn ($row): array => (array) $row)->all();
+        $this->audit->write(
+            $actor->hqId,
+            $actor->userId,
+            'ENTITLEMENTS_VIEWED',
+            'HQ_TENANT',
+            $actor->hqId,
+            $correlationId,
+        );
+
+        return $rows;
     }
 
     public function assignInitial(

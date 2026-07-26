@@ -10,10 +10,13 @@ use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\ServiceProvider;
 use Modules\Foundation\Application\Contracts\AccessTokenService;
 use Modules\Foundation\Application\Contracts\NodeAccessValidator;
+use Modules\Foundation\Application\Contracts\SecurityMetricRecorder;
 use Modules\Foundation\Application\Contracts\TransactionManager;
 use Modules\Foundation\Infrastructure\Persistence\LaravelTransactionManager;
 use Modules\Foundation\Infrastructure\Authorization\DenyNodeAccessValidator;
 use Modules\Foundation\Infrastructure\Security\FirebaseAccessTokenService;
+use Modules\Foundation\Infrastructure\Observability\RedisSecurityMetricRecorder;
+use Modules\Foundation\Infrastructure\Console\SecurityMetricsCommand;
 
 final class FoundationServiceProvider extends ServiceProvider
 {
@@ -22,6 +25,7 @@ final class FoundationServiceProvider extends ServiceProvider
         $this->app->singleton(AccessTokenService::class, FirebaseAccessTokenService::class);
         $this->app->singleton(TransactionManager::class, LaravelTransactionManager::class);
         $this->app->singleton(NodeAccessValidator::class, DenyNodeAccessValidator::class);
+        $this->app->singleton(SecurityMetricRecorder::class, RedisSecurityMetricRecorder::class);
     }
 
     public function boot(): void
@@ -39,6 +43,10 @@ final class FoundationServiceProvider extends ServiceProvider
             ->by($this->rateKey($request, 'challenge_id')));
         RateLimiter::for('auth-password', fn (Request $request): Limit => Limit::perMinute(10)
             ->by($this->rateKey($request, null)));
+
+        if ($this->app->runningInConsole()) {
+            $this->commands([SecurityMetricsCommand::class]);
+        }
     }
 
     private function rateKey(Request $request, ?string $field): string

@@ -11,6 +11,7 @@ use Modules\Foundation\Application\Contracts\AccessTokenService;
 use Modules\Foundation\Application\Contracts\AuditWriter;
 use Modules\Foundation\Application\Contracts\AuthorizationContextResolver;
 use Modules\Foundation\Application\Contracts\OutboxWriter;
+use Modules\Foundation\Application\Contracts\SecurityMetricRecorder;
 use Modules\Foundation\Application\Contracts\TransactionManager;
 use Modules\Foundation\Domain\ApiErrorCode;
 use Modules\Foundation\Domain\ApiException;
@@ -37,6 +38,7 @@ final readonly class IdentityService implements IdentityProvisioner, UserSession
         private OutboxWriter $outbox,
         private PlatformContextValidator $platformContext,
         private AuthorizationContextResolver $authorizationContext,
+        private SecurityMetricRecorder $metrics,
     ) {}
 
     /** @return array{payload: array<string, mixed>, refresh_token: string, refresh_expires_at: \DateTimeImmutable} */
@@ -56,9 +58,11 @@ final readonly class IdentityService implements IdentityProvisioner, UserSession
         $passwordValid = password_verify($password, $hash);
 
         if ($user === null || $credential === null || ! $passwordValid) {
+            $this->metrics->increment('auth.invalid_credentials', ['client' => 'BRANCH_PANEL']);
             throw new ApiException(ApiErrorCode::InvalidCredentials, 401, 'Invalid credentials.');
         }
         if ($user['status'] !== 'ACTIVE') {
+            $this->metrics->increment('auth.inactive_rejected', ['client' => 'BRANCH_PANEL']);
             throw new ApiException(ApiErrorCode::Forbidden, 403, 'User is not active.');
         }
         if ($user['hq_id'] === null && ! $this->platformContext->hasActivePlatformAssignment((string) $user['user_id'])) {
@@ -89,6 +93,7 @@ final readonly class IdentityService implements IdentityProvisioner, UserSession
             if ($session === null) {
                 $familyId = $this->sessionRegistry->rotatedFamily($hash);
                 if ($familyId !== null) {
+                    $this->metrics->increment('auth.refresh_reuse', ['client' => 'BRANCH_PANEL']);
                     $this->revokeFamily($familyId, 'REFRESH_REUSE');
                     $this->audit->write(
                         null,
@@ -223,6 +228,7 @@ final readonly class IdentityService implements IdentityProvisioner, UserSession
         ?string $ip,
     ): array {
         $user = $this->users->findByIdentifier($identifier);
+        $this->metrics->increment('auth.otp_requested', ['purpose' => $purpose]);
         $challengeId = (string) Str::uuid();
         $code = (string) random_int(100000, 999999);
         $ttl = 600;

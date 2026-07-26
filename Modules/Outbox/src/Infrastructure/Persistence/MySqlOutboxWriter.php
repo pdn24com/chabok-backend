@@ -8,9 +8,12 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Modules\Foundation\Application\Contracts\OutboxWriter;
 use Modules\Foundation\Application\SensitiveDataRedactor;
+use Modules\Outbox\Application\OutboxEventSchemaRegistry;
 
-final class MySqlOutboxWriter implements OutboxWriter
+final readonly class MySqlOutboxWriter implements OutboxWriter
 {
+    public function __construct(private OutboxEventSchemaRegistry $schemas) {}
+
     public function write(
         ?string $hqId,
         string $aggregateType,
@@ -21,6 +24,7 @@ final class MySqlOutboxWriter implements OutboxWriter
         int $eventVersion = 1,
         ?string $causationId = null,
     ): void {
+        $this->schemas->assertValid($eventType, $eventVersion, $payload);
         DB::table('outbox_events')->insert([
             'event_id' => (string) Str::uuid(),
             'hq_id' => $hqId,

@@ -141,7 +141,10 @@ final readonly class AuthorizationController
 
     public function entitlements(Request $request): JsonResponse
     {
-        return ApiResponder::success($request, $this->authorization->listEntitlements($this->principal($request)));
+        return ApiResponder::success($request, $this->authorization->listEntitlements(
+            $this->principal($request),
+            $this->correlationId($request),
+        ));
     }
 
     private function principal(Request $request): AuthenticatedPrincipal

@@ -6,5 +6,6 @@
     "Identity": true,
     "Audit": true,
     "Outbox": true,
-    "Authorization": true
+    "Authorization": true,
+    "Notification": true
 }
