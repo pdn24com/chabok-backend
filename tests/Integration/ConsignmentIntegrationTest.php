@@ -266,7 +266,15 @@ final class ConsignmentIntegrationTest extends MySqlRedisTestCase
         $id = (string) $first->json('data.consignment_id');
         $this->withToken($login['token'])->withHeader('X-Node-Id', $node)
             ->getJson('/api/v1/consignments')->assertOk()
-            ->assertJsonPath('meta.pagination.total', 1);
+            ->assertJsonPath('meta.pagination.total', 1)
+            ->assertJsonPath('meta.status_counts.total', 1)
+            ->assertJsonPath('meta.status_counts.new_routed', 1)
+            ->assertJsonPath('meta.status_counts.unassigned', 1)
+            ->assertJsonPath('meta.status_counts.assigned', 0)
+            ->assertJsonPath('data.0.pickup_node_title', 'Branch node')
+            ->assertJsonPath('data.0.delivery_node_title', null)
+            ->assertJsonPath('data.0.pickup_man_id', null)
+            ->assertJsonPath('data.0.delivery_man_id', null);
         $this->withToken($login['token'])->withHeader('X-Node-Id', $node)
             ->getJson("/api/v1/consignments/{$id}")->assertOk()
             ->assertJsonPath('data.consignment_id', $id);

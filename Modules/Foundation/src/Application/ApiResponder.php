@@ -36,11 +36,13 @@ final class ApiResponder
      * @template T
      * @param LengthAwarePaginator<T> $paginator
      * @param callable(T): mixed|null $map
+     * @param array<string, mixed> $meta
      */
     public static function paginated(
         Request $request,
         LengthAwarePaginator $paginator,
         ?callable $map = null,
+        array $meta = [],
     ): JsonResponse {
         $items = $paginator->items();
         if ($map !== null) {
@@ -54,6 +56,7 @@ final class ApiResponder
                 'total' => $paginator->total(),
                 'total_pages' => $paginator->lastPage(),
             ],
+            ...$meta,
         ]);
     }
 

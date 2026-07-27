@@ -59,11 +59,17 @@ final readonly class ConsignmentController
             $this->nodeId($request),
             $filters,
         );
+        $statusCounts = $this->consignments->statusGroupCounts(
+            $this->principal($request),
+            $this->nodeId($request),
+            $filters,
+        );
 
         return ApiResponder::paginated(
             $request,
             $paginator,
             fn ($row): array => $this->consignments->listItem((array) $row),
+            ['status_counts' => $statusCounts],
         );
     }
 

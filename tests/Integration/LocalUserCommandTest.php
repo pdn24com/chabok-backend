@@ -93,4 +93,33 @@ final class LocalUserCommandTest extends MySqlRedisTestCase
             ]);
         }
     }
+
+    public function test_local_consignment_visual_fixtures_are_scoped_repeatable_and_removable(): void
+    {
+        putenv('CHABOK_LOCAL_PASSWORD=Strong-Local-Password-123!');
+        $this->artisan('chabok:local-user', [
+            '--identifier' => 'admin',
+            '--display-name' => 'Local Admin',
+        ])->assertSuccessful();
+
+        $this->artisan('chabok:local-consignment-fixtures')->assertSuccessful();
+        $this->artisan('chabok:local-consignment-fixtures')->assertSuccessful();
+
+        $hqId = (string) DB::table('hq_tenants')->where('hq_code', 'LOCAL-HQ')->value('hq_id');
+        $nodeId = (string) DB::table('nodes')
+            ->where('hq_id', $hqId)->where('node_code', 'LOCAL-BRANCH')->value('node_id');
+        $fixtures = DB::table('consignments')
+            ->where('consignment_number', 'like', 'CHB-LOCAL-VIS-%')->get();
+        $this->assertCount(16, $fixtures);
+        $this->assertTrue($fixtures->every(
+            fn ($row): bool => $row->hq_id === $hqId && $row->pickup_node_id === $nodeId,
+        ));
+        $this->assertSame(16, DB::table('parcels')
+            ->where('parcel_number', 'like', 'CHB-LOCAL-VIS-%')->count());
+
+        $this->artisan('chabok:local-consignment-fixtures', ['--remove' => true])->assertSuccessful();
+        $this->assertDatabaseMissing('consignments', ['hq_id' => $hqId, 'pickup_node_id' => $nodeId]);
+        $this->assertSame(0, DB::table('parcels')
+            ->where('parcel_number', 'like', 'CHB-LOCAL-VIS-%')->count());
+    }
 }

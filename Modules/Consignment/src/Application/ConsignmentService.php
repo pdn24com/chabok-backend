@@ -39,12 +39,22 @@ final readonly class ConsignmentService
     ): LengthAwarePaginator {
         $this->assertAccess($actor, $nodeId, 'consignment.view');
         $query = DB::table('consignments as c')
+            ->join('nodes as pickup_node', function ($join): void {
+                $join->on('pickup_node.node_id', '=', 'c.pickup_node_id')
+                    ->on('pickup_node.hq_id', '=', 'c.hq_id');
+            })
+            ->leftJoin('nodes as delivery_node', function ($join): void {
+                $join->on('delivery_node.node_id', '=', 'c.delivery_node_id')
+                    ->on('delivery_node.hq_id', '=', 'c.hq_id');
+            })
             ->where('c.hq_id', $actor->hqId)
             ->where('c.pickup_node_id', $nodeId)
             ->select([
                 'c.consignment_id', 'c.consignment_number',
                 'c.receiver_contact_name', 'c.receiver_mobile', 'c.receiver_address_text',
-                'c.pickup_node_id', 'c.delivery_node_id', 'c.current_status',
+                'c.pickup_node_id', 'pickup_node.node_title as pickup_node_title',
+                'c.delivery_node_id', 'delivery_node.node_title as delivery_node_title',
+                'c.pickup_man_id', 'c.delivery_man_id', 'c.current_status',
                 'c.version', 'c.created_at', 'c.updated_at',
             ])->selectSub(
                 DB::table('parcels as p')->selectRaw('COUNT(*)')
@@ -60,6 +70,46 @@ final readonly class ConsignmentService
             perPage: (int) ($filters['page_size'] ?? 25),
             page: (int) ($filters['page'] ?? 1),
         );
+    }
+
+    /**
+     * Counts are tenant- and selected-node-scoped and honor non-status filters.
+     *
+     * @param array<string, mixed> $filters
+     * @return array<string, int>
+     */
+    public function statusGroupCounts(
+        AuthenticatedPrincipal $actor,
+        string $nodeId,
+        array $filters,
+    ): array {
+        $this->assertAccess($actor, $nodeId, 'consignment.view');
+        unset($filters['status'], $filters['status_group'], $filters['page'], $filters['page_size'], $filters['sort']);
+        $query = DB::table('consignments as c')
+            ->where('c.hq_id', $actor->hqId)
+            ->where('c.pickup_node_id', $nodeId);
+        $this->applyFilters($query, $filters);
+        $row = (array) $query->selectRaw(
+            "COUNT(*) AS total,
+            SUM(CASE WHEN c.current_status IN ('CFM','PD') THEN 1 ELSE 0 END) AS new_routed,
+            SUM(CASE WHEN c.pickup_man_id IS NULL AND c.delivery_man_id IS NULL THEN 1 ELSE 0 END) AS unassigned,
+            SUM(CASE WHEN c.pickup_man_id IS NOT NULL OR c.delivery_man_id IS NOT NULL THEN 1 ELSE 0 END) AS assigned,
+            SUM(CASE WHEN c.current_status IN ('PU','IR','ROU','OF','OS','OD') THEN 1 ELSE 0 END) AS in_operation,
+            SUM(CASE WHEN c.current_status IN ('NPU','NOK','RH','RCH') THEN 1 ELSE 0 END) AS exception,
+            SUM(CASE WHEN c.current_status = 'OK' THEN 1 ELSE 0 END) AS completed,
+            SUM(CASE WHEN c.current_status IN ('RO','AA') THEN 1 ELSE 0 END) AS cancelled",
+        )->first();
+
+        return [
+            'total' => (int) ($row['total'] ?? 0),
+            'new_routed' => (int) ($row['new_routed'] ?? 0),
+            'unassigned' => (int) ($row['unassigned'] ?? 0),
+            'assigned' => (int) ($row['assigned'] ?? 0),
+            'in_operation' => (int) ($row['in_operation'] ?? 0),
+            'exception' => (int) ($row['exception'] ?? 0),
+            'completed' => (int) ($row['completed'] ?? 0),
+            'cancelled' => (int) ($row['cancelled'] ?? 0),
+        ];
     }
 
     /** @return array<string, mixed> */
@@ -314,7 +364,11 @@ final readonly class ConsignmentService
             'receiver_mobile' => (string) $row['receiver_mobile'],
             'receiver_address_text' => (string) $row['receiver_address_text'],
             'pickup_node_id' => $row['pickup_node_id'] ? (string) $row['pickup_node_id'] : null,
+            'pickup_node_title' => (string) $row['pickup_node_title'],
             'delivery_node_id' => $row['delivery_node_id'] ? (string) $row['delivery_node_id'] : null,
+            'delivery_node_title' => $row['delivery_node_title'] ? (string) $row['delivery_node_title'] : null,
+            'pickup_man_id' => $row['pickup_man_id'] ? (string) $row['pickup_man_id'] : null,
+            'delivery_man_id' => $row['delivery_man_id'] ? (string) $row['delivery_man_id'] : null,
             'current_status' => (string) $row['current_status'],
             'parcel_count' => (int) $row['parcel_count'],
             'version' => (int) $row['version'],
@@ -353,9 +407,21 @@ final readonly class ConsignmentService
     private function visibleQuery(AuthenticatedPrincipal $actor, array $context): Builder
     {
         return DB::table('consignments as c')
+            ->join('nodes as pickup_node', function ($join): void {
+                $join->on('pickup_node.node_id', '=', 'c.pickup_node_id')
+                    ->on('pickup_node.hq_id', '=', 'c.hq_id');
+            })
+            ->leftJoin('nodes as delivery_node', function ($join): void {
+                $join->on('delivery_node.node_id', '=', 'c.delivery_node_id')
+                    ->on('delivery_node.hq_id', '=', 'c.hq_id');
+            })
             ->where('c.hq_id', $actor->hqId)
             ->whereIn('c.pickup_node_id', $context['accessible_node_ids'])
-            ->select('c.*')
+            ->select([
+                'c.*',
+                'pickup_node.node_title as pickup_node_title',
+                'delivery_node.node_title as delivery_node_title',
+            ])
             ->selectSub(
                 DB::table('parcels as p')->selectRaw('COUNT(*)')
                     ->whereColumn('p.consignment_id', 'c.consignment_id')
@@ -502,7 +568,16 @@ final readonly class ConsignmentService
             }
         }
         if (($filters['status_group'] ?? null) !== null) {
-            $query->whereIn('c.current_status', $this->statusGroup((string) $filters['status_group']));
+            $group = (string) $filters['status_group'];
+            if ($group === 'UNASSIGNED') {
+                $query->whereNull('c.pickup_man_id')->whereNull('c.delivery_man_id');
+            } elseif ($group === 'ASSIGNED') {
+                $query->where(function (Builder $query): void {
+                    $query->whereNotNull('c.pickup_man_id')->orWhereNotNull('c.delivery_man_id');
+                });
+            } else {
+                $query->whereIn('c.current_status', $this->statusGroup($group));
+            }
         }
         if (($filters['created_from'] ?? null) !== null) {
             $query->where('c.created_at', '>=', $filters['created_from']);
@@ -517,8 +592,6 @@ final readonly class ConsignmentService
     {
         return match ($group) {
             'NEW_ROUTED' => ['CFM', 'PD'],
-            'UNASSIGNED' => ['CFM', 'PD'],
-            'ASSIGNED' => ['PD'],
             'IN_OPERATION' => ['PU', 'IR', 'ROU', 'OF', 'OS', 'OD'],
             'EXCEPTION' => ['NPU', 'NOK', 'RH', 'RCH'],
             'COMPLETED' => ['OK'],
