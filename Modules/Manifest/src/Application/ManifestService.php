@@ -213,7 +213,11 @@ final readonly class ManifestService
             if ($m->state !== 'OPEN') {
                 throw new ApiException(ApiErrorCode::ManifestNotEditable, 422, 'The Manifest must be Open before confirmation.');
             }
-            $rows = DB::table('manifest_parcels')->where('manifest_id', $id)->where('manifest_parcel_status', 'VALIDATED')->lockForUpdate()->get();
+            $rows = DB::table('manifest_parcels')
+                ->where(['hq_id' => $actor->hqId, 'manifest_id' => $id])
+                ->whereIn('manifest_parcel_status', ['PENDING', 'VALIDATED'])
+                ->lockForUpdate()
+                ->get();
             $success = 0; $consignments = [];
             foreach ($rows as $row) {
                 $parcel = DB::table('parcels')->where(['hq_id' => $actor->hqId, 'parcel_id' => $row->parcel_id])->lockForUpdate()->first();
@@ -231,6 +235,21 @@ final readonly class ManifestService
                     'manifest_parcel_status' => 'SUCCEEDED', 'active_slot' => null, 'processed_at' => now(), 'updated_at' => now(),
                 ]);
                 $consignments[] = (string) $parcel->consignment_id; $success++;
+            }
+            $hasUnresolvedActiveRow = DB::table('manifest_parcels')
+                ->where(['hq_id' => $actor->hqId, 'manifest_id' => $id])
+                ->where(function ($query): void {
+                    $query->whereIn('manifest_parcel_status', ['PENDING', 'VALIDATED'])
+                        ->orWhereNotNull('active_slot');
+                })
+                ->lockForUpdate()
+                ->exists();
+            if ($hasUnresolvedActiveRow) {
+                throw new ApiException(
+                    ApiErrorCode::ManifestNotEditable,
+                    422,
+                    'The Manifest still contains unresolved active Parcels.',
+                );
             }
             if ($success === 0) {
                 throw new ApiException(ApiErrorCode::ManifestNoSuccessfulParcels, 422, 'No Parcel can be confirmed.');

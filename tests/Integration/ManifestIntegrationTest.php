@@ -34,12 +34,16 @@ final class ManifestIntegrationTest extends MySqlRedisTestCase
         $this->assertSame('DRAFT', $manifest['state']);
         $this->assertMatchesRegularExpression('/^MNF-\d{4}-\d{5}$/', $manifest['manifest_number']);
 
+        $eligibleNumber = (string) DB::table('parcels')
+            ->where('parcel_id', $eligible)->value('parcel_number');
+        $ineligibleNumber = (string) DB::table('parcels')
+            ->where('parcel_id', $ineligible)->value('parcel_number');
         $added = $service->add($principal, $node, $manifest['manifest_id'], [
             'expected_version' => 1,
-            'input_source' => 'BATCH',
-            'identifiers' => [$consignment],
+            'input_source' => 'SCAN',
+            'identifiers' => [$eligibleNumber],
         ], (string) Str::uuid());
-        $this->assertCount(2, $added['detail']['parcels']);
+        $this->assertCount(1, $added['detail']['parcels']);
         $this->assertSame(2, $added['detail']['version']);
 
         $validated = $service->validate(
@@ -51,13 +55,22 @@ final class ManifestIntegrationTest extends MySqlRedisTestCase
         );
         $this->assertSame('OPEN', $validated['state']);
         $this->assertSame(1, $validated['bucket_counts']['validated']);
-        $this->assertSame(1, $validated['bucket_counts']['failed']);
+        $this->assertSame(0, $validated['bucket_counts']['failed']);
+
+        $insertedAfterValidation = $service->add($principal, $node, $manifest['manifest_id'], [
+            'expected_version' => 3,
+            'input_source' => 'SCAN',
+            'identifiers' => [$ineligibleNumber],
+        ], (string) Str::uuid());
+        $this->assertSame('OPEN', $insertedAfterValidation['detail']['state']);
+        $this->assertSame(1, $insertedAfterValidation['detail']['bucket_counts']['pending']);
+        $this->assertSame(1, $insertedAfterValidation['detail']['bucket_counts']['validated']);
 
         $closed = $service->confirm(
             $principal,
             $node,
             $manifest['manifest_id'],
-            3,
+            4,
             (string) Str::uuid(),
         );
         $this->assertSame('CLOSED', $closed['state']);
@@ -65,6 +78,24 @@ final class ManifestIntegrationTest extends MySqlRedisTestCase
         $this->assertSame(1, $closed['bucket_counts']['failed']);
         $this->assertSame('IR', DB::table('parcels')->where('parcel_id', $eligible)->value('current_status'));
         $this->assertSame('CFM', DB::table('parcels')->where('parcel_id', $ineligible)->value('current_status'));
+        $this->assertDatabaseMissing('manifest_parcels', [
+            'manifest_id' => $manifest['manifest_id'],
+            'manifest_parcel_status' => 'PENDING',
+        ]);
+        $this->assertDatabaseHas('manifest_parcels', [
+            'manifest_id' => $manifest['manifest_id'],
+            'parcel_id' => $ineligible,
+            'manifest_parcel_status' => 'FAILED',
+            'failure_code' => 'INVALID_STATUS_TRANSITION',
+            'active_slot' => null,
+        ]);
+        $this->assertSame(
+            0,
+            DB::table('manifest_parcels')
+                ->where('manifest_id', $manifest['manifest_id'])
+                ->whereNotNull('active_slot')
+                ->count(),
+        );
         $this->assertDatabaseHas('consignment_status_events', [
             'parcel_id' => $eligible,
             'manifest_id' => $manifest['manifest_id'],
