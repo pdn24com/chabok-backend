@@ -16,7 +16,7 @@ final class OutboxHealthService
     {
         $components = ['mysql' => 'DOWN', 'redis' => 'DOWN', 'outbox_worker' => 'STALE'];
         try {
-            DB::selectOne('SELECT 1 AS healthy');
+            DB::connection('mysql-health')->selectOne('SELECT 1 AS healthy');
             $components['mysql'] = 'UP';
         } catch (\Throwable $exception) {
             Log::warning('readiness_component_down', [
@@ -26,10 +26,10 @@ final class OutboxHealthService
             ]);
         }
         try {
-            if (Redis::connection()->ping()) {
+            if (Redis::connection('health')->ping()) {
                 $components['redis'] = 'UP';
             }
-            if (Redis::connection('cache')->get('chabok:outbox:heartbeat') !== null) {
+            if (Redis::connection('health')->get('chabok:outbox:heartbeat') !== null) {
                 $components['outbox_worker'] = 'UP';
             }
         } catch (\Throwable $exception) {
