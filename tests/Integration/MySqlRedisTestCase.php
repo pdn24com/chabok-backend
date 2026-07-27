@@ -9,10 +9,29 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Redis;
 use Illuminate\Support\Str;
 use Tests\TestCase;
+use Tests\Support\IntegrationEnvironmentGuard;
 
 abstract class MySqlRedisTestCase extends TestCase
 {
-    use RefreshDatabase;
+    use RefreshDatabase {
+        refreshDatabase as private refreshIsolatedDatabase;
+    }
+
+    protected function refreshDatabase(): void
+    {
+        IntegrationEnvironmentGuard::assertSafe([
+            'app_environment' => app()->environment(),
+            'database_connection' => config('database.default'),
+            'database_host' => config('database.connections.mysql.host'),
+            'database_name' => config('database.connections.mysql.database'),
+            'redis_host' => config('database.redis.default.host'),
+            'redis_database' => config('database.redis.default.database'),
+            'redis_cache_host' => config('database.redis.cache.host'),
+            'redis_cache_database' => config('database.redis.cache.database'),
+        ]);
+
+        $this->refreshIsolatedDatabase();
+    }
 
     protected function setUp(): void
     {
