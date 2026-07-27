@@ -109,17 +109,18 @@ final class LocalUserCommandTest extends MySqlRedisTestCase
         $nodeId = (string) DB::table('nodes')
             ->where('hq_id', $hqId)->where('node_code', 'LOCAL-BRANCH')->value('node_id');
         $fixtures = DB::table('consignments')
-            ->where('consignment_number', 'like', 'CHB-LOCAL-VIS-%')->get();
-        $this->assertCount(16, $fixtures);
+            ->whereBetween('consignment_number', ['CHB-2406-882016', 'CHB-2406-882149'])->get();
+        $this->assertCount(134, $fixtures);
         $this->assertTrue($fixtures->every(
             fn ($row): bool => $row->hq_id === $hqId && $row->pickup_node_id === $nodeId,
         ));
-        $this->assertSame(16, DB::table('parcels')
-            ->where('parcel_number', 'like', 'CHB-LOCAL-VIS-%')->count());
+        $this->assertSame(134, DB::table('parcels')
+            ->whereBetween('parcel_number', ['CHB-2406-882016-01', 'CHB-2406-882149-01'])->count());
+        $this->assertSame('تهران مرکزی', DB::table('nodes')->where('node_id', $nodeId)->value('node_title'));
 
         $this->artisan('chabok:local-consignment-fixtures', ['--remove' => true])->assertSuccessful();
         $this->assertDatabaseMissing('consignments', ['hq_id' => $hqId, 'pickup_node_id' => $nodeId]);
         $this->assertSame(0, DB::table('parcels')
-            ->where('parcel_number', 'like', 'CHB-LOCAL-VIS-%')->count());
+            ->whereBetween('parcel_number', ['CHB-2406-882016-01', 'CHB-2406-882149-01'])->count());
     }
 }

@@ -11,12 +11,66 @@ use Illuminate\Support\Str;
 
 final class ManageLocalConsignmentFixtures extends Command
 {
-    private const PREFIX = 'CHB-LOCAL-VIS-';
+    private const LEGACY_PREFIX = 'CHB-LOCAL-VIS-';
+
+    private const NUMBER_PREFIX = 'CHB-2406-';
+
+    private const FIRST_NUMBER = 882016;
+
+    private const FIXTURE_COUNT = 134;
 
     /** @var list<string> */
     private const STATUSES = [
-        'D00', 'CFM', 'PD', 'PU', 'IR', 'ROU', 'OF', 'OS',
-        'OD', 'OK', 'NPU', 'NOK', 'RH', 'RCH', 'RO', 'AA',
+        'IR', 'NOK', 'CFM', 'PU', 'OK', 'AA',
+        'D00', 'PD', 'ROU', 'OF', 'OS', 'OD', 'NPU', 'RH', 'RCH', 'RO',
+    ];
+
+    /** @var list<string> */
+    private const RECEIVER_NAMES = [
+        'ح. کریمی',
+        'ف. نوری',
+        'م. حسینی',
+        'ا. صادقی',
+        'ز. اکبری',
+        'ن. تهرانی',
+        'س. محمدی',
+        'ر. احمدی',
+        'پ. مرادی',
+        'ع. رضایی',
+        'ک. جعفری',
+        'د. رحیمی',
+    ];
+
+    /** @var list<string> */
+    private const RECEIVER_ADDRESSES = [
+        'نارمک، خ. گلبرگ غربی، پ. ۲۴',
+        'پاسداران، بوستان ۲، پ. ۷',
+        'تجریش، خ. ولیعصر، پ. ۸۸',
+        'ولنجک، خ. سیزدهم، پ. ۲',
+        'رشت، گلسار، بلوار دیلمان، پ. ۱۱',
+        'شهرک غرب، ایران‌زمین، پ. ۴۵',
+        'یوسف‌آباد، خ. شصت‌وچهارم، پ. ۱۲',
+        'سعادت‌آباد، بلوار دریا، پ. ۳۰',
+        'تهرانپارس، خ. جشنواره، پ. ۱۸',
+        'ونک، خ. ملاصدرا، پ. ۶۱',
+        'الهیه، خ. فرشته، پ. ۹',
+        'پونک، بلوار همیلا، پ. ۲۷',
+    ];
+
+    /** @var list<string> */
+    private const RECEIVER_MOBILES = [
+        '09121104567',
+        '09387762210',
+        '09194420098',
+        '09126671140',
+        '09113095521',
+        '09032184476',
+        '09122804563',
+        '09351247760',
+        '09901124482',
+        '09125903716',
+        '09215548320',
+        '09368412950',
     ];
 
     protected $signature = 'chabok:local-consignment-fixtures
@@ -48,9 +102,14 @@ final class ManageLocalConsignmentFixtures extends Command
             return self::FAILURE;
         }
 
-        $removed = DB::transaction(function (): int {
+        DB::table('nodes')->where('node_id', $nodeId)->update(['node_title' => 'تهران مرکزی']);
+        $fixtureNumbers = $this->fixtureNumbers();
+        $removed = DB::transaction(function () use ($fixtureNumbers): int {
             $ids = DB::table('consignments')
-                ->where('consignment_number', 'like', self::PREFIX.'%')
+                ->where(function ($query) use ($fixtureNumbers): void {
+                    $query->where('consignment_number', 'like', self::LEGACY_PREFIX.'%')
+                        ->orWhereIn('consignment_number', $fixtureNumbers);
+                })
                 ->pluck('consignment_id');
             DB::table('parcels')->whereIn('consignment_id', $ids)->delete();
 
@@ -65,9 +124,10 @@ final class ManageLocalConsignmentFixtures extends Command
 
         DB::transaction(function () use ($hqId, $nodeId, $userId): void {
             $now = now();
-            foreach (self::STATUSES as $index => $status) {
+            foreach (range(0, self::FIXTURE_COUNT - 1) as $index) {
+                $status = self::STATUSES[$index % count(self::STATUSES)];
                 $consignmentId = (string) Str::uuid();
-                $number = self::PREFIX.$status;
+                $number = sprintf('%s%06d', self::NUMBER_PREFIX, self::FIRST_NUMBER + $index);
                 DB::table('consignments')->insert([
                     'consignment_id' => $consignmentId,
                     'hq_id' => $hqId,
@@ -79,20 +139,20 @@ final class ManageLocalConsignmentFixtures extends Command
                     'delivery_man_id' => null,
                     'sender_id' => null,
                     'receiver_id' => null,
-                    'sender_contact_name' => 'فروشگاه محلی چابک',
-                    'sender_mobile' => '09120000001',
+                    'sender_contact_name' => 'فروشگاه مرکزی چابک',
+                    'sender_mobile' => '02188770000',
                     'sender_phone' => null,
-                    'sender_address_text' => 'تهران، شعبه محلی چابک',
+                    'sender_address_text' => 'تهران، میدان ونک، گره تهران مرکزی',
                     'sender_country' => 'ایران',
                     'sender_state' => 'تهران',
                     'sender_city' => 'تهران',
                     'sender_postal_code' => null,
                     'sender_latitude' => null,
                     'sender_longitude' => null,
-                    'receiver_contact_name' => 'گیرنده نمونه '.($index + 1),
-                    'receiver_mobile' => sprintf('0912000%04d', $index + 2),
+                    'receiver_contact_name' => self::RECEIVER_NAMES[$index % count(self::RECEIVER_NAMES)],
+                    'receiver_mobile' => self::RECEIVER_MOBILES[$index % count(self::RECEIVER_MOBILES)],
                     'receiver_phone' => null,
-                    'receiver_address_text' => 'تهران، خیابان نمونه، پلاک '.($index + 10),
+                    'receiver_address_text' => self::RECEIVER_ADDRESSES[$index % count(self::RECEIVER_ADDRESSES)],
                     'receiver_country' => 'ایران',
                     'receiver_state' => 'تهران',
                     'receiver_city' => 'تهران',
@@ -135,9 +195,22 @@ final class ManageLocalConsignmentFixtures extends Command
             }
         });
 
-        $this->info('Created 16 LOCAL-HQ / LOCAL-BRANCH Consignment visual fixtures.');
+        $this->info('Created 134 LOCAL-HQ / LOCAL-BRANCH Consignment visual fixtures.');
         $this->line('Remove them with: php artisan chabok:local-consignment-fixtures --remove');
 
         return self::SUCCESS;
+    }
+
+    /** @return list<string> */
+    private function fixtureNumbers(): array
+    {
+        return array_map(
+            static fn (int $index): string => sprintf(
+                '%s%06d',
+                self::NUMBER_PREFIX,
+                self::FIRST_NUMBER + $index,
+            ),
+            range(0, self::FIXTURE_COUNT - 1),
+        );
     }
 }
