@@ -114,13 +114,41 @@ final class LocalUserCommandTest extends MySqlRedisTestCase
         $this->assertTrue($fixtures->every(
             fn ($row): bool => $row->hq_id === $hqId && $row->pickup_node_id === $nodeId,
         ));
-        $this->assertSame(134, DB::table('parcels')
+        $this->assertSame(135, DB::table('parcels')
             ->whereBetween('parcel_number', ['CHB-2406-882016-01', 'CHB-2406-882149-01'])->count());
         $this->assertSame('تهران مرکزی', DB::table('nodes')->where('node_id', $nodeId)->value('node_title'));
+        $detailId = (string) $fixtures->firstWhere('consignment_number', 'CHB-2406-882016')->consignment_id;
+        $this->assertSame(2, DB::table('parcels')->where('consignment_id', $detailId)->count());
+        $this->assertSame(1, DB::table('consignment_pricing_versions')
+            ->where('consignment_id', $detailId)->count());
+        $this->assertSame(3, DB::table('consignment_pricing_charge_lines')
+            ->whereIn(
+                'pricing_version_id',
+                DB::table('consignment_pricing_versions')
+                    ->where('consignment_id', $detailId)
+                    ->pluck('pricing_version_id'),
+            )->count());
+        $this->assertSame(4, DB::table('consignment_status_events')
+            ->where('consignment_id', $detailId)->count());
+        $this->assertSame(2, DB::table('audit_events')
+            ->where(['target_type' => 'CONSIGNMENT', 'target_id' => $detailId])->count());
+        $this->assertDatabaseHas('consignments', [
+            'consignment_id' => $detailId,
+            'cod_enabled' => true,
+            'payer' => 'RECEIVER',
+            'payment_method' => 'COD',
+            'current_status' => 'IR',
+        ]);
 
         $this->artisan('chabok:local-consignment-fixtures', ['--remove' => true])->assertSuccessful();
         $this->assertDatabaseMissing('consignments', ['hq_id' => $hqId, 'pickup_node_id' => $nodeId]);
         $this->assertSame(0, DB::table('parcels')
             ->whereBetween('parcel_number', ['CHB-2406-882016-01', 'CHB-2406-882149-01'])->count());
+        $this->assertSame(0, DB::table('consignment_pricing_versions')
+            ->where('consignment_id', $detailId)->count());
+        $this->assertSame(0, DB::table('consignment_status_events')
+            ->where('consignment_id', $detailId)->count());
+        $this->assertSame(0, DB::table('audit_events')
+            ->where(['target_type' => 'CONSIGNMENT', 'target_id' => $detailId])->count());
     }
 }
