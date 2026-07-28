@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tests\Integration;
 
+use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 
@@ -150,5 +151,182 @@ final class LocalUserCommandTest extends MySqlRedisTestCase
             ->where('consignment_id', $detailId)->count());
         $this->assertSame(0, DB::table('audit_events')
             ->where(['target_type' => 'CONSIGNMENT', 'target_id' => $detailId])->count());
+    }
+
+    public function test_local_consignment_visual_fixtures_preserve_manifest_referenced_aggregates(): void
+    {
+        putenv('CHABOK_LOCAL_PASSWORD=Strong-Local-Password-123!');
+        $this->artisan('chabok:local-user', [
+            '--identifier' => 'admin',
+            '--display-name' => 'Local Admin',
+        ])->assertSuccessful();
+        $this->artisan('chabok:local-consignment-fixtures')
+            ->expectsOutput('Created 134, refreshed 0, and preserved 0 LOCAL-HQ / LOCAL-BRANCH Consignment visual fixtures.')
+            ->assertSuccessful();
+
+        $hqId = (string) DB::table('hq_tenants')->where('hq_code', 'LOCAL-HQ')->value('hq_id');
+        $nodeId = (string) DB::table('nodes')
+            ->where('hq_id', $hqId)->where('node_code', 'LOCAL-BRANCH')->value('node_id');
+        $userId = (string) DB::table('users')
+            ->where('hq_id', $hqId)->where('normalized_username', 'admin')->value('user_id');
+        $protectedConsignmentId = (string) DB::table('consignments')
+            ->where('consignment_number', 'CHB-2406-882016')
+            ->value('consignment_id');
+        $protectedParcelId = (string) DB::table('parcels')
+            ->where('consignment_id', $protectedConsignmentId)
+            ->orderBy('parcel_number')
+            ->value('parcel_id');
+        $unprotectedConsignmentId = (string) DB::table('consignments')
+            ->where('consignment_number', 'CHB-2406-882017')
+            ->value('consignment_id');
+
+        $manifestId = (string) Str::uuid();
+        DB::table('manifests')->insert([
+            'manifest_id' => $manifestId,
+            'hq_id' => $hqId,
+            'manifest_number' => 'MNF-LOCAL-FIXTURE-00001',
+            'node_id' => $nodeId,
+            'manifest_status' => 'IR',
+            'assigned_driver_id' => null,
+            'state' => 'DRAFT',
+            'version' => 1,
+            'created_by' => $userId,
+            'approved_by' => null,
+            'closed_at' => null,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        DB::table('manifest_parcels')->insert([
+            'manifest_parcel_id' => (string) Str::uuid(),
+            'hq_id' => $hqId,
+            'manifest_id' => $manifestId,
+            'parcel_id' => $protectedParcelId,
+            'manifest_parcel_status' => 'PENDING',
+            'failure_code' => null,
+            'failure_reason' => null,
+            'input_source' => 'SCAN',
+            'input_value' => 'CHB-2406-882016-01',
+            'active_slot' => hash('sha256', "{$hqId}|{$protectedParcelId}|IR"),
+            'created_by' => $userId,
+            'processed_at' => null,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $manifestBeforeRefresh = (array) DB::table('manifests')
+            ->where('manifest_id', $manifestId)->first();
+        $associationBeforeRefresh = (array) DB::table('manifest_parcels')
+            ->where('manifest_id', $manifestId)->first();
+        DB::table('consignments')->where('consignment_id', $unprotectedConsignmentId)
+            ->update(['receiver_contact_name' => 'MUST BE REFRESHED']);
+
+        $this->artisan('chabok:local-consignment-fixtures')
+            ->expectsOutput('Created 0, refreshed 133, and preserved 1 LOCAL-HQ / LOCAL-BRANCH Consignment visual fixtures.')
+            ->assertSuccessful();
+
+        $this->assertSame(
+            $manifestBeforeRefresh,
+            (array) DB::table('manifests')->where('manifest_id', $manifestId)->first(),
+        );
+        $this->assertSame(
+            $associationBeforeRefresh,
+            (array) DB::table('manifest_parcels')->where('manifest_id', $manifestId)->first(),
+        );
+        $this->assertDatabaseHas('consignments', [
+            'consignment_id' => $protectedConsignmentId,
+            'consignment_number' => 'CHB-2406-882016',
+        ]);
+        $this->assertDatabaseHas('parcels', [
+            'parcel_id' => $protectedParcelId,
+            'consignment_id' => $protectedConsignmentId,
+        ]);
+        $this->assertDatabaseMissing('consignments', [
+            'consignment_id' => $unprotectedConsignmentId,
+            'receiver_contact_name' => 'MUST BE REFRESHED',
+        ]);
+        $this->assertSame(134, DB::table('consignments')
+            ->whereBetween('consignment_number', ['CHB-2406-882016', 'CHB-2406-882149'])
+            ->distinct()
+            ->count('consignment_number'));
+        $this->assertSame(0, DB::table('consignments')
+            ->whereBetween('consignment_number', ['CHB-2406-882016', 'CHB-2406-882149'])
+            ->select('consignment_number')
+            ->groupBy('consignment_number')
+            ->havingRaw('COUNT(*) > 1')
+            ->count());
+        $this->assertSame(0, DB::table('parcels')
+            ->whereIn('consignment_id', DB::table('consignments')
+                ->whereBetween('consignment_number', ['CHB-2406-882016', 'CHB-2406-882149'])
+                ->pluck('consignment_id'))
+            ->select('parcel_number')
+            ->groupBy('parcel_number')
+            ->havingRaw('COUNT(*) > 1')
+            ->count());
+
+        $this->artisan('chabok:local-consignment-fixtures', ['--remove' => true])
+            ->expectsOutput('Removed 133 local Consignment visual fixtures; preserved 1 manifest-referenced fixtures.')
+            ->assertSuccessful();
+
+        $this->assertSame(
+            $manifestBeforeRefresh,
+            (array) DB::table('manifests')->where('manifest_id', $manifestId)->first(),
+        );
+        $this->assertSame(
+            $associationBeforeRefresh,
+            (array) DB::table('manifest_parcels')->where('manifest_id', $manifestId)->first(),
+        );
+        $this->assertDatabaseHas('consignments', ['consignment_id' => $protectedConsignmentId]);
+        $this->assertSame(2, DB::table('parcels')
+            ->where('consignment_id', $protectedConsignmentId)->count());
+        $this->assertSame(1, DB::table('consignments')
+            ->whereBetween('consignment_number', ['CHB-2406-882016', 'CHB-2406-882149'])
+            ->count());
+        $this->assertSame(0, DB::table('consignments')
+            ->whereBetween('consignment_number', ['CHB-2406-882017', 'CHB-2406-882149'])
+            ->count());
+        $this->assertSame(1, DB::table('consignment_pricing_versions')
+            ->where('consignment_id', $protectedConsignmentId)->count());
+        $this->assertSame(4, DB::table('consignment_status_events')
+            ->where('consignment_id', $protectedConsignmentId)->count());
+        $this->assertSame(2, DB::table('audit_events')
+            ->where([
+                'target_type' => 'CONSIGNMENT',
+                'target_id' => $protectedConsignmentId,
+            ])->count());
+
+        $installedTriggers = DB::table('information_schema.TRIGGERS')
+            ->where('TRIGGER_SCHEMA', DB::getDatabaseName())
+            ->whereIn('TRIGGER_NAME', [
+                'consignment_status_events_immutable_delete',
+                'audit_events_prevent_delete',
+            ])
+            ->pluck('TRIGGER_NAME')
+            ->sort()
+            ->values()
+            ->all();
+        $this->assertSame([
+            'audit_events_prevent_delete',
+            'consignment_status_events_immutable_delete',
+        ], $installedTriggers);
+        $this->assertDeleteTriggerBlocks(
+            'consignment_status_events',
+            ['consignment_id' => $protectedConsignmentId],
+            'immutable Consignment history',
+        );
+        $this->assertDeleteTriggerBlocks(
+            'audit_events',
+            ['target_type' => 'CONSIGNMENT', 'target_id' => $protectedConsignmentId],
+            'audit_events is append-only',
+        );
+    }
+
+    /** @param array<string, string> $where */
+    private function assertDeleteTriggerBlocks(string $table, array $where, string $message): void
+    {
+        try {
+            DB::table($table)->where($where)->limit(1)->delete();
+            $this->fail("The {$table} delete trigger must remain effective.");
+        } catch (QueryException $exception) {
+            $this->assertStringContainsString($message, $exception->getMessage());
+        }
     }
 }

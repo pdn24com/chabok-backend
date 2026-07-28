@@ -102,20 +102,33 @@ final class ManageLocalConsignmentFixtures extends Command
         }
 
         DB::table('nodes')->where('node_id', $nodeId)->update(['node_title' => 'تهران مرکزی']);
-        $removed = $this->removeFixtures($this->fixtureNumbers());
+        $fixtureNumbers = $this->fixtureNumbers();
+        $existingNumbers = DB::table('consignments')
+            ->whereIn('consignment_number', $fixtureNumbers)
+            ->pluck('consignment_number')
+            ->map(static fn ($number): string => (string) $number)
+            ->all();
+        $cleanup = $this->removeFixtures($fixtureNumbers);
 
         if ((bool) $this->option('remove')) {
-            $this->info("Removed {$removed} local Consignment visual fixtures.");
+            $this->info(
+                "Removed {$cleanup['removed']} local Consignment visual fixtures; "
+                ."preserved {$cleanup['preserved']} manifest-referenced fixtures.",
+            );
 
             return self::SUCCESS;
         }
 
-        DB::transaction(function () use ($hqId, $nodeId, $userId): void {
+        $preservedNumbers = array_fill_keys($cleanup['preserved_numbers'], true);
+        DB::transaction(function () use ($hqId, $nodeId, $userId, $preservedNumbers): void {
             $now = now();
             foreach (range(0, self::FIXTURE_COUNT - 1) as $index) {
                 $status = self::STATUSES[$index % count(self::STATUSES)];
                 $consignmentId = $this->fixtureUuid("consignment-{$index}");
                 $number = sprintf('%s%06d', self::NUMBER_PREFIX, self::FIRST_NUMBER + $index);
+                if (isset($preservedNumbers[$number])) {
+                    continue;
+                }
                 $isDetailFixture = $index === 0;
                 $createdAt = $isDetailFixture
                     ? $now->copy()->subHours(4)
@@ -206,7 +219,20 @@ final class ManageLocalConsignmentFixtures extends Command
             }
         });
 
-        $this->info('Created 134 LOCAL-HQ / LOCAL-BRANCH Consignment visual fixtures.');
+        $existingNumberLookup = array_fill_keys($existingNumbers, true);
+        $created = count(array_filter(
+            $fixtureNumbers,
+            static fn (string $number): bool => ! isset($existingNumberLookup[$number]),
+        ));
+        $preservedDeterministic = count(array_filter(
+            $cleanup['preserved_numbers'],
+            static fn (string $number): bool => isset($existingNumberLookup[$number]),
+        ));
+        $refreshed = count($existingNumbers) - $preservedDeterministic;
+        $this->info(
+            "Created {$created}, refreshed {$refreshed}, and preserved {$cleanup['preserved']} "
+            .'LOCAL-HQ / LOCAL-BRANCH Consignment visual fixtures.',
+        );
         $this->line('Remove them with: php artisan chabok:local-consignment-fixtures --remove');
 
         return self::SUCCESS;
@@ -225,22 +251,57 @@ final class ManageLocalConsignmentFixtures extends Command
         );
     }
 
-    /** @param list<string> $fixtureNumbers */
-    private function removeFixtures(array $fixtureNumbers): int
+    /**
+     * @param  list<string>  $fixtureNumbers
+     * @return array{removed: int, preserved: int, preserved_numbers: list<string>}
+     */
+    private function removeFixtures(array $fixtureNumbers): array
     {
-        $ids = DB::table('consignments')
+        $fixtures = DB::table('consignments')
             ->where(function ($query) use ($fixtureNumbers): void {
                 $query->where('consignment_number', 'like', self::LEGACY_PREFIX.'%')
                     ->orWhereIn('consignment_number', $fixtureNumbers);
             })
-            ->pluck('consignment_id');
+            ->get(['consignment_id', 'consignment_number']);
+        if ($fixtures->isEmpty()) {
+            return ['removed' => 0, 'preserved' => 0, 'preserved_numbers' => []];
+        }
+
+        $protectedIds = [];
+        if (Schema::hasTable('manifest_parcels')) {
+            $protectedIds = DB::table('parcels as p')
+                ->join('manifest_parcels as mp', function ($join): void {
+                    $join->on('mp.hq_id', '=', 'p.hq_id')
+                        ->on('mp.parcel_id', '=', 'p.parcel_id');
+                })
+                ->whereIn('p.consignment_id', $fixtures->pluck('consignment_id'))
+                ->distinct()
+                ->pluck('p.consignment_id')
+                ->mapWithKeys(static fn ($id): array => [(string) $id => true])
+                ->all();
+        }
+
+        $protected = $fixtures->filter(
+            static fn ($fixture): bool => isset($protectedIds[(string) $fixture->consignment_id]),
+        );
+        $ids = $fixtures->reject(
+            static fn ($fixture): bool => isset($protectedIds[(string) $fixture->consignment_id]),
+        )->pluck('consignment_id');
+        $result = [
+            'removed' => 0,
+            'preserved' => $protected->count(),
+            'preserved_numbers' => $protected->pluck('consignment_number')
+                ->map(static fn ($number): string => (string) $number)
+                ->values()
+                ->all(),
+        ];
         if ($ids->isEmpty()) {
-            return 0;
+            return $result;
         }
 
         $this->dropFixtureCleanupTriggers();
         try {
-            return DB::transaction(function () use ($ids): int {
+            $result['removed'] = DB::transaction(function () use ($ids): int {
                 DB::table('audit_events')
                     ->where('target_type', 'CONSIGNMENT')
                     ->whereIn('target_id', $ids)
@@ -260,6 +321,8 @@ final class ManageLocalConsignmentFixtures extends Command
         } finally {
             $this->restoreFixtureCleanupTriggers();
         }
+
+        return $result;
     }
 
     private function dropFixtureCleanupTriggers(): void
