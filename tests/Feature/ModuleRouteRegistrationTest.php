@@ -24,6 +24,7 @@ final class ModuleRouteRegistrationTest extends TestCase
             'GET /api/v1/context/nodes',
             'GET /api/v1/consignments',
             'GET /api/v1/consignments/{consignmentId}',
+            'GET /api/v1/dashboard/operations',
             'GET /api/v1/manifests',
             'GET /api/v1/manifests/{manifestId}',
             'GET /api/v1/manifests/{manifestId}/eligible-parcels',

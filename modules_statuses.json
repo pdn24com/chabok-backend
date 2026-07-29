@@ -9,5 +9,6 @@
     "Authorization": true,
     "Notification": true,
     "Consignment": true,
-    "Manifest": true
+    "Manifest": true,
+    "Dashboard": true
 }

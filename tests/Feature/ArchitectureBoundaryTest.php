@@ -63,6 +63,7 @@ final class ArchitectureBoundaryTest extends TestCase
             'Notification' => ['Notification', 'Foundation'],
             'Consignment' => ['Consignment', 'Foundation'],
             'Manifest' => ['Manifest', 'Foundation'],
+            'Dashboard' => ['Dashboard', 'Foundation'],
         ];
         $violations = [];
 
