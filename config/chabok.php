@@ -47,7 +47,7 @@ return [
         ))),
     ],
     'consignment' => [
-        'quote_ttl_seconds' => 900,
+        'quote_ttl_seconds' => (int) env('CHABOK_QUOTE_TTL_SECONDS', 900),
         'editable_statuses' => ['CFM', 'PD'],
         'legacy_pricing' => [
             'base_url' => (string) env('LEGACY_PRICING_BASE_URL', ''),
@@ -63,5 +63,10 @@ return [
             'party_codes' => json_decode((string) env('LEGACY_PRICING_PARTY_CODES_JSON', '{}'), true) ?: [],
             'input_values' => json_decode((string) env('LEGACY_PRICING_INPUT_VALUES_JSON', '{}'), true) ?: [],
         ],
+    ],
+    'pricing' => [
+        'provider' => (string) env('CHABOK_PRICING_PROVIDER', 'legacy'),
+        'quote_ttl_seconds' => (int) env('CHABOK_QUOTE_TTL_SECONDS', 900),
+        'historical_recalculation_mode' => 'ORIGINAL_AS_OF',
     ],
 ];

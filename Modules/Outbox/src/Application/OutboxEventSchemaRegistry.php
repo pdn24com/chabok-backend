@@ -16,16 +16,22 @@ final class OutboxEventSchemaRegistry
         if ($schema === null) {
             throw new \InvalidArgumentException("Unregistered outbox event schema: {$eventType}.");
         }
-        $required = array_keys($schema);
+        $required = array_keys(array_filter($schema, static fn (string $type): bool => ! str_starts_with($type, 'optional_')));
         $actual = array_keys($payload);
         sort($required);
         sort($actual);
-        if ($required !== $actual) {
+        $allowed = array_keys($schema);
+        sort($allowed);
+        if (array_diff($required, $actual) !== [] || array_diff($actual, $allowed) !== []) {
             throw new \InvalidArgumentException("Outbox payload shape does not match {$eventType} v{$version}.");
         }
         foreach ($schema as $field => $type) {
+            if (! array_key_exists($field, $payload)) {
+                continue;
+            }
             $valid = match ($type) {
                 'string' => is_string($payload[$field]) && $payload[$field] !== '',
+                'optional_string' => is_string($payload[$field]) && $payload[$field] !== '',
                 'status' => is_string($payload[$field])
                     && in_array($payload[$field], ['INVITED', 'ACTIVE', 'SUSPENDED', 'DEACTIVATED'], true),
                 'creation_mode' => is_string($payload[$field])
@@ -72,6 +78,16 @@ final class OutboxEventSchemaRegistry
             'iam.role.cloned' => ['role_id' => 'string', 'source_role_id' => 'string'],
             'iam.role.permissions_replaced' => ['role_id' => 'string'],
             'iam.user.assignments_changed' => ['user_id' => 'string'],
+            'service.catalog.changed' => [
+                'action' => 'string',
+                'target_type' => 'string',
+                'target_id' => 'string',
+            ],
+            'pricing.configuration.changed' => [
+                'action' => 'string',
+                'target_type' => 'string',
+                'target_id' => 'string',
+            ],
             'consignment.created' => [
                 'consignment_id' => 'string',
                 'version' => 'string',
@@ -82,12 +98,16 @@ final class OutboxEventSchemaRegistry
                 'consignment_id' => 'string',
                 'version' => 'string',
                 'status' => 'string',
-                'pricing_version_id' => 'string',
+                'pricing_version_id' => 'optional_string',
             ],
             'consignment.pricing.accepted' => [
                 'consignment_id' => 'string',
                 'version' => 'string',
                 'pricing_version_id' => 'string',
+            ],
+            'consignment.pricing.stale' => [
+                'consignment_id' => 'string',
+                'version' => 'string',
             ],
             'manifest.created' => [
                 'manifest_id' => 'string',

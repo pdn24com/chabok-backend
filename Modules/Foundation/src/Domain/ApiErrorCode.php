@@ -29,6 +29,13 @@ enum ApiErrorCode: string
     case PricingRejected = 'PRICING_REJECTED';
     case PricingQuoteExpired = 'PRICING_QUOTE_EXPIRED';
     case PricingQuoteMismatch = 'PRICING_QUOTE_MISMATCH';
+    case ServiceIneligible = 'SERVICE_INELIGIBLE';
+    case PricingTariffNotFound = 'PRICING_TARIFF_NOT_FOUND';
+    case PricingZoneUnresolved = 'PRICING_ZONE_UNRESOLVED';
+    case PricingZoneAmbiguous = 'PRICING_ZONE_AMBIGUOUS';
+    case PricingRuleNotFound = 'PRICING_RULE_NOT_FOUND';
+    case PricingRuleAmbiguous = 'PRICING_RULE_AMBIGUOUS';
+    case PricingInputChanged = 'PRICING_INPUT_CHANGED';
     case RateLimited = 'RATE_LIMITED';
     case InternalServerError = 'INTERNAL_SERVER_ERROR';
 }

@@ -10,5 +10,7 @@
     "Notification": true,
     "Consignment": true,
     "Manifest": true,
-    "Dashboard": true
+    "Dashboard": true,
+    "ServiceCatalog": true,
+    "Pricing": true
 }

@@ -155,7 +155,7 @@ final readonly class ConsignmentController
             'insurance_value_amount' => ['sometimes', 'nullable', 'integer', 'min:0'],
             'cod_enabled' => ['sometimes', 'boolean'],
             'cod_amount' => ['sometimes', 'nullable', 'integer', 'min:0'],
-            ...$this->acceptedQuoteRules(),
+            ...$this->acceptedQuoteRules(false),
         ]);
         if (count(array_diff(array_keys($input), ['expected_version', 'change_reason', 'note', 'accepted_quote'])) === 0) {
             throw ValidationException::withMessages([
@@ -178,8 +178,12 @@ final readonly class ConsignmentController
         return [
             ...$this->contactRules('sender', true),
             ...$this->contactRules('receiver', true),
-            'service_type_id' => ['required', 'uuid'],
-            'shipping_method_id' => ['required', 'uuid'],
+            'service_type_id' => ['required_without:service_offering_id', 'nullable', 'uuid'],
+            'shipping_method_id' => ['required_without:service_offering_id', 'nullable', 'uuid'],
+            'service_offering_id' => ['sometimes', 'nullable', 'uuid'],
+            'service_offering_version_id' => ['sometimes', 'nullable', 'uuid'],
+            'selected_option_version_ids' => ['sometimes', 'array'],
+            'selected_option_version_ids.*' => ['uuid'],
             'pickup_commitment_at' => ['sometimes', 'nullable', 'date'],
             'delivery_commitment_at' => ['sometimes', 'nullable', 'date'],
             'weight_kg' => ['required', 'numeric', 'gt:0'],
@@ -223,13 +227,13 @@ final readonly class ConsignmentController
     }
 
     /** @return array<string, list<string>> */
-    private function acceptedQuoteRules(): array
+    private function acceptedQuoteRules(bool $required = true): array
     {
         return [
-            'accepted_quote' => ['required', 'array'],
-            'accepted_quote.quote_id' => ['required', 'uuid'],
-            'accepted_quote.quote_version' => ['required', 'integer', 'min:1'],
-            'accepted_quote.option_id' => ['required', 'uuid'],
+            'accepted_quote' => [$required ? 'required' : 'sometimes', 'array'],
+            'accepted_quote.quote_id' => [$required ? 'required' : 'required_with:accepted_quote', 'uuid'],
+            'accepted_quote.quote_version' => [$required ? 'required' : 'required_with:accepted_quote', 'integer', 'min:1'],
+            'accepted_quote.option_id' => [$required ? 'required' : 'required_with:accepted_quote', 'uuid'],
         ];
     }
 

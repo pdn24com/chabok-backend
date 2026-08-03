@@ -46,6 +46,21 @@ final class AuthorizationCatalog
             'driver.reassign' => 'Driver',
             'live_operations.view' => 'LiveOperations',
             'live_operations.intervene' => 'LiveOperations',
+            'service_catalog.view' => 'ServiceCatalog',
+            'service_catalog.history.view' => 'ServiceCatalog',
+            'service_catalog.resolve' => 'ServiceCatalog',
+            'service_catalog.manage_draft' => 'ServiceCatalog',
+            'service_catalog.availability.manage' => 'ServiceCatalog',
+            'service_catalog.approve' => 'ServiceCatalog',
+            'service_catalog.publish' => 'ServiceCatalog',
+            'service_catalog.audit.view' => 'ServiceCatalog',
+            'pricing.quote.calculate' => 'Pricing',
+            'pricing.quote.view' => 'Pricing',
+            'pricing.tariff.view' => 'Pricing',
+            'pricing.tariff.manage_draft' => 'Pricing',
+            'pricing.tariff.approve' => 'Pricing',
+            'pricing.tariff.publish' => 'Pricing',
+            'pricing.audit.view' => 'Pricing',
         ];
     }
 
@@ -72,7 +87,15 @@ final class AuthorizationCatalog
     {
         return [
             'platform_super_admin' => ['iam.entitlements.view'],
-            'hq_admin' => ['iam.roles.manage', 'iam.entitlements.view'],
+            'hq_admin' => [
+                'iam.roles.manage', 'iam.entitlements.view',
+                'service_catalog.view', 'service_catalog.history.view', 'service_catalog.resolve',
+                'service_catalog.manage_draft', 'service_catalog.availability.manage',
+                'service_catalog.approve', 'service_catalog.publish', 'service_catalog.audit.view',
+                'pricing.quote.calculate', 'pricing.quote.view', 'pricing.tariff.view',
+                'pricing.tariff.manage_draft', 'pricing.tariff.approve', 'pricing.tariff.publish',
+                'pricing.audit.view',
+            ],
             'branch_manager' => [
                 'branch_panel.access', 'node_context.view', 'node_context.switch', 'audit.view',
                 'iam.users.view', 'iam.users.manage', 'iam.roles.assign',
@@ -83,6 +106,8 @@ final class AuthorizationCatalog
                 'pickup_request.view', 'pickup_request.create', 'pickup_request.cancel',
                 'exception.npu.view', 'exception.nok.view',
                 'driver.view', 'live_operations.view',
+                'service_catalog.view', 'service_catalog.resolve',
+                'pricing.quote.calculate', 'pricing.quote.view',
             ],
             'branch_operator' => [
                 'branch_panel.access', 'node_context.view', 'node_context.switch',
@@ -91,6 +116,8 @@ final class AuthorizationCatalog
                 'pickup_request.view', 'pickup_request.create',
                 'exception.npu.view', 'exception.nok.view', 'driver.view',
                 'live_operations.view',
+                'service_catalog.view', 'service_catalog.resolve',
+                'pricing.quote.calculate', 'pricing.quote.view',
             ],
             'hub_operator' => [
                 'branch_panel.access', 'node_context.view', 'node_context.switch',

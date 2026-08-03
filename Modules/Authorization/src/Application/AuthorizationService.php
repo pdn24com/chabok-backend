@@ -584,7 +584,18 @@ final readonly class AuthorizationService implements AuthorizationContextResolve
             throw new ApiException(ApiErrorCode::ValidationError, 422, 'An unknown permission was supplied.');
         }
         $effective = $this->resolve($actor)['permissions'];
-        if (array_diff($permissionCodes, $effective) !== []) {
+        $assigned = DB::table('user_role_assignments as ura')
+            ->join('roles as r', 'r.role_id', '=', 'ura.role_id')
+            ->join('role_permissions as rp', 'rp.role_id', '=', 'r.role_id')
+            ->join('permissions as p', 'p.permission_id', '=', 'rp.permission_id')
+            ->where('ura.user_id', $actor->userId)
+            ->where('ura.status', 'ACTIVE')
+            ->where('r.status', 'ACTIVE')
+            ->where('p.status', 'ACTIVE')
+            ->pluck('p.permission_code')
+            ->map(static fn ($code): string => (string) $code)
+            ->all();
+        if (array_diff($permissionCodes, array_values(array_unique([...$effective, ...$assigned]))) !== []) {
             throw new ApiException(ApiErrorCode::DelegationDenied, 403, 'Access denied.');
         }
     }

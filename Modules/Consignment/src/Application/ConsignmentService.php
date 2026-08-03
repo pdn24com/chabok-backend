@@ -142,6 +142,10 @@ final readonly class ConsignmentService
         unset($input['accepted_quote']);
         $this->policy->assertCommercialConsistency($input);
         $accepted = $this->pricing->accept($actor, $nodeId, 'CREATE', $input, $acceptedInput);
+        if (($accepted['provider_code'] ?? null) === 'INTERNAL') {
+            $input['service_type_id'] = $accepted['service_type_id'];
+            $input['shipping_method_id'] = $accepted['shipping_method_id'];
+        }
         $consignmentId = $this->transactions->run(function () use (
             $actor,
             $nodeId,
@@ -262,12 +266,12 @@ final readonly class ConsignmentService
         string $correlationId,
     ): array {
         $context = $this->assertAccess($actor, $nodeId, 'consignment.edit');
-        $acceptedInput = (array) $changes['accepted_quote'];
+        $acceptedInput = isset($changes['accepted_quote']) ? (array) $changes['accepted_quote'] : null;
         $expectedVersion = (int) $changes['expected_version'];
         $changeReason = (string) $changes['change_reason'];
         $note = $changes['note'] ?? null;
         unset($changes['accepted_quote'], $changes['expected_version'], $changes['change_reason'], $changes['note']);
-        $acceptedQuoteId = (string) $acceptedInput['quote_id'];
+        $acceptedQuoteId = $acceptedInput === null ? null : (string) $acceptedInput['quote_id'];
         $this->transactions->run(function () use (
             $actor,
             $nodeId,
@@ -296,7 +300,7 @@ final readonly class ConsignmentService
             $this->policy->assertEditable((string) $row->current_status, (array) config('chabok.consignment.editable_statuses'));
             $draft = array_replace_recursive($this->draftFromRow((array) $row), $changes);
             $this->policy->assertCommercialConsistency($draft);
-            $accepted = $this->pricing->accept(
+            $accepted = $acceptedInput === null ? null : $this->pricing->accept(
                 $actor,
                 $nodeId,
                 'EDIT',
@@ -305,6 +309,10 @@ final readonly class ConsignmentService
                 $consignmentId,
                 $expectedVersion,
             );
+            if (($accepted['provider_code'] ?? null) === 'INTERNAL') {
+                $draft['service_type_id'] = $accepted['service_type_id'];
+                $draft['shipping_method_id'] = $accepted['shipping_method_id'];
+            }
             $newVersion = $expectedVersion + 1;
             DB::table('consignments')->where([
                 'hq_id' => $actor->hqId,
@@ -313,10 +321,11 @@ final readonly class ConsignmentService
             ])->update([
                 ...$this->contactColumns('receiver', (array) $draft['receiver']),
                 ...$this->commercialColumns($draft),
+                ...($accepted === null ? ['commercial_pricing_state' => 'STALE'] : []),
                 'version' => $newVersion,
                 'updated_at' => now(),
             ]);
-            $pricingVersionId = $this->persistPricing(
+            $pricingVersionId = $accepted === null ? null : $this->persistPricing(
                 (string) $actor->hqId,
                 $consignmentId,
                 $newVersion,
@@ -335,19 +344,19 @@ final readonly class ConsignmentService
                 safeNote: $changeReason.($note ? ': '.$note : ''),
                 sourceClient: 'BRANCH_PANEL',
             );
-            $this->outbox->write($actor->hqId, 'CONSIGNMENT', $consignmentId, 'consignment.updated', $correlationId, [
+            $this->outbox->write($actor->hqId, 'CONSIGNMENT', $consignmentId, 'consignment.updated', $correlationId, array_filter([
                 'consignment_id' => $consignmentId,
                 'version' => (string) $newVersion,
                 'status' => (string) $row->current_status,
                 'pricing_version_id' => $pricingVersionId,
-            ]);
-            $this->outbox->write($actor->hqId, 'CONSIGNMENT', $consignmentId, 'consignment.pricing.accepted', $correlationId, [
+            ], static fn ($value) => $value !== null));
+            $this->outbox->write($actor->hqId, 'CONSIGNMENT', $consignmentId, $accepted === null ? 'consignment.pricing.stale' : 'consignment.pricing.accepted', $correlationId, array_filter([
                 'consignment_id' => $consignmentId,
                 'version' => (string) $newVersion,
                 'pricing_version_id' => $pricingVersionId,
-            ]);
+            ], static fn ($value) => $value !== null));
         });
-        $this->pricing->consume($acceptedQuoteId);
+        if ($acceptedQuoteId !== null) $this->pricing->consume($acceptedQuoteId);
 
         return $this->get($actor, $nodeId, $consignmentId);
     }
@@ -517,6 +526,11 @@ final readonly class ConsignmentService
             'receiver' => $this->contactFromRow('receiver', $row),
             'service_type_id' => (string) $row['service_type_id'],
             'shipping_method_id' => (string) $row['shipping_method_id'],
+            'service_offering_id' => $row['service_offering_id'] ? (string) $row['service_offering_id'] : null,
+            'service_offering_version_id' => $row['service_offering_version_id'] ? (string) $row['service_offering_version_id'] : null,
+            'selected_service_option_versions' => $row['selected_service_option_versions'] ? json_decode((string) $row['selected_service_option_versions'], true) : [],
+            'commercial_pricing_state' => (string) $row['commercial_pricing_state'],
+            'active_pricing_snapshot_id' => $row['active_pricing_snapshot_id'] ? (string) $row['active_pricing_snapshot_id'] : null,
             'pickup_commitment_at' => $row['pickup_commitment_at'] ? $this->time($row['pickup_commitment_at']) : null,
             'delivery_commitment_at' => $row['delivery_commitment_at'] ? $this->time($row['delivery_commitment_at']) : null,
             'weight_kg' => (float) $row['weight_kg'],
@@ -621,6 +635,11 @@ final readonly class ConsignmentService
         return [
             'service_type_id' => $input['service_type_id'],
             'shipping_method_id' => $input['shipping_method_id'],
+            'service_offering_id' => $input['service_offering_id'] ?? null,
+            'service_offering_version_id' => $input['service_offering_version_id'] ?? null,
+            'selected_service_option_versions' => isset($input['selected_option_version_ids'])
+                ? json_encode(array_values((array) $input['selected_option_version_ids']), JSON_THROW_ON_ERROR)
+                : null,
             'pickup_commitment_at' => $this->databaseTime($input['pickup_commitment_at'] ?? null),
             'delivery_commitment_at' => $this->databaseTime($input['delivery_commitment_at'] ?? null),
             'weight_kg' => $input['weight_kg'],
@@ -696,12 +715,17 @@ final readonly class ConsignmentService
     ): string {
         $id = (string) Str::uuid();
         $acceptedAt = now();
+        $snapshotId = ($accepted['provider_code'] ?? 'LEGACY_CORE') === 'INTERNAL'
+            ? $this->persistInternalSnapshot($hqId, $consignmentId, $actorId, $version, $accepted)
+            : null;
         DB::table('consignment_pricing_versions')->insert([
             'pricing_version_id' => $id,
+            'pricing_snapshot_id' => $snapshotId,
+            'service_offering_version_id' => $accepted['service_offering_version_id'] ?? null,
             'hq_id' => $hqId,
             'consignment_id' => $consignmentId,
             'version_number' => $version,
-            'provider_code' => 'LEGACY_CORE',
+            'provider_code' => $accepted['provider_code'] ?? 'LEGACY_CORE',
             'quote_id' => $accepted['quote_id'],
             'quote_version' => $accepted['quote_version'],
             'option_id' => $accepted['option_id'],
@@ -714,6 +738,7 @@ final readonly class ConsignmentService
             'min_ins' => $accepted['min_ins'],
             'delivery_windows' => json_encode($accepted['delivery_windows'], JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE),
             'input_fingerprint' => $accepted['input_fingerprint'],
+            'result_fingerprint' => $accepted['result_fingerprint'] ?? null,
             'provider_calculated_at' => CarbonImmutable::parse($accepted['provider_calculated_at']),
             'accepted_at' => $acceptedAt,
             'accepted_by' => $actorId,
@@ -729,8 +754,63 @@ final readonly class ConsignmentService
                 'amount' => $line['amount'],
             ]);
         }
+        DB::table('consignments')->where(['hq_id' => $hqId, 'consignment_id' => $consignmentId])->update([
+            'service_offering_id' => $accepted['service_offering_id'] ?? DB::raw('service_offering_id'),
+            'service_offering_version_id' => $accepted['service_offering_version_id'] ?? DB::raw('service_offering_version_id'),
+            'commercial_pricing_state' => 'LOCKED',
+            'active_pricing_snapshot_id' => $snapshotId,
+            'pricing_relevant_fingerprint' => $accepted['input_fingerprint'],
+        ]);
 
         return $id;
+    }
+
+    /** @param array<string, mixed> $accepted */
+    private function persistInternalSnapshot(
+        string $hqId,
+        string $consignmentId,
+        string $actorId,
+        int $version,
+        array $accepted,
+    ): string {
+        $quoteId = (string) $accepted['internal_quote_id'];
+        $quote = DB::table('pricing_quotes')->where(['quote_id' => $quoteId, 'hq_id' => $hqId])->lockForUpdate()->first();
+        if ($quote === null || (string) $quote->status !== 'OFFERED') {
+            throw new ApiException(ApiErrorCode::PricingQuoteMismatch, 422, 'The internal pricing quote is unavailable.');
+        }
+        if (CarbonImmutable::parse((string) $quote->expires_at)->isPast()) {
+            throw new ApiException(ApiErrorCode::PricingQuoteExpired, 422, 'The internal pricing quote has expired.');
+        }
+        $snapshotId = (string) Str::uuid();
+        $now = now();
+        DB::table('pricing_snapshots')->insert([
+            'pricing_snapshot_id' => $snapshotId,
+            'hq_id' => $hqId,
+            'quote_id' => $quoteId,
+            'object_type' => 'CONSIGNMENT',
+            'object_id' => $consignmentId,
+            'purpose' => 'SALES',
+            'currency' => $quote->currency,
+            'subtotal_amount' => $quote->subtotal_amount,
+            'discount_amount' => $quote->discount_amount,
+            'tax_amount' => $quote->tax_amount,
+            'total_amount' => $quote->total_amount,
+            'input_fingerprint' => $quote->input_fingerprint,
+            'result_fingerprint' => $quote->result_fingerprint,
+            'acceptance_idempotency_key' => "consignment:{$consignmentId}:{$version}",
+            'accepted_by' => $actorId,
+            'accepted_at' => $now,
+        ]);
+        foreach (DB::table('pricing_quote_lines')->where('quote_id', $quoteId)->orderBy('line_number')->get() as $line) {
+            $copy = (array) $line;
+            unset($copy['quote_line_id'], $copy['quote_id']);
+            $copy['charge_line_id'] = (string) Str::uuid();
+            $copy['pricing_snapshot_id'] = $snapshotId;
+            DB::table('pricing_charge_lines')->insert($copy);
+        }
+        DB::table('pricing_quotes')->where('quote_id', $quoteId)->update(['status' => 'ACCEPTED', 'accepted_at' => $now, 'updated_at' => $now]);
+
+        return $snapshotId;
     }
 
     private function insertStatusEvent(
@@ -767,6 +847,9 @@ final readonly class ConsignmentService
             'receiver' => $this->contactFromRow('receiver', $row),
             'service_type_id' => $row['service_type_id'],
             'shipping_method_id' => $row['shipping_method_id'],
+            'service_offering_id' => $row['service_offering_id'],
+            'service_offering_version_id' => $row['service_offering_version_id'],
+            'selected_option_version_ids' => $row['selected_service_option_versions'] ? json_decode((string) $row['selected_service_option_versions'], true) : [],
             'pickup_commitment_at' => $row['pickup_commitment_at'] ? $this->time($row['pickup_commitment_at']) : null,
             'delivery_commitment_at' => $row['delivery_commitment_at'] ? $this->time($row['delivery_commitment_at']) : null,
             'weight_kg' => (float) $row['weight_kg'],

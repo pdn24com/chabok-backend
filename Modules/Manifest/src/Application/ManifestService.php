@@ -112,6 +112,7 @@ final readonly class ManifestService
         return DB::table('parcels as p')->join('consignments as c', function ($join): void {
             $join->on('c.consignment_id', '=', 'p.consignment_id')->on('c.hq_id', '=', 'p.hq_id');
         })->where('p.hq_id', $actor->hqId)->whereIn('p.current_status', $statuses)
+            ->where(fn ($q) => $q->whereNull('c.service_offering_id')->orWhere('c.commercial_pricing_state', 'LOCKED'))
             ->where(fn ($q) => $q->where('c.pickup_node_id', $nodeId)->orWhere('c.delivery_node_id', $nodeId))
             ->whereNotExists(fn ($q) => $q->selectRaw('1')->from('manifest_parcels as mp')
                 ->whereColumn('mp.parcel_id', 'p.parcel_id')->whereNotNull('mp.active_slot'))
@@ -189,12 +190,13 @@ final readonly class ManifestService
             $m = $this->locked($actor, $nodeId, $id); $this->version($m, $expected); $this->policy->assertEditable((string) $m->state);
             foreach (DB::table('manifest_parcels')->where('manifest_id', $id)->whereIn('manifest_parcel_status', ['PENDING', 'VALIDATED'])->lockForUpdate()->get() as $row) {
                 $parcel = DB::table('parcels')->where(['hq_id' => $actor->hqId, 'parcel_id' => $row->parcel_id])->first();
-                $valid = $parcel !== null && $this->policy->canTransition((string) $parcel->current_status, (string) $m->manifest_status);
+                $pricingReady = $parcel !== null && DB::table('consignments')->where(['hq_id' => $actor->hqId, 'consignment_id' => $parcel->consignment_id])->where(fn ($q) => $q->whereNull('service_offering_id')->orWhere('commercial_pricing_state', 'LOCKED'))->exists();
+                $valid = $parcel !== null && $pricingReady && $this->policy->canTransition((string) $parcel->current_status, (string) $m->manifest_status);
                 DB::table('manifest_parcels')->where('manifest_parcel_id', $row->manifest_parcel_id)->update($valid ? [
                     'manifest_parcel_status' => 'VALIDATED', 'updated_at' => now(),
                 ] : [
-                    'manifest_parcel_status' => 'FAILED', 'failure_code' => 'INVALID_STATUS_TRANSITION',
-                    'failure_reason' => 'Parcel is not eligible for the target status.', 'active_slot' => null,
+                    'manifest_parcel_status' => 'FAILED', 'failure_code' => $pricingReady ? 'INVALID_STATUS_TRANSITION' : 'PRICING_STALE',
+                    'failure_reason' => $pricingReady ? 'Parcel is not eligible for the target status.' : 'Consignment pricing must be recalculated before issuance.', 'active_slot' => null,
                     'processed_at' => now(), 'updated_at' => now(),
                 ]);
             }
@@ -221,10 +223,11 @@ final readonly class ManifestService
             $success = 0; $consignments = [];
             foreach ($rows as $row) {
                 $parcel = DB::table('parcels')->where(['hq_id' => $actor->hqId, 'parcel_id' => $row->parcel_id])->lockForUpdate()->first();
-                if ($parcel === null || ! $this->policy->canTransition((string) $parcel->current_status, (string) $m->manifest_status)) {
+                $pricingReady = $parcel !== null && DB::table('consignments')->where(['hq_id' => $actor->hqId, 'consignment_id' => $parcel->consignment_id])->where(fn ($q) => $q->whereNull('service_offering_id')->orWhere('commercial_pricing_state', 'LOCKED'))->exists();
+                if ($parcel === null || ! $pricingReady || ! $this->policy->canTransition((string) $parcel->current_status, (string) $m->manifest_status)) {
                     DB::table('manifest_parcels')->where('manifest_parcel_id', $row->manifest_parcel_id)->update([
-                        'manifest_parcel_status' => 'FAILED', 'failure_code' => 'INVALID_STATUS_TRANSITION',
-                        'failure_reason' => 'Parcel eligibility changed before confirmation.', 'active_slot' => null,
+                        'manifest_parcel_status' => 'FAILED', 'failure_code' => $pricingReady ? 'INVALID_STATUS_TRANSITION' : 'PRICING_STALE',
+                        'failure_reason' => $pricingReady ? 'Parcel eligibility changed before confirmation.' : 'Consignment pricing must be recalculated before issuance.', 'active_slot' => null,
                         'processed_at' => now(), 'updated_at' => now(),
                     ]);
                     continue;

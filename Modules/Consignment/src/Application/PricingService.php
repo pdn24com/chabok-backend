@@ -46,7 +46,7 @@ final readonly class PricingService
             );
         }
         $fingerprint = InputFingerprint::of($input);
-        $providerInput = [...$input, '_hq_id' => $actor->hqId, '_node_id' => $nodeId];
+        $providerInput = [...$input, '_hq_id' => $actor->hqId, '_node_id' => $nodeId, '_actor_user_id' => $actor->userId, '_actor_session_id' => $actor->sessionId, '_pricing_request_id' => (string) Str::uuid()];
         $options = array_map(static fn (array $option): array => [
             'option_id' => (string) Str::uuid(),
             ...$option,
@@ -188,9 +188,11 @@ final readonly class PricingService
         foreach ([
             'pickup_commitment_at', 'delivery_commitment_at', 'width_cm',
             'length_cm', 'height_cm', 'insurance_value_amount', 'cod_amount',
+            'service_offering_id', 'service_offering_version_id',
         ] as $field) {
             $input[$field] ??= null;
         }
+        $input['selected_option_version_ids'] = array_values((array) ($input['selected_option_version_ids'] ?? []));
         foreach (['pickup_commitment_at', 'delivery_commitment_at'] as $field) {
             if ($input[$field] !== null) {
                 $input[$field] = CarbonImmutable::parse((string) $input[$field])->utc()->toISOString();

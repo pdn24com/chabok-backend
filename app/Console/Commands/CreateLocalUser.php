@@ -191,7 +191,7 @@ final class CreateLocalUser extends Command
                 );
             }
 
-            foreach (['Foundation', 'IAM', 'Consignment', 'Parcel', 'Manifest'] as $moduleCode) {
+            foreach (['Foundation', 'IAM', 'Consignment', 'Parcel', 'Manifest', 'ServiceCatalog', 'Pricing'] as $moduleCode) {
                 DB::table('tenant_module_entitlements')->updateOrInsert(
                     ['hq_id' => $hqId, 'module_code' => $moduleCode],
                     [

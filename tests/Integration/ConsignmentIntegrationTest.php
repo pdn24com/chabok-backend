@@ -231,6 +231,28 @@ final class ConsignmentIntegrationTest extends MySqlRedisTestCase
         }
     }
 
+    public function test_pricing_relevant_edit_without_a_quote_marks_pricing_stale_without_changing_status(): void
+    {
+        [, , $node, $principal] = $this->branchContext('CONSIGN-STALE', 'manager-stale');
+        $draft = $this->draft();
+        $pricing = $this->app->make(PricingService::class);
+        $quote = $pricing->calculate($principal, $node, 'CREATE', $draft, null, null);
+        $created = $this->app->make(ConsignmentService::class)->create($principal, $node, [...$draft, 'accepted_quote' => [
+            'quote_id' => $quote['quote_id'], 'quote_version' => 1, 'option_id' => $quote['options'][0]['option_id'],
+        ]], (string) Str::uuid());
+
+        $edited = $this->app->make(ConsignmentService::class)->edit($principal, $node, $created['consignment_id'], [
+            'expected_version' => 1,
+            'change_reason' => 'Destination correction pending repricing',
+            'receiver' => [...$draft['receiver'], 'city' => 'Karaj'],
+        ], (string) Str::uuid());
+
+        $this->assertSame('CFM', $edited['current_status']);
+        $this->assertSame('STALE', $edited['commercial_pricing_state']);
+        $this->assertCount(1, $edited['accepted_pricing_versions']);
+        $this->assertDatabaseHas('outbox_events', ['aggregate_id' => $created['consignment_id'], 'event_type' => 'consignment.pricing.stale']);
+    }
+
     public function test_api_envelopes_idempotency_validation_and_real_route_integration(): void
     {
         $context = $this->branchContext('CONSIGN-API', 'manager-api');
