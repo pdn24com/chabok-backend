@@ -21,6 +21,14 @@ final readonly class ServiceCatalogController
         return ApiResponder::success($request, $page->items(), ['pagination' => ['page' => $page->currentPage(), 'page_size' => $page->perPage(), 'total' => $page->total(), 'total_pages' => $page->lastPage()]]);
     }
 
+    public function publishedVersions(Request $request, string $resource): JsonResponse
+    {
+        $filters = $request->validate(['page' => ['integer', 'min:1'], 'page_size' => ['integer', 'min:1', 'max:100'], 'search' => ['nullable', 'string', 'max:120']]);
+        $page = $this->catalog->listPublishedVersions($this->principal($request), $resource, $filters);
+
+        return ApiResponder::success($request, $page->items(), ['pagination' => ['page' => $page->currentPage(), 'page_size' => $page->perPage(), 'total' => $page->total(), 'total_pages' => $page->lastPage()]]);
+    }
+
     public function audit(Request $request): JsonResponse
     {
         $filters = $request->validate(['page' => ['integer', 'min:1'], 'page_size' => ['integer', 'min:1', 'max:100'], 'target_id' => ['nullable', 'uuid']]); $page = $this->catalog->auditEvents($this->principal($request), $filters);
@@ -86,7 +94,7 @@ final readonly class ServiceCatalogController
             'valid_from' => ['nullable', 'date'], 'valid_to' => ['nullable', 'date'],
         ];
         if ($creating) $rules['code'] = ['required', 'regex:/^[A-Z][A-Z0-9_]{1,79}$/'];
-        if ($resource !== 'offerings') return $rules + ['definition' => ['required', 'array']];
+        if ($resource !== 'offerings') return $rules + ['definition' => ['sometimes', 'array']];
         return $rules + [
             'service_type_version_id' => ['required', 'uuid'], 'shipping_method_version_id' => ['required', 'uuid'],
             'sla_policy' => ['required', 'array'], 'availability_summary' => ['nullable', 'array'],

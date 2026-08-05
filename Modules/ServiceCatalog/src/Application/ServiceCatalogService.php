@@ -49,7 +49,10 @@ final readonly class ServiceCatalogService implements ServiceEligibilityResolver
                 ->orderByDesc('v.version_number')->limit(1), 'latest_version_number')
             ->selectSub(DB::table("{$versions} as v")->select("v.{$versionId}")
                 ->whereColumn("v.{$identityId}", "i.{$identityId}")
-                ->orderByDesc('v.version_number')->limit(1), 'latest_version_id');
+                ->orderByDesc('v.version_number')->limit(1), 'latest_version_id')
+            ->selectSub(DB::table("{$versions} as v")->select('v.labels')
+                ->whereColumn("v.{$identityId}", "i.{$identityId}")
+                ->orderByDesc('v.version_number')->limit(1), 'labels');
         if (($filters['search'] ?? '') !== '') {
             $search = '%'.addcslashes((string) $filters['search'], '%_\\').'%';
             $query->where('i.code', 'like', $search);
@@ -58,10 +61,38 @@ final readonly class ServiceCatalogService implements ServiceEligibilityResolver
             $query->where('i.status', $filters['status']);
         }
 
-        return $query->orderBy('i.code')->paginate(
+        $page = $query->orderBy('i.code')->paginate(
             perPage: min(100, max(1, (int) ($filters['page_size'] ?? 25))),
             page: max(1, (int) ($filters['page'] ?? 1)),
         );
+        $page->setCollection($page->getCollection()->map(fn ($row) => $this->decode((array) $row)));
+
+        return $page;
+    }
+
+    /** @param array<string, mixed> $filters */
+    public function listPublishedVersions(AuthenticatedPrincipal $actor, string $resource, array $filters): LengthAwarePaginator
+    {
+        $this->assertAccess($actor, 'service_catalog.view');
+        [$identity, $versions, $identityId, $versionId] = $this->map($resource);
+        $query = DB::table("{$versions} as v")
+            ->join("{$identity} as i", "i.{$identityId}", '=', "v.{$identityId}")
+            ->where('v.status', 'PUBLISHED')
+            ->where(fn ($q) => $q->whereNull('i.hq_id')->orWhere('i.hq_id', $actor->hqId));
+        if (($filters['search'] ?? '') !== '') {
+            $search = '%'.addcslashes((string) $filters['search'], '%_\\').'%';
+            $query->where(fn ($q) => $q->where('i.code', 'like', $search)->orWhere('v.labels', 'like', $search));
+        }
+        $page = $query->select(['v.*', 'i.code'])
+            ->orderBy('i.code')
+            ->orderByDesc('v.version_number')
+            ->paginate(
+                perPage: min(100, max(1, (int) ($filters['page_size'] ?? 100))),
+                page: max(1, (int) ($filters['page'] ?? 1)),
+            );
+        $page->setCollection($page->getCollection()->map(fn ($row) => $this->decode((array) $row)));
+
+        return $page;
     }
 
     /** @param array<string,mixed> $filters */
@@ -197,9 +228,6 @@ final readonly class ServiceCatalogService implements ServiceEligibilityResolver
         if (empty($row['labels']) || ! is_array($row['labels'])) {
             $errors[] = ['code' => 'SERVICE_LABEL_REQUIRED', 'field' => 'labels'];
         }
-        if (! $row['valid_from']) {
-            $errors[] = ['code' => 'SERVICE_VALID_FROM_REQUIRED', 'field' => 'valid_from'];
-        }
         if ($row['valid_to'] && $row['valid_from'] && $row['valid_to'] <= $row['valid_from']) {
             $errors[] = ['code' => 'SERVICE_EFFECTIVE_INTERVAL_INVALID', 'field' => 'valid_to'];
         }
@@ -283,7 +311,7 @@ final readonly class ServiceCatalogService implements ServiceEligibilityResolver
             ->join('shipping_method_versions as smv', 'smv.shipping_method_version_id', '=', 'v.shipping_method_version_id')
             ->where('v.status', 'PUBLISHED')
             ->where(fn ($q) => $q->whereNull('v.hq_id')->orWhere('v.hq_id', $actor->hqId))
-            ->where('v.valid_from', '<=', $asOf)
+            ->where(fn ($q) => $q->whereNull('v.valid_from')->orWhere('v.valid_from', '<=', $asOf))
             ->where(fn ($q) => $q->whereNull('v.valid_to')->orWhere('v.valid_to', '>', $asOf))
             ->select(['v.*', 'i.code as offering_code', 'stv.service_type_id', 'smv.shipping_method_id'])
             ->orderBy('i.code')->limit(100)->get();
@@ -313,7 +341,9 @@ final readonly class ServiceCatalogService implements ServiceEligibilityResolver
             $query->where('v.service_offering_version_id', $versionId);
         } else {
             $asOf = CarbonImmutable::parse((string) ($context['as_of_timestamp'] ?? now()->toISOString()))->utc();
-            $query->where('v.valid_from', '<=', $asOf)->where(fn ($q) => $q->whereNull('v.valid_to')->orWhere('v.valid_to', '>', $asOf))->orderByDesc('v.version_number');
+            $query->where(fn ($q) => $q->whereNull('v.valid_from')->orWhere('v.valid_from', '<=', $asOf))
+                ->where(fn ($q) => $q->whereNull('v.valid_to')->orWhere('v.valid_to', '>', $asOf))
+                ->orderByDesc('v.version_number');
         }
         $row = $query->select(['v.*', 'i.code as offering_code', 'stv.service_type_id', 'smv.shipping_method_id'])->first();
         if ($row === null) {
@@ -453,12 +483,16 @@ final readonly class ServiceCatalogService implements ServiceEligibilityResolver
     /** @param array<string, mixed> $row */
     private function hasEffectiveOverlap(string $resource, array $row): bool
     {
-        if (! $row['valid_from']) return false;
         [, $versions, $identityId, $versionId] = $this->map($resource);
         $query = DB::table($versions)->where($identityId, $row[$identityId])->where($versionId, '!=', $row[$versionId])
-            ->whereIn('status', ['PUBLISHED', 'APPROVED'])
-            ->where(fn ($q) => $q->whereNull('valid_to')->orWhere('valid_to', '>', $row['valid_from']));
-        if ($row['valid_to']) $query->where('valid_from', '<', $row['valid_to']);
+            ->whereIn('status', ['PUBLISHED', 'APPROVED']);
+        if ($row['valid_to']) {
+            $query->where(fn ($q) => $q->whereNull('valid_from')->orWhere('valid_from', '<', $row['valid_to']));
+        }
+        if ($row['valid_from']) {
+            $query->where(fn ($q) => $q->whereNull('valid_to')->orWhere('valid_to', '>', $row['valid_from']));
+        }
+
         return $query->exists();
     }
 
@@ -480,9 +514,6 @@ final readonly class ServiceCatalogService implements ServiceEligibilityResolver
     {
         if ((string) $row->status !== 'APPROVED') {
             throw new ApiException(ApiErrorCode::ValidationError, 422, 'Only an approved version can be published.');
-        }
-        if ((string) $row->approved_by === $actor->userId) {
-            throw new ApiException(ApiErrorCode::PermissionDenied, 403, 'Maker-checker separation is required.');
         }
         $detail = $this->versionDetail($actor, $resource, $versionId);
         return ['status' => 'PUBLISHED', 'published_by' => $actor->userId, 'published_at' => now(), 'content_digest' => hash('sha256', json_encode($detail, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE))];

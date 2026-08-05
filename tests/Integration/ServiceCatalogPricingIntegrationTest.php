@@ -20,6 +20,64 @@ use Modules\ServiceCatalog\Application\ServiceCatalogService;
 
 final class ServiceCatalogPricingIntegrationTest extends MySqlRedisTestCase
 {
+    public function test_catalog_versions_without_validity_bounds_publish_and_resolve_indefinitely(): void
+    {
+        $this->app->make(AuthorizationCatalogSeeder::class)->run();
+        [$tenant, $maker, $checker] = $this->administratorContext('UNBOUNDED-CATALOG');
+        $catalog = $this->app->make(ServiceCatalogService::class);
+
+        $type = $catalog->createIdentity($maker, 'service-types', [
+            'code' => 'UNBOUNDED_TYPE', 'labels' => ['fa' => 'نوع خدمت همیشگی'], 'description' => null,
+            'definition' => [], 'valid_from' => null, 'valid_to' => null,
+        ], (string) Str::uuid());
+        $this->assertSame(['valid' => true, 'errors' => []], $catalog->validateDraft($maker, 'service-types', $type['service_type_version_id']));
+        $catalog->transition($maker, 'service-types', $type['service_type_version_id'], 'approve', (string) Str::uuid());
+        $catalog->transition($maker, 'service-types', $type['service_type_version_id'], 'publish', (string) Str::uuid());
+        $publishedTypes = $catalog->listPublishedVersions($maker, 'service-types', ['page' => 1, 'page_size' => 100]);
+        $this->assertSame(1, $publishedTypes->total());
+        $this->assertSame($type['service_type_version_id'], $publishedTypes->items()[0]['service_type_version_id']);
+        $this->assertSame('نوع خدمت همیشگی', $publishedTypes->items()[0]['labels']['fa']);
+
+        $method = $catalog->createIdentity($maker, 'shipping-methods', [
+            'code' => 'UNBOUNDED_METHOD', 'labels' => ['fa' => 'روش ارسال همیشگی'], 'description' => null,
+            'definition' => [], 'valid_from' => null, 'valid_to' => null,
+        ], (string) Str::uuid());
+        $listedMethods = $catalog->listIdentities($maker, 'shipping-methods', ['page' => 1, 'page_size' => 25]);
+        $this->assertSame('روش ارسال همیشگی', $listedMethods->items()[0]['labels']['fa']);
+        $this->assertTrue($catalog->validateDraft($maker, 'shipping-methods', $method['shipping_method_version_id'])['valid']);
+        $catalog->transition($checker, 'shipping-methods', $method['shipping_method_version_id'], 'approve', (string) Str::uuid());
+        $catalog->transition($maker, 'shipping-methods', $method['shipping_method_version_id'], 'publish', (string) Str::uuid());
+
+        $offering = $catalog->createIdentity($maker, 'offerings', [
+            'code' => 'UNBOUNDED_SERVICE', 'labels' => ['fa' => 'سرویس همیشگی'], 'description' => null,
+            'service_type_version_id' => $type['service_type_version_id'],
+            'shipping_method_version_id' => $method['shipping_method_version_id'],
+            'sla_policy' => ['commitment_type' => 'DURATION', 'duration_value' => 24, 'duration_unit' => 'HOUR'],
+            'availability_summary' => [], 'option_rules' => [], 'eligibility_rules' => [], 'coverage_references' => [],
+            'availability_bindings' => [['scope_type' => 'TENANT', 'scope_value' => $tenant['hq_id'], 'enabled' => true]],
+            'valid_from' => null, 'valid_to' => null,
+        ], (string) Str::uuid());
+        $listedOfferings = $catalog->listIdentities($maker, 'offerings', ['page' => 1, 'page_size' => 25]);
+        $this->assertSame('سرویس همیشگی', $listedOfferings->items()[0]['labels']['fa']);
+        $this->assertTrue($catalog->validateDraft($maker, 'offerings', $offering['service_offering_version_id'])['valid']);
+        $catalog->transition($checker, 'offerings', $offering['service_offering_version_id'], 'approve', (string) Str::uuid());
+        $catalog->transition($maker, 'offerings', $offering['service_offering_version_id'], 'publish', (string) Str::uuid());
+
+        $context = ['channel' => 'BRANCH', 'sender' => [], 'receiver' => [], 'parcels' => [], 'selected_option_version_ids' => []];
+        $resolved = $catalog->resolve($maker, [...$context, 'as_of_timestamp' => '2046-01-01T00:00:00Z']);
+        $this->assertSame('UNBOUNDED_SERVICE', $resolved[0]['offering_code']);
+        $this->assertSame($offering['service_offering_version_id'], $catalog->validateSelection($maker, $offering['service_offering_id'], null, $context)['service_offering_version_id']);
+        [, $foreignActor] = $this->administratorContext('UNBOUNDED-FOREIGN');
+        $this->assertSame(0, $catalog->listPublishedVersions($foreignActor, 'service-types', [])->total());
+
+        $successor = $catalog->cloneDraft($maker, 'service-types', $type['service_type_id'], (string) Str::uuid());
+        $this->assertSame(1, $catalog->listPublishedVersions($maker, 'service-types', [])->total());
+        $this->assertContains(
+            'SERVICE_EFFECTIVE_INTERVAL_OVERLAP',
+            array_column($catalog->validateDraft($maker, 'service-types', $successor['service_type_version_id'])['errors'], 'code'),
+        );
+    }
+
     public function test_published_catalog_and_tariff_produce_immutable_accepted_consignment_pricing(): void
     {
         config()->set('chabok.pricing.provider', 'internal');

@@ -11,6 +11,7 @@ Route::prefix('api/v1')->middleware(['api', 'access.auth', 'password.changed'])-
     Route::post('/services/{offeringId}/commitments', [ServiceCatalogController::class, 'commitments'])->whereUuid('offeringId');
     Route::prefix('admin/service-catalog')->group(function (): void {
         Route::get('/audit', [ServiceCatalogController::class, 'audit']);
+        Route::get('/{resource}/published-versions', [ServiceCatalogController::class, 'publishedVersions'])->whereIn('resource', ['service-types', 'shipping-methods', 'offerings', 'options']);
         Route::get('/{resource}', [ServiceCatalogController::class, 'index'])->whereIn('resource', ['service-types', 'shipping-methods', 'offerings', 'options']);
         Route::post('/{resource}', [ServiceCatalogController::class, 'store'])->whereIn('resource', ['service-types', 'shipping-methods', 'offerings', 'options']);
         Route::post('/{resource}/identities/{identityId}/versions', [ServiceCatalogController::class, 'clone'])->whereUuid('identityId');
