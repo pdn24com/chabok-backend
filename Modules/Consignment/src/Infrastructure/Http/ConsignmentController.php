@@ -19,6 +19,8 @@ final readonly class ConsignmentController
 {
     private const DRAFT_FIELDS = [
         'sender', 'receiver', 'service_type_id', 'shipping_method_id',
+        'service_offering_id', 'service_offering_version_id',
+        'selected_option_version_ids',
         'pickup_commitment_at', 'delivery_commitment_at', 'weight_kg',
         'width_cm', 'length_cm', 'height_cm', 'declared_value_amount',
         'insurance_enabled', 'insurance_value_amount', 'cod_enabled',
