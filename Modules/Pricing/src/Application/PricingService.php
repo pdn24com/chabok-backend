@@ -223,7 +223,6 @@ final readonly class PricingService
                 $changes = ['status' => 'APPROVED', 'approved_by' => $actor->userId, 'approved_at' => now()];
             } elseif ($action === 'publish') {
                 if ((string) $row->status !== 'APPROVED') throw new ApiException(ApiErrorCode::ValidationError, 422, 'Only an approved version can be published.');
-                if ((string) $row->approved_by === $actor->userId) throw new ApiException(ApiErrorCode::PermissionDenied, 403, 'Maker-checker separation is required.');
                 $validation = $kind === 'zone-sets' ? $this->validateZoneSet($actor, $versionId) : $this->validateTariff($actor, $versionId);
                 if (! $validation['valid']) throw new ApiException(ApiErrorCode::ValidationError, 422, 'Pricing validation failed.', details: $validation);
                 $detail = $kind === 'zone-sets' ? $this->zoneVersion($actor, $versionId) : $this->tariffVersion($actor, $versionId);

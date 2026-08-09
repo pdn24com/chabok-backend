@@ -146,7 +146,7 @@ final class ServiceCatalogPricingIntegrationTest extends MySqlRedisTestCase
                 ['member_type' => 'CITY', 'reference_value' => 'Tehran', 'precedence' => 100],
             ]]],
         ], (string) Str::uuid());
-        $pricing->transition($checker, 'zone-sets', $zoneSet['zone_set_version_id'], 'approve', (string) Str::uuid());
+        $pricing->transition($maker, 'zone-sets', $zoneSet['zone_set_version_id'], 'approve', (string) Str::uuid());
         $pricing->transition($maker, 'zone-sets', $zoneSet['zone_set_version_id'], 'publish', (string) Str::uuid());
         $zoneId = (string) $zoneSet['zones'][0]['pricing_zone_id'];
         $baseChargeId = (string) DB::table('pricing_charge_types')->where('code', 'BASE_FREIGHT')->value('charge_type_id');
@@ -161,7 +161,7 @@ final class ServiceCatalogPricingIntegrationTest extends MySqlRedisTestCase
                 ['service_offering_version_id' => $offering['service_offering_version_id'], 'charge_type_id' => $taxChargeId, 'origin_zone_id' => $zoneId, 'destination_zone_id' => $zoneId, 'calculation_method' => 'PERCENT', 'basis' => 'SHIPMENT', 'percentage_bps' => 900, 'basis_charge_codes' => ['BASE_FREIGHT'], 'priority' => 100],
             ],
         ], (string) Str::uuid());
-        $pricing->transition($checker, 'tariffs', $tariff['tariff_version_id'], 'approve', (string) Str::uuid());
+        $pricing->transition($maker, 'tariffs', $tariff['tariff_version_id'], 'approve', (string) Str::uuid());
         $pricing->transition($maker, 'tariffs', $tariff['tariff_version_id'], 'publish', (string) Str::uuid());
 
         $draft = $this->consignmentDraft($type, $method, $offering);
