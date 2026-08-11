@@ -1,35 +1,46 @@
-# Chabok backend workspace
+# Chabok platform backend
 
-S0-01 establishes the Laravel 13/PHP 8.3 modular-monolith toolchain and the non-production `ArchitectureProof` module required by ADR-008.
+Laravel modular-monolith backend for the Chabok logistics platform.
 
-The workspace intentionally contains no IAM implementation, production migration, seed, controller, repository, authentication flow, or product endpoint.
+Implemented modules include Foundation/IAM, Consignment, Manifest, Dashboard,
+Service Catalog and Pricing. The application uses MySQL, Redis, transactional
+outbox processing, tenant-scoped authorization and versioned `/api/v1` routes.
 
-## Toolchain proof
+## Local setup with Docker
 
-Run from the repository root:
+Clone `chabok-platform-infrastructure` beside this repository, then run from
+the infrastructure repository:
 
-```text
+```powershell
 docker compose build backend
 docker compose run --rm --no-deps backend composer install
-docker compose run --rm --no-deps backend composer dump-autoload --optimize
-docker compose run --rm --no-deps backend php artisan module:list
-docker compose run --rm --no-deps backend php artisan test Modules/ArchitectureProof/tests/Unit/ArchitectureProofTest.php
+docker compose up -d backend
+docker compose exec backend php artisan migrate --seed
 ```
 
-The root Composer manifest loads `Modules/*/composer.json` through Composer Merge Plugin. It deliberately has no root `Modules\\` PSR-4 mapping.
+Do not commit `.env`, application keys, JWT secrets, database credentials or
+legacy-provider credentials. Use `.env.example` only as a variable reference.
 
-## Local Branch Panel login
+## Validation
 
-Production seeds intentionally create no users or reusable credentials. For a
-local login, run the local-only command below and enter a password at its hidden
-prompt:
+Inside the backend container:
 
-```text
+```powershell
+php artisan test
+./vendor/bin/phpunit --configuration=phpunit.integration.xml
+php artisan route:list --path=api/v1
+```
+
+The integration suite requires the isolated MySQL and Redis services from the
+infrastructure repository's `testing` profile.
+
+## Local Branch Panel account
+
+Production seeds create no reusable users. For local inspection only:
+
+```powershell
 docker compose exec backend php artisan chabok:local-user
 ```
 
-The default identifier is `branch.manager.local`. The command creates or
-updates an active local HQ, branch, Branch Manager assignment, module
-entitlements, and password credential. It is blocked outside `local` and
-`testing` environments, is safe to rerun, and never writes the password into
-source control.
+The command is blocked outside local/testing environments and accepts the
+password through a hidden prompt.
