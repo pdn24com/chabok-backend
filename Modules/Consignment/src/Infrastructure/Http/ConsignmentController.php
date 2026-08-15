@@ -29,7 +29,7 @@ final readonly class ConsignmentController
 
     private const CONTACT_FIELDS = [
         'address_book_entry_id', 'contact_name', 'mobile', 'phone',
-        'address_text', 'country', 'state', 'city', 'postal_code',
+        'address_text', 'country', 'state', 'city', 'city_id', 'postal_code',
         'latitude', 'longitude',
     ];
 
@@ -129,7 +129,7 @@ final readonly class ConsignmentController
     public function update(Request $request, string $consignmentId): JsonResponse
     {
         $allowed = [
-            'expected_version', 'change_reason', 'note', 'receiver',
+            'expected_version', 'change_reason', 'note', 'sender', 'receiver',
             'service_type_id', 'shipping_method_id', 'pickup_commitment_at',
             'delivery_commitment_at', 'weight_kg', 'width_cm', 'length_cm',
             'height_cm', 'declared_value_amount', 'insurance_enabled',
@@ -137,12 +137,14 @@ final readonly class ConsignmentController
             'accepted_quote',
         ];
         StrictPayload::assertOnly($request, $allowed);
+        $this->assertContactOnly($request->input('sender'), 'sender');
         $this->assertContactOnly($request->input('receiver'), 'receiver');
         $this->assertAcceptedQuoteOnly($request->input('accepted_quote'));
         $input = $request->validate([
             'expected_version' => ['required', 'integer', 'min:1'],
             'change_reason' => ['required', 'string', 'max:160'],
             'note' => ['sometimes', 'nullable', 'string', 'max:1000'],
+            ...$this->contactRules('sender', false),
             ...$this->contactRules('receiver', false),
             'service_type_id' => ['sometimes', 'uuid'],
             'shipping_method_id' => ['sometimes', 'uuid'],
@@ -220,8 +222,9 @@ final readonly class ConsignmentController
             "{$prefix}.phone" => ['sometimes', 'nullable', 'string', 'max:32'],
             "{$prefix}.address_text" => [$required ? 'required' : 'sometimes', 'string', 'max:1000'],
             "{$prefix}.country" => ['sometimes', 'nullable', 'string', 'max:120'],
-            "{$prefix}.state" => [$required ? 'required' : 'sometimes', 'string', 'max:160'],
-            "{$prefix}.city" => [$required ? 'required' : 'sometimes', 'string', 'max:160'],
+            "{$prefix}.state" => ['sometimes', 'nullable', 'string', 'max:160'],
+            "{$prefix}.city" => ['sometimes', 'nullable', 'string', 'max:160'],
+            "{$prefix}.city_id" => [$required ? 'required' : 'sometimes', 'uuid'],
             "{$prefix}.postal_code" => ['sometimes', 'nullable', 'string', 'max:32'],
             "{$prefix}.latitude" => ['sometimes', 'nullable', 'numeric', 'between:-90,90'],
             "{$prefix}.longitude" => ['sometimes', 'nullable', 'numeric', 'between:-180,180'],

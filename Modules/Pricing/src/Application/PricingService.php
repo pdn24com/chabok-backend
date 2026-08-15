@@ -15,6 +15,8 @@ use Modules\Foundation\Application\Contracts\TransactionManager;
 use Modules\Foundation\Domain\ApiErrorCode;
 use Modules\Foundation\Domain\ApiException;
 use Modules\Foundation\Domain\AuthenticatedPrincipal;
+use Modules\Geography\Application\GeographyResolver;
+use Modules\Geography\Domain\PersianSearchNormalizer;
 use Modules\Pricing\Domain\DeterministicCalculator;
 use Modules\ServiceCatalog\Application\Contracts\ServiceEligibilityResolver;
 
@@ -27,6 +29,8 @@ final readonly class PricingService
         private TransactionManager $transactions,
         private AuditWriter $audit,
         private OutboxWriter $outbox,
+        private GeographyResolver $geography,
+        private PersianSearchNormalizer $normalizer,
     ) {}
 
     /** @param array<string,mixed> $filters */
@@ -202,7 +206,7 @@ final readonly class PricingService
         if ($this->hasVersionOverlap('pricing_zone_set_versions', 'pricing_zone_set_id', $version)) $errors[] = ['code' => 'PRICING_EFFECTIVE_INTERVAL_OVERLAP', 'field' => 'valid_from'];
         if ($version['zones'] === []) $errors[] = ['code' => 'PRICING_ZONE_REQUIRED', 'field' => 'zones'];
         $members = collect($version['zones'])->flatMap(fn ($zone) => collect($zone['members'])->map(fn ($member) => [...$member, 'pricing_zone_id' => $zone['pricing_zone_id']]));
-        $ambiguous = $members->groupBy(fn ($member) => implode('|', [$member['member_type'], mb_strtolower((string) $member['reference_value']), (string) ($member['range_end'] ?? ''), $member['precedence']]))
+        $ambiguous = $members->groupBy(fn ($member) => implode('|', [$member['member_type'], (string) ($member['city_id'] ?? $member['province_id'] ?? mb_strtolower((string) $member['reference_value'])), (string) ($member['range_end'] ?? ''), $this->memberPrecedence((string) $member['member_type'])]))
             ->contains(fn ($group) => $group->pluck('pricing_zone_id')->unique()->count() > 1);
         if ($ambiguous) $errors[] = ['code' => 'PRICING_ZONE_AMBIGUOUS', 'field' => 'zones'];
         return ['valid' => $errors === [], 'errors' => $errors];
@@ -348,7 +352,7 @@ final readonly class PricingService
     {
         $row = DB::table('pricing_zone_set_versions as v')->join('pricing_zone_sets as s', 's.pricing_zone_set_id', '=', 'v.pricing_zone_set_id')->where('v.zone_set_version_id', $versionId)->where(fn ($q) => $q->whereNull('s.hq_id')->orWhere('s.hq_id', $actor->hqId))->select(['v.*', 's.code', 's.title', 's.purpose'])->first();
         if ($row === null) throw new ApiException(ApiErrorCode::ResourceNotFound, 404, 'Resource not found.');
-        $result = (array) $row; $result['zones'] = DB::table('pricing_zones')->where('zone_set_version_id', $versionId)->get()->map(function ($z) { $zone = (array) $z; $zone['members'] = DB::table('pricing_zone_members')->where('pricing_zone_id', $z->pricing_zone_id)->get()->map(fn ($m) => (array) $m)->all(); return $zone; })->all(); return $result;
+        $result = (array) $row; $result['zones'] = DB::table('pricing_zones')->where('zone_set_version_id', $versionId)->get()->map(function ($z) { $zone = (array) $z; $zone['members'] = DB::table('pricing_zone_members as m')->leftJoin('cities as c', 'c.city_id', '=', 'm.city_id')->leftJoin('provinces as p', 'p.province_id', '=', 'm.province_id')->where('m.pricing_zone_id', $z->pricing_zone_id)->select('m.*', 'c.name_fa as city_name_fa', 'c.legacy_city_code', 'p.name_fa as province_name_fa', 'p.legacy_province_code')->get()->map(fn ($m) => (array) $m)->all(); return $zone; })->all(); return $result;
     }
 
     /** @return array<string,mixed> */
@@ -363,7 +367,20 @@ final readonly class PricingService
     private function replaceZones(string $versionId, array $zones): void
     {
         DB::table('pricing_zones')->where('zone_set_version_id', $versionId)->delete();
-        foreach ($zones as $zone) { $zoneId = (string) Str::uuid(); DB::table('pricing_zones')->insert(['pricing_zone_id' => $zoneId, 'zone_set_version_id' => $versionId, 'code' => Str::upper($zone['code']), 'title' => $zone['title'], 'remote_area' => $zone['remote_area'] ?? false]); foreach ((array) ($zone['members'] ?? []) as $member) DB::table('pricing_zone_members')->insert(['zone_member_id' => (string) Str::uuid(), 'pricing_zone_id' => $zoneId, 'member_type' => $member['member_type'], 'reference_value' => $member['reference_value'], 'range_end' => $member['range_end'] ?? null, 'precedence' => $member['precedence'] ?? match ($member['member_type']) { 'EXPLICIT_OVERRIDE' => 300, 'POSTAL_RANGE' => 200, default => 100 }]); }
+        foreach ($zones as $zone) {
+            $zoneId = (string) Str::uuid();
+            DB::table('pricing_zones')->insert(['pricing_zone_id' => $zoneId, 'zone_set_version_id' => $versionId, 'code' => Str::upper($zone['code']), 'title' => $zone['title'], 'remote_area' => $zone['remote_area'] ?? false]);
+            foreach ((array) ($zone['members'] ?? []) as $member) {
+                $type = (string) $member['member_type'];
+                $cityId = $type === 'CITY' ? $this->canonicalCityMemberId($member) : null;
+                $provinceId = $type === 'PROVINCE' ? (string) ($member['province_id'] ?? '') : null;
+                if ($type === 'PROVINCE' && ($provinceId === '' || ! DB::table('provinces')->where('province_id', $provinceId)->where('is_active', true)->exists())) {
+                    throw new ApiException(ApiErrorCode::ValidationError, 422, 'Zone member province is inactive or invalid.');
+                }
+                $reference = $cityId ?? $provinceId ?? (string) ($member['reference_value'] ?? '');
+                DB::table('pricing_zone_members')->insert(['zone_member_id' => (string) Str::uuid(), 'pricing_zone_id' => $zoneId, 'member_type' => $type, 'reference_value' => $reference, 'city_id' => $cityId, 'province_id' => $provinceId, 'range_end' => $member['range_end'] ?? null, 'precedence' => $this->memberPrecedence($type)]);
+            }
+        }
     }
 
     /** @param list<array<string,mixed>> $rules */
@@ -376,12 +393,12 @@ final readonly class PricingService
     /** @param array<string,mixed> $party @return array{array<string,mixed>,array<string,mixed>} */
     private function resolveZone(string $versionId, array $party): array
     {
-        $members = DB::table('pricing_zone_members as m')->join('pricing_zones as z', 'z.pricing_zone_id', '=', 'm.pricing_zone_id')->where('z.zone_set_version_id', $versionId)->orderByDesc('m.precedence')->get(); $matches = [];
-        foreach ($members as $m) { $matchesMember = match ($m->member_type) { 'EXPLICIT_OVERRIDE' => ($party['zone_override'] ?? null) === $m->reference_value, 'CITY' => isset($party['city']) && mb_strtolower((string) $party['city']) === mb_strtolower((string) $m->reference_value), 'POSTAL_RANGE' => isset($party['postal_code']) && strcmp((string) $party['postal_code'], (string) $m->reference_value) >= 0 && strcmp((string) $party['postal_code'], (string) $m->range_end) <= 0, default => false }; if ($matchesMember) $matches[] = $m; }
+        $members = DB::table('pricing_zone_members as m')->join('pricing_zones as z', 'z.pricing_zone_id', '=', 'm.pricing_zone_id')->where('z.zone_set_version_id', $versionId)->get(); $matches = [];
+        foreach ($members as $m) { $matchesMember = match ($m->member_type) { 'EXPLICIT_OVERRIDE' => ($party['zone_override'] ?? null) === $m->reference_value, 'POSTAL_RANGE' => isset($party['postal_code']) && strcmp((string) $party['postal_code'], (string) $m->reference_value) >= 0 && strcmp((string) $party['postal_code'], (string) $m->range_end) <= 0, 'CITY' => $m->city_id !== null ? ($party['city_id'] ?? null) === $m->city_id : isset($party['city']) && $this->normalizer->normalize((string) $party['city']) === $this->normalizer->normalize((string) $m->reference_value), 'PROVINCE' => $m->province_id !== null ? ($party['province_id'] ?? null) === $m->province_id : isset($party['state']) && $this->normalizer->normalize((string) $party['state']) === $this->normalizer->normalize((string) $m->reference_value), default => false }; if ($matchesMember) { $m->effective_precedence = $this->memberPrecedence((string) $m->member_type); $matches[] = $m; } }
         if ($matches === []) throw new ApiException(ApiErrorCode::PricingZoneUnresolved, 422, 'Pricing zone could not be resolved.', details: ['reason_code' => 'PRICING_ZONE_UNRESOLVED']);
-        $top = $matches[0]->precedence; $winners = array_values(array_filter($matches, fn ($m) => $m->precedence === $top));
+        usort($matches, fn ($left, $right) => $right->effective_precedence <=> $left->effective_precedence); $top = $matches[0]->effective_precedence; $winners = array_values(array_filter($matches, fn ($m) => $m->effective_precedence === $top));
         if (count(array_unique(array_map(fn ($m) => $m->pricing_zone_id, $winners))) > 1) throw new ApiException(ApiErrorCode::PricingZoneAmbiguous, 422, 'Pricing zone is ambiguous.', details: ['reason_code' => 'PRICING_ZONE_AMBIGUOUS']);
-        $winner = $winners[0]; return [['pricing_zone_id' => $winner->pricing_zone_id, 'code' => $winner->code, 'remote_area' => (bool) $winner->remote_area], ['member_id' => $winner->zone_member_id, 'member_type' => $winner->member_type, 'precedence' => $winner->precedence]];
+        $winner = $winners[0]; return [['pricing_zone_id' => $winner->pricing_zone_id, 'code' => $winner->code, 'remote_area' => (bool) $winner->remote_area], ['member_id' => $winner->zone_member_id, 'member_type' => $winner->member_type, 'precedence' => $winner->effective_precedence]];
     }
 
     /** @param array<string,mixed> $input @param array<string,mixed> $tariff @param array<string,mixed> $destination @return array<string,float|int|bool|string> */
@@ -402,7 +419,23 @@ final readonly class PricingService
     /** @param array<string,mixed> $input @return array<string,mixed> */
     private function normalize(array $input): array
     {
-        unset($input['_hq_id'], $input['_node_id'], $input['_actor_user_id'], $input['_actor_session_id'], $input['_pricing_request_id']); $input['purpose'] = $input['purpose'] ?? 'SALES'; $input['channel'] = $input['channel'] ?? 'BRANCH'; $input['as_of_timestamp'] = CarbonImmutable::parse((string) ($input['as_of_timestamp'] ?? now()->toISOString()))->utc()->toISOString(); $input['selected_option_version_ids'] = array_values((array) ($input['selected_option_version_ids'] ?? [])); return $input;
+        unset($input['_hq_id'], $input['_node_id'], $input['_actor_user_id'], $input['_actor_session_id'], $input['_pricing_request_id']); foreach (['sender', 'receiver'] as $party) { $input[$party] = $this->geography->canonicalizeContact((array) ($input[$party] ?? []), false); unset($input[$party]['city_reference']); } $input['purpose'] = $input['purpose'] ?? 'SALES'; $input['channel'] = $input['channel'] ?? 'BRANCH'; $input['as_of_timestamp'] = CarbonImmutable::parse((string) ($input['as_of_timestamp'] ?? now()->toISOString()))->utc()->toISOString(); $input['selected_option_version_ids'] = array_values((array) ($input['selected_option_version_ids'] ?? [])); return $input;
+    }
+
+    /** @param array<string,mixed> $member */
+    private function canonicalCityMemberId(array $member): string
+    {
+        $cityId = (string) ($member['city_id'] ?? '');
+        if ($cityId !== '' && DB::table('cities')->where('city_id', $cityId)->where('is_active', true)->exists()) return $cityId;
+        $legacyName = trim((string) ($member['reference_value'] ?? ''));
+        $matches = DB::table('cities')->where('normalized_name', $this->normalizer->normalize($legacyName))->where('is_active', true)->pluck('city_id');
+        if ($matches->count() !== 1) throw new ApiException(ApiErrorCode::ValidationError, 422, 'Legacy CITY member cannot be mapped unambiguously to canonical Geography.');
+        return (string) $matches->first();
+    }
+
+    private function memberPrecedence(string $type): int
+    {
+        return match ($type) { 'EXPLICIT_OVERRIDE' => 400, 'POSTAL_RANGE' => 300, 'CITY' => 200, 'PROVINCE' => 100, default => 0 };
     }
 
     private function databaseTimestamp(mixed $value): ?string

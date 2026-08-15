@@ -14,12 +14,15 @@ use Modules\Consignment\Application\PricingService;
 use Modules\Foundation\Domain\ApiErrorCode;
 use Modules\Foundation\Domain\ApiException;
 use Modules\Foundation\Domain\AuthenticatedPrincipal;
+use Modules\Geography\Domain\GeographyIds;
+use Modules\Geography\Infrastructure\Database\Seeders\IranGeographySeeder;
 
 final class ConsignmentIntegrationTest extends MySqlRedisTestCase
 {
     protected function setUp(): void
     {
         parent::setUp();
+        $this->app->make(IranGeographySeeder::class)->run();
         $this->app->make(AuthorizationCatalogSeeder::class)->run();
         $this->app->instance(PricingQuoteProvider::class, new class implements PricingQuoteProvider {
             public function calculate(array $normalizedInput): array
@@ -253,6 +256,37 @@ final class ConsignmentIntegrationTest extends MySqlRedisTestCase
         $this->assertDatabaseHas('outbox_events', ['aggregate_id' => $created['consignment_id'], 'event_type' => 'consignment.pricing.stale']);
     }
 
+    public function test_inactive_canonical_city_is_rejected_and_legacy_snapshots_remain_readable(): void
+    {
+        [, , $node, $principal] = $this->branchContext('CONSIGN-GEO', 'manager-geo');
+        $draft = $this->draft();
+        DB::table('cities')->where('city_id', GeographyIds::city('10866'))->update(['is_active' => false]);
+        try {
+            $this->app->make(PricingService::class)->calculate($principal, $node, 'CREATE', $draft, null, null);
+            $this->fail('Inactive cities must be rejected before pricing.');
+        } catch (ApiException $exception) {
+            $this->assertSame(ApiErrorCode::ValidationError, $exception->errorCode);
+        }
+
+        DB::table('cities')->where('city_id', GeographyIds::city('10866'))->update(['is_active' => true]);
+        $pricing = $this->app->make(PricingService::class);
+        $quote = $pricing->calculate($principal, $node, 'CREATE', $draft, null, null);
+        $created = $this->app->make(ConsignmentService::class)->create($principal, $node, [...$draft, 'accepted_quote' => [
+            'quote_id' => $quote['quote_id'], 'quote_version' => 1, 'option_id' => $quote['options'][0]['option_id'],
+        ]], (string) Str::uuid());
+        $this->assertSame('10866', $created['sender']['city_reference']['legacy_city_code']);
+        $this->assertSame('تهران', $created['sender']['city']);
+
+        DB::table('consignments')->where('consignment_id', $created['consignment_id'])->update([
+            'sender_city_id' => null,
+            'receiver_city_id' => null,
+        ]);
+        $legacy = $this->app->make(ConsignmentService::class)->get($principal, $node, $created['consignment_id']);
+        $this->assertNull($legacy['sender']['city_id']);
+        $this->assertNull($legacy['sender']['city_reference']);
+        $this->assertSame('تهران', $legacy['sender']['city']);
+    }
+
     public function test_api_envelopes_idempotency_validation_and_real_route_integration(): void
     {
         $context = $this->branchContext('CONSIGN-API', 'manager-api');
@@ -378,6 +412,7 @@ final class ConsignmentIntegrationTest extends MySqlRedisTestCase
                 'contact_name' => 'Sender',
                 'mobile' => '09120000001',
                 'address_text' => 'Sender address',
+                'city_id' => GeographyIds::city('10866'),
                 'state' => 'Tehran',
                 'city' => 'Tehran',
             ],
@@ -385,6 +420,7 @@ final class ConsignmentIntegrationTest extends MySqlRedisTestCase
                 'contact_name' => 'Receiver',
                 'mobile' => '09120000002',
                 'address_text' => 'Receiver address',
+                'city_id' => GeographyIds::city('10866'),
                 'state' => 'Tehran',
                 'city' => 'Tehran',
             ],

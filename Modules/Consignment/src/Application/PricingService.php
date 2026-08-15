@@ -14,6 +14,7 @@ use Modules\Foundation\Application\Contracts\AuthorizationContextResolver;
 use Modules\Foundation\Domain\ApiErrorCode;
 use Modules\Foundation\Domain\ApiException;
 use Modules\Foundation\Domain\AuthenticatedPrincipal;
+use Modules\Geography\Application\GeographyResolver;
 
 final readonly class PricingService
 {
@@ -22,6 +23,7 @@ final readonly class PricingService
         private QuoteBundleStore $store,
         private AuthorizationContextResolver $authorization,
         private ConsignmentPolicy $policy,
+        private GeographyResolver $geography,
     ) {}
 
     /** @param array<string, mixed> $input
@@ -176,7 +178,8 @@ final readonly class PricingService
     private function normalized(array $input): array
     {
         foreach (['sender', 'receiver'] as $party) {
-            $contact = (array) ($input[$party] ?? []);
+            $contact = $this->geography->canonicalizeContact((array) ($input[$party] ?? []), true);
+            unset($contact['city_reference']);
             foreach ([
                 'address_book_entry_id', 'phone', 'country', 'postal_code',
                 'latitude', 'longitude',

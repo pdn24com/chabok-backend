@@ -63,6 +63,9 @@ final class LegacyPricingAdapterIntegrationTest extends MySqlRedisTestCase
         $this->assertStringNotContainsString($freshToken, $encrypted);
         $this->assertSame($freshToken, Crypt::decryptString($encrypted));
         Http::assertSentCount(3);
+        Http::assertSent(fn (Request $request): bool => str_ends_with((string) parse_url($request->url(), PHP_URL_PATH), '/getQuote')
+            && ($request->data()['order']['origin'] ?? null) === '10866'
+            && ($request->data()['order']['destination'] ?? null) === '11944');
     }
 
     public function test_login_rejection_fails_closed_without_quote_or_credential_disclosure(): void
@@ -173,7 +176,8 @@ final class LegacyPricingAdapterIntegrationTest extends MySqlRedisTestCase
         return [
             '_node_id' => $nodeId,
             '_hq_id' => $hqId,
-            'receiver' => ['country' => 'IR', 'state' => 'Tehran', 'city' => 'Tehran'],
+            'sender' => ['country' => 'IR', 'state' => 'Tehran', 'city' => 'Tehran', 'legacy_city_code' => '10866'],
+            'receiver' => ['country' => 'IR', 'state' => 'Tehran', 'city' => 'Tehran', 'legacy_city_code' => '11944'],
             'pickup_commitment_at' => '2026-08-01T11:00:00Z',
             'declared_value_amount' => 2000000,
             'weight_kg' => 1,

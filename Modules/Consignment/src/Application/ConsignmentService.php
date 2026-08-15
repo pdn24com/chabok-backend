@@ -18,6 +18,7 @@ use Modules\Foundation\Application\Contracts\TransactionManager;
 use Modules\Foundation\Domain\ApiErrorCode;
 use Modules\Foundation\Domain\ApiException;
 use Modules\Foundation\Domain\AuthenticatedPrincipal;
+use Modules\Geography\Application\GeographyResolver;
 
 final readonly class ConsignmentService
 {
@@ -29,6 +30,7 @@ final readonly class ConsignmentService
         private PricingService $pricing,
         private ConsignmentPolicy $policy,
         private ConsignmentNumberAllocator $numbers,
+        private GeographyResolver $geography,
     ) {}
 
     /** @param array<string, mixed> $filters */
@@ -140,6 +142,9 @@ final readonly class ConsignmentService
         $context = $this->assertAccess($actor, $nodeId, 'consignment.create');
         $acceptedInput = (array) $input['accepted_quote'];
         unset($input['accepted_quote']);
+        foreach (['sender', 'receiver'] as $party) {
+            $input[$party] = $this->geography->canonicalizeContact((array) $input[$party], true);
+        }
         $this->policy->assertCommercialConsistency($input);
         $accepted = $this->pricing->accept($actor, $nodeId, 'CREATE', $input, $acceptedInput);
         if (($accepted['provider_code'] ?? null) === 'INTERNAL') {
@@ -299,6 +304,9 @@ final readonly class ConsignmentService
             }
             $this->policy->assertEditable((string) $row->current_status, (array) config('chabok.consignment.editable_statuses'));
             $draft = array_replace_recursive($this->draftFromRow((array) $row), $changes);
+            foreach (['sender', 'receiver'] as $party) {
+                $draft[$party] = $this->geography->canonicalizeContact((array) $draft[$party], false);
+            }
             $this->policy->assertCommercialConsistency($draft);
             $accepted = $acceptedInput === null ? null : $this->pricing->accept(
                 $actor,
@@ -319,6 +327,7 @@ final readonly class ConsignmentService
                 'consignment_id' => $consignmentId,
                 'version' => $expectedVersion,
             ])->update([
+                ...$this->contactColumns('sender', (array) $draft['sender']),
                 ...$this->contactColumns('receiver', (array) $draft['receiver']),
                 ...$this->commercialColumns($draft),
                 ...($accepted === null ? ['commercial_pricing_state' => 'STALE'] : []),
@@ -664,7 +673,7 @@ final readonly class ConsignmentService
         $result = [];
         foreach ([
             'contact_name', 'mobile', 'phone', 'address_text', 'country', 'state',
-            'city', 'postal_code', 'latitude', 'longitude',
+            'city', 'city_id', 'postal_code', 'latitude', 'longitude',
         ] as $field) {
             $result["{$prefix}_{$field}"] = $contact[$field] ?? null;
         }
@@ -680,13 +689,16 @@ final readonly class ConsignmentService
         $result = ['address_book_entry_id' => null];
         foreach ([
             'contact_name', 'mobile', 'phone', 'address_text', 'country', 'state',
-            'city', 'postal_code', 'latitude', 'longitude',
+            'city', 'city_id', 'postal_code', 'latitude', 'longitude',
         ] as $field) {
             $value = $row["{$prefix}_{$field}"];
             $result[$field] = in_array($field, ['latitude', 'longitude'], true) && $value !== null
                 ? (float) $value
                 : $value;
         }
+        $result['city_reference'] = $this->geography->cityReference(
+            isset($row["{$prefix}_city_id"]) ? (string) $row["{$prefix}_city_id"] : null,
+        );
 
         return $result;
     }

@@ -14,12 +14,20 @@ use Modules\Consignment\Application\PricingService as ConsignmentPricingService;
 use Modules\Foundation\Domain\ApiErrorCode;
 use Modules\Foundation\Domain\ApiException;
 use Modules\Foundation\Domain\AuthenticatedPrincipal;
+use Modules\Geography\Domain\GeographyIds;
+use Modules\Geography\Infrastructure\Database\Seeders\IranGeographySeeder;
 use Modules\Pricing\Application\PricingService;
 use Modules\Pricing\Infrastructure\Database\Seeders\PricingChargeTypeSeeder;
 use Modules\ServiceCatalog\Application\ServiceCatalogService;
 
 final class ServiceCatalogPricingIntegrationTest extends MySqlRedisTestCase
 {
+    protected function setUp(): void
+    {
+        parent::setUp();
+        $this->app->make(IranGeographySeeder::class)->run();
+    }
+
     public function test_catalog_versions_without_validity_bounds_publish_and_resolve_indefinitely(): void
     {
         $this->app->make(AuthorizationCatalogSeeder::class)->run();
@@ -142,9 +150,14 @@ final class ServiceCatalogPricingIntegrationTest extends MySqlRedisTestCase
 
         $zoneSet = $pricing->createZoneSet($maker, [
             'code' => 'LOCAL', 'purpose' => 'SALES', 'title' => 'Local cities', 'valid_from' => $validFrom, 'valid_to' => null,
-            'zones' => [['code' => 'TEHRAN', 'title' => 'Tehran', 'remote_area' => false, 'members' => [
-                ['member_type' => 'CITY', 'reference_value' => 'Tehran', 'precedence' => 100],
-            ]]],
+            'zones' => [
+                ['code' => 'TEHRAN', 'title' => 'Tehran city', 'remote_area' => false, 'members' => [
+                    ['member_type' => 'CITY', 'city_id' => GeographyIds::city('10866')],
+                ]],
+                ['code' => 'TEHRAN_PROVINCE', 'title' => 'Tehran province', 'remote_area' => false, 'members' => [
+                    ['member_type' => 'PROVINCE', 'province_id' => GeographyIds::province('8')],
+                ]],
+            ],
         ], (string) Str::uuid());
         $pricing->transition($maker, 'zone-sets', $zoneSet['zone_set_version_id'], 'approve', (string) Str::uuid());
         $pricing->transition($maker, 'zone-sets', $zoneSet['zone_set_version_id'], 'publish', (string) Str::uuid());
@@ -171,6 +184,7 @@ final class ServiceCatalogPricingIntegrationTest extends MySqlRedisTestCase
         $this->assertCount(2, $quote['options'][0]['charge_lines']);
         $internalQuote = $pricing->quoteDetail($maker, $quote['options'][0]['internal_quote_id']);
         $this->assertSame('PER_PARCEL', $internalQuote['resolution_evidence']['weight']['weight_evidence']);
+        $this->assertSame('CITY', $internalQuote['resolution_evidence']['origin']['member_type']);
         $this->assertSame(1.5, (float) $internalQuote['resolution_evidence']['weight']['billable_weight_kg']);
         $created = $this->app->make(ConsignmentService::class)->create($maker, $nodeId, [...$draft, 'accepted_quote' => [
             'quote_id' => $quote['quote_id'], 'quote_version' => 1, 'option_id' => $quote['options'][0]['option_id'],
@@ -295,8 +309,8 @@ final class ServiceCatalogPricingIntegrationTest extends MySqlRedisTestCase
         $ambiguousZoneSet = $pricing->createZoneSet($maker, [
             'code' => 'AMBIGUOUS', 'purpose' => 'SALES', 'title' => 'Ambiguous city mapping', 'valid_from' => now()->subMinute()->utc()->toISOString(), 'valid_to' => null,
             'zones' => [
-                ['code' => 'A', 'title' => 'A', 'members' => [['member_type' => 'CITY', 'reference_value' => 'Tehran', 'precedence' => 100]]],
-                ['code' => 'B', 'title' => 'B', 'members' => [['member_type' => 'CITY', 'reference_value' => 'Tehran', 'precedence' => 100]]],
+                ['code' => 'A', 'title' => 'A', 'members' => [['member_type' => 'CITY', 'city_id' => GeographyIds::city('10866')]]],
+                ['code' => 'B', 'title' => 'B', 'members' => [['member_type' => 'CITY', 'city_id' => GeographyIds::city('10866')]]],
             ],
         ], (string) Str::uuid());
         $this->assertContains('PRICING_ZONE_AMBIGUOUS', array_column($pricing->validateZoneSet($maker, $ambiguousZoneSet['zone_set_version_id'])['errors'], 'code'));
@@ -316,6 +330,23 @@ final class ServiceCatalogPricingIntegrationTest extends MySqlRedisTestCase
         $this->withToken($token)->postJson('/api/v1/admin/pricing/zone-sets', [
             'code' => 'INVALID_ZONE', 'purpose' => 'SALES', 'title' => 'Invalid', 'zones' => [['code' => 'TEHRAN', 'title' => 'Tehran', 'members' => [['reference_value' => 'Tehran']]]],
         ])->assertStatus(422)->assertJsonPath('error_code', 'VALIDATION_ERROR');
+
+        $this->withToken($token)->postJson('/api/v1/admin/pricing/zone-sets', [
+            'code' => 'CANONICAL_ZONE', 'purpose' => 'SALES', 'title' => 'Canonical geography',
+            'zones' => [[
+                'code' => 'TEHRAN', 'title' => 'Tehran',
+                'members' => [
+                    ['member_type' => 'CITY', 'city_id' => GeographyIds::city('10866')],
+                    ['member_type' => 'PROVINCE', 'province_id' => GeographyIds::province('8')],
+                ],
+            ]],
+        ])->assertCreated();
+        $this->assertDatabaseHas('pricing_zone_members', [
+            'member_type' => 'CITY', 'city_id' => GeographyIds::city('10866'), 'precedence' => 200,
+        ]);
+        $this->assertDatabaseHas('pricing_zone_members', [
+            'member_type' => 'PROVINCE', 'province_id' => GeographyIds::province('8'), 'precedence' => 100,
+        ]);
 
         $this->withToken($token)->postJson('/api/v1/admin/pricing/tariff-families', [
             'code' => 'INVALID_TARIFF', 'purpose' => 'SALES', 'currency' => 'IRR', 'zone_set_version_id' => (string) Str::uuid(),
@@ -340,6 +371,6 @@ final class ServiceCatalogPricingIntegrationTest extends MySqlRedisTestCase
     /** @param array<string,mixed> $type @param array<string,mixed> $method @param array<string,mixed> $offering @return array<string,mixed> */
     private function consignmentDraft(array $type, array $method, array $offering): array
     {
-        return ['sender' => ['contact_name' => 'Sender', 'mobile' => '09120000001', 'address_text' => 'Tehran', 'state' => 'Tehran', 'city' => 'Tehran'], 'receiver' => ['contact_name' => 'Receiver', 'mobile' => '09120000002', 'address_text' => 'Tehran', 'state' => 'Tehran', 'city' => 'Tehran'], 'service_type_id' => $type['service_type_id'], 'shipping_method_id' => $method['shipping_method_id'], 'service_offering_id' => $offering['service_offering_id'], 'service_offering_version_id' => $offering['service_offering_version_id'], 'selected_option_version_ids' => [], 'pickup_commitment_at' => now()->addHour()->utc()->toISOString(), 'delivery_commitment_at' => now()->addDay()->utc()->toISOString(), 'weight_kg' => 1.1, 'width_cm' => 10, 'length_cm' => 10, 'height_cm' => 10, 'declared_value_amount' => 100000, 'insurance_enabled' => false, 'insurance_value_amount' => null, 'cod_enabled' => false, 'cod_amount' => null, 'payer' => 'SENDER', 'payment_method' => 'CASH', 'parcels' => [['weight_kg' => 1.1, 'width_cm' => 10, 'length_cm' => 10, 'height_cm' => 10]]];
+        return ['sender' => ['contact_name' => 'Sender', 'mobile' => '09120000001', 'address_text' => 'Tehran', 'city_id' => GeographyIds::city('10866'), 'state' => 'Tehran', 'city' => 'Tehran'], 'receiver' => ['contact_name' => 'Receiver', 'mobile' => '09120000002', 'address_text' => 'Tehran', 'city_id' => GeographyIds::city('10866'), 'state' => 'Tehran', 'city' => 'Tehran'], 'service_type_id' => $type['service_type_id'], 'shipping_method_id' => $method['shipping_method_id'], 'service_offering_id' => $offering['service_offering_id'], 'service_offering_version_id' => $offering['service_offering_version_id'], 'selected_option_version_ids' => [], 'pickup_commitment_at' => now()->addHour()->utc()->toISOString(), 'delivery_commitment_at' => now()->addDay()->utc()->toISOString(), 'weight_kg' => 1.1, 'width_cm' => 10, 'length_cm' => 10, 'height_cm' => 10, 'declared_value_amount' => 100000, 'insurance_enabled' => false, 'insurance_value_amount' => null, 'cod_enabled' => false, 'cod_amount' => null, 'payer' => 'SENDER', 'payment_method' => 'CASH', 'parcels' => [['weight_kg' => 1.1, 'width_cm' => 10, 'length_cm' => 10, 'height_cm' => 10]]];
     }
 }
