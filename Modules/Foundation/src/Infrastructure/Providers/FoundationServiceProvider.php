@@ -64,8 +64,11 @@ final class FoundationServiceProvider extends ServiceProvider
             return;
         }
 
+        $httpAllowedInStaging = $this->app->environment('staging')
+            && (bool) config('chabok.branch_panel.local_http_allowed');
+
         foreach ((array) config('chabok.branch_panel.origins', []) as $origin) {
-            if (! str_starts_with((string) $origin, 'https://')) {
+            if (! $httpAllowedInStaging && ! str_starts_with((string) $origin, 'https://')) {
                 throw new \LogicException(
                     'Staging and production Branch Panel origins must use HTTPS.',
                 );

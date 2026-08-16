@@ -14,10 +14,10 @@ final class RequireSecureTransport
 {
     public function handle(Request $request, Closure $next): Response
     {
-        $localException = app()->environment(['local', 'testing'])
+        $explicitHttpException = app()->environment(['local', 'testing', 'staging'])
             && (bool) config('chabok.branch_panel.local_http_allowed');
 
-        if (! $request->isSecure() && ! $localException) {
+        if (! $request->isSecure() && ! $explicitHttpException) {
             throw new ApiException(
                 ApiErrorCode::Forbidden,
                 403,
