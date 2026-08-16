@@ -182,6 +182,7 @@ final readonly class PricingService
         if (! DB::table('pricing_zone_set_versions')->where('zone_set_version_id', $version['zone_set_version_id'])->where('status', 'PUBLISHED')->exists()) $errors[] = ['code' => 'PRICING_ZONE_VERSION_NOT_PUBLISHED', 'field' => 'zone_set_version_id'];
         foreach ($version['rules'] as $rule) {
             if (! DB::table('service_offering_versions')->where('service_offering_version_id', $rule['service_offering_version_id'])->where('status', 'PUBLISHED')->exists()) $errors[] = ['code' => 'PRICING_SERVICE_VERSION_NOT_PUBLISHED', 'field' => 'rules'];
+            if ($rule['service_option_version_id'] !== null && ! DB::table('service_offering_option_rules')->where(['service_offering_version_id' => $rule['service_offering_version_id'], 'service_option_version_id' => $rule['service_option_version_id']])->exists()) $errors[] = ['code' => 'PRICING_SERVICE_OPTION_NOT_BOUND', 'field' => 'rules'];
             if ($rule['range_from'] !== null && $rule['range_to'] !== null && (float) $rule['range_from'] >= (float) $rule['range_to']) $errors[] = ['code' => 'PRICING_RANGE_INVALID', 'field' => 'rules'];
             $method = (string) $rule['calculation_method'];
             if ($method === 'FIXED' && $rule['fixed_amount'] === null) $errors[] = ['code' => 'PRICING_FIXED_AMOUNT_REQUIRED', 'field' => 'rules'];
@@ -189,8 +190,9 @@ final readonly class PricingService
             if ($method === 'SLAB' && $rule['fixed_amount'] === null && $rule['unit_rate'] === null) $errors[] = ['code' => 'PRICING_SLAB_RATE_REQUIRED', 'field' => 'rules'];
             if ($method === 'PERCENT' && $rule['percentage_bps'] === null) $errors[] = ['code' => 'PRICING_PERCENTAGE_REQUIRED', 'field' => 'rules'];
             if ($method === 'MIN_MAX' && $rule['minimum_amount'] === null && $rule['maximum_amount'] === null) $errors[] = ['code' => 'PRICING_MIN_MAX_BOUND_REQUIRED', 'field' => 'rules'];
+            if (($rule['amount_rounding_mode'] ?? 'NONE') !== 'NONE' && empty($rule['amount_rounding_step'])) $errors[] = ['code' => 'PRICING_AMOUNT_ROUNDING_STEP_REQUIRED', 'field' => 'rules'];
         }
-        $duplicates = collect($version['rules'])->groupBy(fn ($r) => implode('|', [$r['service_offering_version_id'], $r['origin_zone_id'], $r['destination_zone_id'], $r['charge_type_id'], $r['priority'], $r['range_from'], $r['range_to']]))->filter(fn ($g) => $g->count() > 1);
+        $duplicates = collect($version['rules'])->groupBy(fn ($r) => implode('|', [$r['service_offering_version_id'], $r['service_option_version_id'], $r['origin_zone_id'], $r['destination_zone_id'], $r['charge_type_id'], $r['priority'], $r['range_from'], $r['range_to']]))->filter(fn ($g) => $g->count() > 1);
         if ($duplicates->isNotEmpty()) $errors[] = ['code' => 'PRICING_RULE_AMBIGUOUS', 'field' => 'rules'];
         if ($this->hasAmbiguousRuleRanges($version['rules'])) $errors[] = ['code' => 'PRICING_RULE_RANGE_OVERLAP', 'field' => 'rules'];
         return ['valid' => $errors === [], 'errors' => $errors];
@@ -275,14 +277,16 @@ final readonly class PricingService
         $facts = $this->facts($input, (array) $tariff, $destination);
         $rules = DB::table('tariff_rate_rules as r')->join('pricing_charge_types as c', 'c.charge_type_id', '=', 'r.charge_type_id')
             ->where('r.tariff_version_id', $tariff->tariff_version_id)->where('r.service_offering_version_id', $offering['service_offering_version_id'])
+            ->where(fn ($q) => $q->whereNull('r.service_option_version_id')->orWhereIn('r.service_option_version_id', (array) $input['selected_option_version_ids']))
             ->where(fn ($q) => $q->whereNull('r.origin_zone_id')->orWhere('r.origin_zone_id', $origin['pricing_zone_id']))
             ->where(fn ($q) => $q->whereNull('r.destination_zone_id')->orWhere('r.destination_zone_id', $destination['pricing_zone_id']))
             ->select(['r.*', 'c.code as charge_type_code', 'c.category', 'c.accounting_mapping_key', 'c.code as title'])->get()->map(fn ($r) => (array) $r)->all();
         if ($rules === []) throw new ApiException(ApiErrorCode::PricingRuleNotFound, 422, 'No pricing rule matches the selected service and lane.', details: ['reason_code' => 'PRICING_RULE_NOT_FOUND']);
         $calculation = $this->calculator->calculate($rules, $facts);
         if ($calculation['lines'] === [] || $calculation['total_amount'] <= 0 || ! collect($calculation['lines'])->contains(fn ($line) => $line['charge_code'] === 'BASE_FREIGHT')) throw new ApiException(ApiErrorCode::PricingRejected, 422, 'Pricing did not produce a complete nonzero base price.', details: ['reason_code' => 'PRICING_INCOMPLETE_RESULT']);
+        if (($input['insurance_enabled'] ?? false) === true && ! collect($calculation['lines'])->contains(fn ($line) => $line['charge_code'] === 'INSURANCE')) throw new ApiException(ApiErrorCode::PricingRejected, 422, 'Mandatory insurance pricing is unavailable.', details: ['reason_code' => 'INSURANCE_PRICING_REQUIRED']);
         $quoteId = (string) Str::uuid(); $now = CarbonImmutable::now('UTC'); $ttl = (int) config('chabok.pricing.quote_ttl_seconds', 900);
-        $evidence = ['tariff_code' => $tariff->tariff_code, 'origin' => $originEvidence, 'destination' => $destinationEvidence, 'weight' => $facts, 'service' => ['outcome' => $offering['outcome'], 'reason_codes' => $offering['reason_codes'], 'labels' => $offering['labels'] ?? [], 'service_type_id' => $offering['service_type_id'], 'shipping_method_id' => $offering['shipping_method_id']]];
+        $evidence = ['tariff_code' => $tariff->tariff_code, 'origin' => $originEvidence, 'destination' => $destinationEvidence, 'weight' => $facts, 'service' => ['outcome' => $offering['outcome'], 'reason_codes' => $offering['reason_codes'], 'labels' => $offering['labels'] ?? [], 'service_type_id' => $offering['service_type_id'], 'shipping_method_id' => $offering['shipping_method_id'], 'selected_option_version_ids' => $input['selected_option_version_ids'], 'commitment' => $offering['commitment'] ?? null]];
         $warnings = $facts['weight_evidence'] === 'AGGREGATE_FALLBACK' ? ['PRICING_AGGREGATE_WEIGHT_FALLBACK'] : [];
         $this->transactions->run(function () use ($actor, $input, $idempotencyKey, $inputFingerprint, $offering, $tariff, $origin, $destination, $calculation, $quoteId, $now, $ttl, $evidence, $warnings): void {
             DB::table('pricing_quotes')->insert(['quote_id' => $quoteId, 'hq_id' => $actor->hqId, 'requested_by' => $actor->userId, 'purpose' => 'SALES', 'tariff_version_id' => $tariff->tariff_version_id, 'zone_set_version_id' => $tariff->zone_set_version_id, 'service_offering_id' => $offering['service_offering_id'], 'service_offering_version_id' => $offering['service_offering_version_id'], 'origin_zone_id' => $origin['pricing_zone_id'], 'destination_zone_id' => $destination['pricing_zone_id'], 'currency' => 'IRR', 'subtotal_amount' => $calculation['subtotal_amount'], 'discount_amount' => $calculation['discount_amount'], 'tax_amount' => $calculation['tax_amount'], 'total_amount' => $calculation['total_amount'], 'normalized_input' => json_encode($input, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE), 'resolution_evidence' => json_encode($evidence, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE), 'warnings' => json_encode($warnings, JSON_THROW_ON_ERROR), 'input_fingerprint' => $inputFingerprint, 'result_fingerprint' => $calculation['result_fingerprint'], 'idempotency_key' => $idempotencyKey, 'status' => 'OFFERED', 'calculated_at' => $now, 'expires_at' => $now->addSeconds($ttl), 'created_at' => $now, 'updated_at' => $now]);
@@ -297,7 +301,7 @@ final readonly class PricingService
         $this->assertAccess($actor, 'pricing.quote.view', runtime: true);
         $row = DB::table('pricing_quotes')->where(['quote_id' => $quoteId, 'hq_id' => $actor->hqId])->first();
         if ($row === null) throw new ApiException(ApiErrorCode::ResourceNotFound, 404, 'Resource not found.');
-        $result = $this->decode((array) $row); $result['lines'] = DB::table('pricing_quote_lines')->where('quote_id', $quoteId)->orderBy('line_number')->get()->map(fn ($r) => $this->decode((array) $r))->all();
+        $result = $this->decode((array) $row); $result['lines'] = DB::table('pricing_quote_lines as l')->join('pricing_charge_types as c', 'c.charge_type_id', '=', 'l.charge_type_id')->where('l.quote_id', $quoteId)->orderBy('l.line_number')->get(['l.*', 'c.category'])->map(fn ($r) => $this->decode((array) $r))->all();
         return $result;
     }
 
@@ -387,7 +391,7 @@ final readonly class PricingService
     private function replaceRules(string $versionId, array $rules): void
     {
         DB::table('tariff_rate_rules')->where('tariff_version_id', $versionId)->delete();
-        foreach ($rules as $rule) DB::table('tariff_rate_rules')->insert(['rate_rule_id' => (string) Str::uuid(), 'tariff_version_id' => $versionId, 'service_offering_version_id' => $rule['service_offering_version_id'], 'charge_type_id' => $rule['charge_type_id'], 'origin_zone_id' => $rule['origin_zone_id'] ?? null, 'destination_zone_id' => $rule['destination_zone_id'] ?? null, 'calculation_method' => $rule['calculation_method'], 'basis' => $rule['basis'] ?? 'BILLABLE_WEIGHT', 'range_from' => $rule['range_from'] ?? null, 'range_to' => $rule['range_to'] ?? null, 'fixed_amount' => $rule['fixed_amount'] ?? null, 'unit_rate' => $rule['unit_rate'] ?? null, 'percentage_bps' => $rule['percentage_bps'] ?? null, 'minimum_amount' => $rule['minimum_amount'] ?? null, 'maximum_amount' => $rule['maximum_amount'] ?? null, 'basis_charge_codes' => isset($rule['basis_charge_codes']) ? json_encode($rule['basis_charge_codes'], JSON_THROW_ON_ERROR) : null, 'conditions' => isset($rule['conditions']) ? json_encode($rule['conditions'], JSON_THROW_ON_ERROR) : null, 'priority' => $rule['priority'] ?? 100]);
+        foreach ($rules as $rule) DB::table('tariff_rate_rules')->insert(['rate_rule_id' => (string) Str::uuid(), 'tariff_version_id' => $versionId, 'service_offering_version_id' => $rule['service_offering_version_id'], 'service_option_version_id' => $rule['service_option_version_id'] ?? null, 'charge_type_id' => $rule['charge_type_id'], 'origin_zone_id' => $rule['origin_zone_id'] ?? null, 'destination_zone_id' => $rule['destination_zone_id'] ?? null, 'calculation_method' => $rule['calculation_method'], 'basis' => $rule['basis'] ?? 'BILLABLE_WEIGHT', 'range_from' => $rule['range_from'] ?? null, 'range_to' => $rule['range_to'] ?? null, 'fixed_amount' => $rule['fixed_amount'] ?? null, 'unit_rate' => $rule['unit_rate'] ?? null, 'percentage_bps' => $rule['percentage_bps'] ?? null, 'minimum_amount' => $rule['minimum_amount'] ?? null, 'maximum_amount' => $rule['maximum_amount'] ?? null, 'amount_rounding_mode' => $rule['amount_rounding_mode'] ?? 'NONE', 'amount_rounding_step' => $rule['amount_rounding_step'] ?? null, 'basis_charge_codes' => isset($rule['basis_charge_codes']) ? json_encode($rule['basis_charge_codes'], JSON_THROW_ON_ERROR) : null, 'conditions' => isset($rule['conditions']) ? json_encode($rule['conditions'], JSON_THROW_ON_ERROR) : null, 'priority' => $rule['priority'] ?? 100]);
     }
 
     /** @param array<string,mixed> $party @return array{array<string,mixed>,array<string,mixed>} */
@@ -465,7 +469,7 @@ final readonly class PricingService
     {
         foreach ($rules as $leftIndex => $left) {
             foreach (array_slice($rules, $leftIndex + 1) as $right) {
-                $selector = ['service_offering_version_id', 'origin_zone_id', 'destination_zone_id', 'charge_type_id', 'priority', 'basis'];
+                $selector = ['service_offering_version_id', 'service_option_version_id', 'origin_zone_id', 'destination_zone_id', 'charge_type_id', 'priority', 'basis'];
                 if (collect($selector)->contains(fn ($field) => ($left[$field] ?? null) !== ($right[$field] ?? null))) continue;
                 $leftFrom = $left['range_from'] === null ? -INF : (float) $left['range_from'];
                 $leftTo = $left['range_to'] === null ? INF : (float) $left['range_to'];

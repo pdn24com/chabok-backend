@@ -21,6 +21,7 @@ final readonly class ConsignmentController
         'sender', 'receiver', 'service_type_id', 'shipping_method_id',
         'service_offering_id', 'service_offering_version_id',
         'selected_option_version_ids',
+        'pickup_service_date', 'pickup_window_code', 'delivery_window_code',
         'pickup_commitment_at', 'delivery_commitment_at', 'weight_kg',
         'width_cm', 'length_cm', 'height_cm', 'declared_value_amount',
         'insurance_enabled', 'insurance_value_amount', 'cod_enabled',
@@ -33,7 +34,7 @@ final readonly class ConsignmentController
         'latitude', 'longitude',
     ];
 
-    private const PARCEL_FIELDS = ['weight_kg', 'width_cm', 'length_cm', 'height_cm'];
+    private const PARCEL_FIELDS = ['content_description', 'weight_kg', 'width_cm', 'length_cm', 'height_cm'];
 
     public function __construct(
         private ConsignmentService $consignments,
@@ -89,6 +90,7 @@ final readonly class ConsignmentController
         $consignmentId = isset($input['consignment_id']) ? (string) $input['consignment_id'] : null;
         $expectedVersion = isset($input['expected_version']) ? (int) $input['expected_version'] : null;
         unset($input['purpose'], $input['consignment_id'], $input['expected_version']);
+        if ($purpose === 'CREATE') $input = $this->normalizePilotCreate($input);
 
         return ApiResponder::success($request, $this->pricing->calculate(
             $this->principal($request),
@@ -108,6 +110,7 @@ final readonly class ConsignmentController
             ...$this->draftRules(),
             ...$this->acceptedQuoteRules(),
         ]);
+        $input = $this->normalizePilotCreate($input);
 
         return ApiResponder::success($request, $this->consignments->create(
             $this->principal($request),
@@ -188,6 +191,9 @@ final readonly class ConsignmentController
             'service_offering_version_id' => ['sometimes', 'nullable', 'uuid'],
             'selected_option_version_ids' => ['sometimes', 'array'],
             'selected_option_version_ids.*' => ['uuid'],
+            'pickup_service_date' => ['sometimes', 'nullable', 'date_format:Y-m-d'],
+            'pickup_window_code' => ['sometimes', 'nullable', 'string', 'max:80'],
+            'delivery_window_code' => ['sometimes', 'nullable', 'string', 'max:80'],
             'pickup_commitment_at' => ['sometimes', 'nullable', 'date'],
             'delivery_commitment_at' => ['sometimes', 'nullable', 'date'],
             'weight_kg' => ['required', 'numeric', 'gt:0'],
@@ -202,6 +208,7 @@ final readonly class ConsignmentController
             'payer' => ['required', 'in:SENDER,RECEIVER,VENDOR'],
             'payment_method' => ['required', 'in:CASH,CREDIT,COD'],
             'parcels' => ['required', 'array', 'min:1', 'max:100'],
+            'parcels.*.content_description' => ['sometimes', 'nullable', 'string', 'max:500'],
             'parcels.*.weight_kg' => ['sometimes', 'nullable', 'numeric', 'gt:0'],
             'parcels.*.width_cm' => ['sometimes', 'nullable', 'numeric', 'gt:0'],
             'parcels.*.length_cm' => ['sometimes', 'nullable', 'numeric', 'gt:0'],
@@ -270,6 +277,28 @@ final readonly class ConsignmentController
                 'accepted_quote',
             );
         }
+    }
+
+    /** @param array<string,mixed> $input @return array<string,mixed> */
+    private function normalizePilotCreate(array $input): array
+    {
+        if (($input['insurance_enabled'] ?? null) !== true) {
+            throw ValidationException::withMessages(['insurance_enabled' => ['Insurance is mandatory for new pilot Consignments.']]);
+        }
+        if (! in_array($input['payer'] ?? null, ['SENDER', 'RECEIVER'], true)) {
+            throw ValidationException::withMessages(['payer' => ['Only sender or receiver payer is available for new pilot Consignments.']]);
+        }
+        if (! in_array($input['payment_method'] ?? null, ['CASH', 'CREDIT'], true)) {
+            throw ValidationException::withMessages(['payment_method' => ['Only cash or credit is available for new pilot Consignments.']]);
+        }
+        foreach ((array) ($input['parcels'] ?? []) as $index => $parcel) {
+            if (trim((string) ($parcel['content_description'] ?? '')) === '') {
+                throw ValidationException::withMessages(["parcels.{$index}.content_description" => ['Parcel content description is required.']]);
+            }
+        }
+        $input['insurance_enabled'] = true;
+        $input['insurance_value_amount'] = (int) $input['declared_value_amount'];
+        return $input;
     }
 
     private function principal(Request $request): AuthenticatedPrincipal

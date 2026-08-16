@@ -42,6 +42,25 @@ final class ConsignmentPolicy
         }
     }
 
+    /** @param array<string,mixed> $input */
+    public function assertPilotCreate(array $input): void
+    {
+        if (($input['insurance_enabled'] ?? false) !== true || (int) ($input['insurance_value_amount'] ?? -1) !== (int) ($input['declared_value_amount'] ?? 0)) {
+            throw new ApiException(ApiErrorCode::ValidationError, 422, 'Declared-value insurance is mandatory for new pilot Consignments.', details: ['reason_code' => 'MANDATORY_INSURANCE_REQUIRED']);
+        }
+        if (! in_array($input['payer'] ?? null, ['SENDER', 'RECEIVER'], true)) {
+            throw new ApiException(ApiErrorCode::ValidationError, 422, 'The payer is not available for new pilot Consignments.', details: ['reason_code' => 'PILOT_PAYER_INVALID']);
+        }
+        if (! in_array($input['payment_method'] ?? null, ['CASH', 'CREDIT'], true)) {
+            throw new ApiException(ApiErrorCode::ValidationError, 422, 'The payment method is not available for new pilot Consignments.', details: ['reason_code' => 'PILOT_PAYMENT_METHOD_INVALID']);
+        }
+        foreach ((array) ($input['parcels'] ?? []) as $index => $parcel) {
+            if (trim((string) ($parcel['content_description'] ?? '')) === '') {
+                throw new ApiException(ApiErrorCode::ValidationError, 422, 'Every Parcel requires a content description.', details: ['reason_code' => 'PARCEL_CONTENT_REQUIRED', 'parcel_index' => $index]);
+            }
+        }
+    }
+
     /** @param array<string, mixed> $input */
     private function assertOptionalAmount(array $input, string $enabledKey, string $amountKey): void
     {

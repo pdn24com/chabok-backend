@@ -18,6 +18,7 @@ final class PricingChargeTypeSeeder extends Seeder
             'REMOTE_AREA' => ['SURCHARGE', 'REMOTE_AREA_FEE', true],
             'EXTRA_PARCEL' => ['SURCHARGE', 'EXTRA_PARCEL_FEE', true],
             'INSURANCE_FEE' => ['SURCHARGE', 'INSURANCE_SERVICE_FEE', true],
+            'INSURANCE' => ['SURCHARGE', 'INSURANCE_PREMIUM', true],
             'COD_FEE' => ['SURCHARGE', 'COD_SERVICE_FEE', true],
             'FUEL_SURCHARGE' => ['SURCHARGE', 'FUEL_SURCHARGE', true],
             'DISCOUNT' => ['DISCOUNT', 'CUSTOMER_DISCOUNT', false],

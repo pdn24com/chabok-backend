@@ -23,7 +23,7 @@ final class DeterministicCalculator
             $method = (string) $rule['calculation_method'];
             if ($method !== 'TIERED' && (($from !== null && $quantity < $from) || ($to !== null && $quantity >= $to))) continue;
             if ($method === 'SLAB' && isset($slabs[$rule['charge_type_code']])) continue;
-            $amount = match ($method) {
+            $rawAmount = match ($method) {
                 'FIXED' => (int) ($rule['fixed_amount'] ?? 0),
                 'PER_UNIT' => $this->money($quantity * (float) ($rule['unit_rate'] ?? 0)),
                 'SLAB' => $this->money(($rule['fixed_amount'] ?? null) !== null ? (float) $rule['fixed_amount'] : $quantity * (float) ($rule['unit_rate'] ?? 0)),
@@ -32,6 +32,11 @@ final class DeterministicCalculator
                 'MIN_MAX' => $this->minMaxAmount($rule, $lines, $facts, $quantity),
                 default => 0,
             };
+            $amount = $this->roundAmount(
+                $rawAmount,
+                (string) ($rule['amount_rounding_mode'] ?? 'NONE'),
+                isset($rule['amount_rounding_step']) ? (int) $rule['amount_rounding_step'] : null,
+            );
             if ($amount === 0 && $method === 'TIERED') continue;
             if ($method === 'SLAB') $slabs[$rule['charge_type_code']] = true;
             $lines[] = [
@@ -40,7 +45,14 @@ final class DeterministicCalculator
                 'category' => $rule['category'], 'calculation_method' => $method, 'basis' => $rule['basis'],
                 'quantity' => round($quantity, 4), 'unit_rate' => $rule['unit_rate'] === null ? null : (float) $rule['unit_rate'],
                 'amount' => max(0, $amount), 'accounting_mapping_key' => $rule['accounting_mapping_key'],
-                'explanation' => ['range_from' => $from, 'range_to' => $to, 'percentage_bps' => $rule['percentage_bps']],
+                'explanation' => [
+                    'range_from' => $from, 'range_to' => $to,
+                    'declared_value_basis' => $rule['basis'] === 'DECLARED_VALUE' ? (int) $quantity : null,
+                    'percentage_bps' => $rule['percentage_bps'], 'raw_amount' => $rawAmount,
+                    'amount_rounding_mode' => (string) ($rule['amount_rounding_mode'] ?? 'NONE'),
+                    'amount_rounding_step' => ($rule['amount_rounding_step'] ?? null) === null ? null : (int) $rule['amount_rounding_step'],
+                    'final_amount' => max(0, $amount),
+                ],
             ];
         }
         $subtotal = array_sum(array_map(fn ($line) => in_array($line['category'], ['BASE', 'SURCHARGE', 'COMMISSION'], true) ? $line['amount'] : 0, $lines));
@@ -94,4 +106,16 @@ final class DeterministicCalculator
     }
 
     private function money(float $amount): int { return (int) floor($amount + 0.5); }
+
+    private function roundAmount(int $amount, string $mode, ?int $step): int
+    {
+        if ($mode === 'NONE' || $step === null || $step <= 1) return $amount;
+        $units = $amount / $step;
+        return match ($mode) {
+            'CEIL' => (int) (ceil($units) * $step),
+            'FLOOR' => (int) (floor($units) * $step),
+            'HALF_UP' => (int) (floor($units + 0.5) * $step),
+            default => $amount,
+        };
+    }
 }

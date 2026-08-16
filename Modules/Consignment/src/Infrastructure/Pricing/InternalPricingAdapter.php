@@ -35,11 +35,17 @@ final readonly class InternalPricingAdapter implements PricingQuoteProvider
             'charge_lines' => array_map(static fn (array $line): array => [
                 'charge_code' => $line['charge_type_code'], 'title' => $line['title'], 'amount' => (int) $line['amount'],
                 'rate_rule_id' => $line['rate_rule_id'], 'charge_type_id' => $line['charge_type_id'],
+                'category' => $line['category'], 'calculation_method' => $line['calculation_method'],
+                'basis' => $line['basis'], 'quantity' => (float) $line['quantity'],
+                'unit_rate' => $line['unit_rate'] === null ? null : (float) $line['unit_rate'],
+                'explanation' => $line['explanation'],
             ], $quote['lines']),
             'service_offering_id' => $quote['service_offering_id'],
             'service_offering_version_id' => $quote['service_offering_version_id'],
             'service_type_id' => $quote['resolution_evidence']['service']['service_type_id'],
             'shipping_method_id' => $quote['resolution_evidence']['service']['shipping_method_id'],
+            'commitment' => $quote['resolution_evidence']['service']['commitment'] ?? null,
+            'selected_option_version_ids' => $quote['resolution_evidence']['service']['selected_option_version_ids'] ?? [],
             'result_fingerprint' => $quote['result_fingerprint'],
             'warnings' => $quote['warnings'],
         ]];
