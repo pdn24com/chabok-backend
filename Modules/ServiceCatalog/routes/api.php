@@ -9,8 +9,17 @@ Route::prefix('api/v1')->middleware(['api', 'access.auth', 'password.changed'])-
     Route::post('/services/resolve', [ServiceCatalogController::class, 'resolve']);
     Route::post('/services/{offeringId}/validate', [ServiceCatalogController::class, 'validateSelection'])->whereUuid('offeringId');
     Route::post('/services/{offeringId}/commitments', [ServiceCatalogController::class, 'commitments'])->whereUuid('offeringId');
+    Route::get('/services/pickup-windows', [ServiceCatalogController::class, 'pickupWindows']);
     Route::prefix('admin/service-catalog')->group(function (): void {
         Route::get('/audit', [ServiceCatalogController::class, 'audit']);
+        Route::get('/commitment-schedules/published-versions', [ServiceCatalogController::class, 'publishedSchedules']);
+        Route::get('/commitment-schedules', [ServiceCatalogController::class, 'schedules']);
+        Route::post('/commitment-schedules', [ServiceCatalogController::class, 'createSchedule']);
+        Route::post('/commitment-schedules/identities/{identityId}/versions', [ServiceCatalogController::class, 'cloneSchedule'])->whereUuid('identityId');
+        Route::get('/commitment-schedules/identities/{identityId}/versions', [ServiceCatalogController::class, 'scheduleHistory'])->whereUuid('identityId');
+        Route::patch('/commitment-schedules/versions/{versionId}', [ServiceCatalogController::class, 'updateSchedule'])->whereUuid('versionId');
+        Route::post('/commitment-schedules/versions/{versionId}/validate', [ServiceCatalogController::class, 'validateSchedule'])->whereUuid('versionId');
+        Route::post('/commitment-schedules/versions/{versionId}/{action}', [ServiceCatalogController::class, 'transitionSchedule'])->whereUuid('versionId')->whereIn('action', ['approve', 'publish', 'supersede', 'archive']);
         Route::get('/{resource}/published-versions', [ServiceCatalogController::class, 'publishedVersions'])->whereIn('resource', ['service-types', 'shipping-methods', 'offerings', 'options']);
         Route::get('/{resource}', [ServiceCatalogController::class, 'index'])->whereIn('resource', ['service-types', 'shipping-methods', 'offerings', 'options']);
         Route::post('/{resource}', [ServiceCatalogController::class, 'store'])->whereIn('resource', ['service-types', 'shipping-methods', 'offerings', 'options']);

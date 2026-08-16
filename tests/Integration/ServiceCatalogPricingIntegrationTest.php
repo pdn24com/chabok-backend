@@ -18,6 +18,7 @@ use Modules\Geography\Domain\GeographyIds;
 use Modules\Geography\Infrastructure\Database\Seeders\IranGeographySeeder;
 use Modules\Pricing\Application\PricingService;
 use Modules\Pricing\Infrastructure\Database\Seeders\PricingChargeTypeSeeder;
+use Modules\ServiceCatalog\Application\CommitmentScheduleService;
 use Modules\ServiceCatalog\Application\ServiceCatalogService;
 
 final class ServiceCatalogPricingIntegrationTest extends MySqlRedisTestCase
@@ -314,6 +315,57 @@ final class ServiceCatalogPricingIntegrationTest extends MySqlRedisTestCase
             ],
         ], (string) Str::uuid());
         $this->assertContains('PRICING_ZONE_AMBIGUOUS', array_column($pricing->validateZoneSet($maker, $ambiguousZoneSet['zone_set_version_id'])['errors'], 'code'));
+    }
+
+    public function test_reusable_commitment_schedule_is_tenant_scoped_resolvable_and_immutable_after_publish(): void
+    {
+        $this->app->make(AuthorizationCatalogSeeder::class)->run();
+        [$tenant, $maker, $checker, $nodeId] = $this->administratorContext('COMMITMENTS');
+        $schedules = $this->app->make(CommitmentScheduleService::class);
+        $monday = CarbonImmutable::parse('2026-08-17 07:00:00', 'Asia/Tehran');
+        CarbonImmutable::setTestNow($monday);
+
+        try {
+            $draft = $schedules->create($maker, [
+                'code' => 'TEHRAN_STANDARD', 'title' => 'برنامه استاندارد تهران',
+                'timezone' => 'Asia/Tehran', 'calendar_code' => 'IR_STANDARD',
+                'valid_from' => $monday->subMinute()->utc()->toISOString(), 'valid_to' => null,
+                'windows' => [
+                    ['window_code' => 'MORNING', 'window_type' => 'PICKUP', 'label_fa' => 'صبح', 'start_time' => '08:00', 'end_time' => '12:00', 'booking_cutoff_time' => '09:00', 'applicable_weekdays' => [1, 2, 3, 4, 5, 6], 'day_offset' => 0, 'active' => true],
+                    ['window_code' => 'NEXT_DAY', 'window_type' => 'DELIVERY', 'label_fa' => 'روز بعد', 'start_time' => '09:00', 'end_time' => '17:00', 'booking_cutoff_time' => '23:59', 'applicable_weekdays' => [1, 2, 3, 4, 5, 6], 'day_offset' => 1, 'active' => true],
+                ],
+                'scopes' => [['scope_type' => 'NODE', 'node_id' => $nodeId]],
+            ], (string) Str::uuid());
+            $versionId = (string) $draft['commitment_schedule_version_id'];
+            $this->assertSame(['valid' => true, 'errors' => []], $schedules->validate($maker, $versionId));
+            $schedules->transition($checker, $versionId, 'approve', (string) Str::uuid());
+            $published = $schedules->transition($maker, $versionId, 'publish', (string) Str::uuid());
+            $this->assertSame('PUBLISHED', $published['status']);
+
+            $windows = $schedules->pickupWindows($maker, $nodeId, $monday->utc()->toISOString());
+            $this->assertCount(1, $windows);
+            $this->assertSame('MORNING', $windows[0]['window_code']);
+            $this->assertSame($versionId, $windows[0]['commitment_schedule_version_id']);
+
+            [, $foreign] = $this->administratorContext('COMMITMENTS-FOREIGN');
+            $this->assertSame([], $schedules->list($foreign, [])->items());
+            try {
+                $schedules->versionDetail($foreign, $versionId);
+                $this->fail('A foreign tenant must not read the schedule version.');
+            } catch (ApiException $exception) {
+                $this->assertSame(ApiErrorCode::ResourceNotFound, $exception->errorCode);
+            }
+
+            try {
+                DB::table('commitment_schedule_windows')->where('commitment_schedule_version_id', $versionId)->update(['label_fa' => 'دستکاری']);
+                $this->fail('Published commitment windows must be immutable.');
+            } catch (QueryException $exception) {
+                $this->assertStringContainsString('immutable published commitment schedule child', $exception->getMessage());
+            }
+            $this->assertDatabaseHas('commitment_schedules', ['hq_id' => $tenant['hq_id'], 'code' => 'TEHRAN_STANDARD']);
+        } finally {
+            CarbonImmutable::setTestNow();
+        }
     }
 
     public function test_admin_http_boundaries_reject_malformed_nested_configuration(): void
