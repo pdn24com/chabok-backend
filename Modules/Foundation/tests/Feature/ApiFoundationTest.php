@@ -90,6 +90,31 @@ final class ApiFoundationTest extends TestCase
         $this->getJson('https://localhost/api/v1/foundation/success')->assertOk();
     }
 
+    public function test_internal_staging_http_requires_explicit_opt_in_and_production_never_allows_it(): void
+    {
+        $originalEnvironment = $this->app['env'];
+
+        try {
+            $this->app['env'] = 'staging';
+            config()->set('chabok.branch_panel.local_http_allowed', true);
+            $this->getJson('/api/v1/foundation/success')->assertOk();
+
+            config()->set('chabok.branch_panel.local_http_allowed', false);
+            $this->getJson('/api/v1/foundation/success')
+                ->assertStatus(403)
+                ->assertJsonPath('error_code', 'FORBIDDEN');
+
+            $this->app['env'] = 'production';
+            config()->set('chabok.branch_panel.local_http_allowed', true);
+            $this->getJson('/api/v1/foundation/success')
+                ->assertStatus(403)
+                ->assertJsonPath('error_code', 'FORBIDDEN');
+        } finally {
+            $this->app['env'] = $originalEnvironment;
+            config()->set('chabok.branch_panel.local_http_allowed', true);
+        }
+    }
+
     public function test_invalid_correlation_and_node_headers_use_validation_envelope(): void
     {
         $this->withHeader('X-Correlation-ID', 'not-a-uuid')
