@@ -41,6 +41,10 @@ return [
     ],
     'notifications' => [
         'driver' => 'deterministic',
+        'allow_deterministic_in_staging' => (bool) env(
+            'CHABOK_ALLOW_DETERMINISTIC_NOTIFICATIONS',
+            false,
+        ),
         'fail_event_ids' => array_values(array_filter(explode(
             ',',
             (string) env('DETERMINISTIC_NOTIFICATION_FAIL_EVENT_IDS', ''),
