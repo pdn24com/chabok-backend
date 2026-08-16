@@ -1,0 +1,8 @@
+{
+    "name": "chabok/geography",
+    "description": "Chabok immutable Iran reference geography module.",
+    "type": "library",
+    "license": "proprietary",
+    "autoload": {"psr-4": {"Modules\\Geography\\": "src/"}},
+    "autoload-dev": {"psr-4": {"Modules\\Geography\\Tests\\": "tests/"}}
+}

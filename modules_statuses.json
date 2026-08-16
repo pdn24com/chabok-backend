@@ -12,5 +12,6 @@
     "Manifest": true,
     "Dashboard": true,
     "ServiceCatalog": true,
-    "Pricing": true
+    "Pricing": true,
+    "Geography": true
 }

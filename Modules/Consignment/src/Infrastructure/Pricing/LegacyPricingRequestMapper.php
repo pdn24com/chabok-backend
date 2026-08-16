@@ -17,14 +17,15 @@ final class LegacyPricingRequestMapper
         $config = (array) config('chabok.consignment.legacy_pricing');
         $nodeId = (string) ($input['_node_id'] ?? '');
         $hqId = (string) ($input['_hq_id'] ?? '');
+        $sender = (array) ($input['sender'] ?? []);
         $receiver = (array) ($input['receiver'] ?? []);
         $destinationKey = implode('|', [
             mb_strtolower(trim((string) ($receiver['country'] ?? 'IR'))),
             mb_strtolower(trim((string) ($receiver['state'] ?? ''))),
             mb_strtolower(trim((string) ($receiver['city'] ?? ''))),
         ]);
-        $origin = $config['origin_codes'][$nodeId] ?? null;
-        $destination = $config['destination_codes'][$destinationKey] ?? null;
+        $origin = $sender['legacy_city_code'] ?? ($config['origin_codes'][$nodeId] ?? null);
+        $destination = $receiver['legacy_city_code'] ?? ($config['destination_codes'][$destinationKey] ?? null);
         $party = $config['party_codes'][$hqId] ?? null;
         $wireValues = $config['input_values'] ?? null;
         if (! is_scalar($origin) || ! is_scalar($destination) || ! is_array($party)
