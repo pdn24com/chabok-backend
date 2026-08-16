@@ -22,9 +22,25 @@ final class NotificationServiceProvider extends ServiceProvider
     {
         $this->loadMigrationsFrom(dirname(__DIR__, 3).'/database/migrations');
 
-        if ($this->app->environment(['staging', 'production'])) {
+        self::assertDeploymentAllowed(
+            (string) $this->app->environment(),
+            (bool) config('chabok.notifications.allow_deterministic_in_staging', false),
+        );
+    }
+
+    public static function assertDeploymentAllowed(
+        string $environment,
+        bool $allowDeterministicInStaging,
+    ): void {
+        if ($environment === 'production') {
             throw new \LogicException(
-                'Staging and production notification provider credentials and contracts are not approved.',
+                'Production notification provider credentials and contracts are not approved.',
+            );
+        }
+
+        if ($environment === 'staging' && ! $allowDeterministicInStaging) {
+            throw new \LogicException(
+                'Staging deterministic notifications require explicit approval.',
             );
         }
     }
