@@ -40,6 +40,7 @@ final readonly class PricingService
         $this->assertAccess($actor, $nodeId, $purpose === 'CREATE' ? 'consignment.create' : 'consignment.edit');
         $input = $this->normalized($input);
         $this->policy->assertCommercialConsistency($input);
+        if ($purpose === 'CREATE') $this->policy->assertPilotCreate($input);
         if ($purpose === 'EDIT' && ($consignmentId === null || $expectedVersion === null)) {
             throw new ApiException(
                 ApiErrorCode::ValidationError,
@@ -51,6 +52,7 @@ final readonly class PricingService
         $providerInput = [...$input, '_hq_id' => $actor->hqId, '_node_id' => $nodeId, '_actor_user_id' => $actor->userId, '_actor_session_id' => $actor->sessionId, '_pricing_request_id' => (string) Str::uuid()];
         $options = array_map(static fn (array $option): array => [
             'option_id' => (string) Str::uuid(),
+            '_resolved_input_fingerprint' => InputFingerprint::of([...$input, '_resolved_commitment' => $option['commitment'] ?? null]),
             ...$option,
         ], $this->provider->calculate($providerInput));
         $now = CarbonImmutable::now('UTC');
@@ -88,6 +90,8 @@ final readonly class PricingService
         ?int $expectedVersion = null,
     ): array {
         $input = $this->normalized($input);
+        $this->policy->assertCommercialConsistency($input);
+        if ($purpose === 'CREATE') $this->policy->assertPilotCreate($input);
         $quoteId = (string) ($acceptedQuote['quote_id'] ?? '');
         $bundle = $this->store->get($quoteId);
         if ($bundle === null || CarbonImmutable::parse((string) $bundle['expires_at'])->isPast()) {
@@ -118,7 +122,7 @@ final readonly class PricingService
                     ...$option,
                     'quote_id' => $quoteId,
                     'quote_version' => (int) $bundle['quote_version'],
-                    'input_fingerprint' => (string) $bundle['input_fingerprint'],
+                    'input_fingerprint' => (string) $option['_resolved_input_fingerprint'],
                     'provider_calculated_at' => (string) $bundle['provider_calculated_at'],
                 ];
             }
@@ -168,7 +172,10 @@ final readonly class PricingService
             'quote_version' => $bundle['quote_version'],
             'purpose' => $bundle['purpose'],
             'expires_at' => $bundle['expires_at'],
-            'options' => $bundle['options'],
+            'options' => array_map(static function (array $option): array {
+                unset($option['_resolved_input_fingerprint']);
+                return $option;
+            }, $bundle['options']),
         ];
     }
 
@@ -192,6 +199,10 @@ final readonly class PricingService
             'pickup_commitment_at', 'delivery_commitment_at', 'width_cm',
             'length_cm', 'height_cm', 'insurance_value_amount', 'cod_amount',
             'service_offering_id', 'service_offering_version_id',
+            'pickup_service_date', 'pickup_window_code', 'delivery_window_code',
+            'commitment_schedule_version_id', 'pickup_commitment_start_at',
+            'pickup_commitment_end_at', 'delivery_commitment_start_at',
+            'delivery_commitment_end_at', 'commitment_snapshot',
         ] as $field) {
             $input[$field] ??= null;
         }
@@ -205,6 +216,7 @@ final readonly class PricingService
             foreach (['weight_kg', 'width_cm', 'length_cm', 'height_cm'] as $field) {
                 $parcel[$field] ??= null;
             }
+            $parcel['content_description'] = trim((string) ($parcel['content_description'] ?? ''));
 
             return $parcel;
         }, (array) ($input['parcels'] ?? []));

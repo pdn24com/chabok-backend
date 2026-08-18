@@ -18,6 +18,7 @@ use Modules\Geography\Domain\GeographyIds;
 use Modules\Geography\Infrastructure\Database\Seeders\IranGeographySeeder;
 use Modules\Pricing\Application\PricingService;
 use Modules\Pricing\Infrastructure\Database\Seeders\PricingChargeTypeSeeder;
+use Modules\ServiceCatalog\Application\CommitmentScheduleService;
 use Modules\ServiceCatalog\Application\ServiceCatalogService;
 
 final class ServiceCatalogPricingIntegrationTest extends MySqlRedisTestCase
@@ -116,6 +117,15 @@ final class ServiceCatalogPricingIntegrationTest extends MySqlRedisTestCase
             $catalog->transition($checker, 'options', $option['service_option_version_id'], 'approve', (string) Str::uuid());
             $options[$code] = $catalog->transition($maker, 'options', $option['service_option_version_id'], 'publish', (string) Str::uuid());
         }
+        $scheduleService = $this->app->make(CommitmentScheduleService::class);
+        $schedule = $scheduleService->create($maker, [
+            'code' => 'EXPRESS_WINDOWS', 'title' => 'پنجره‌های اکسپرس', 'timezone' => 'Asia/Tehran', 'calendar_code' => 'IR_STANDARD',
+            'valid_from' => $validFrom, 'valid_to' => null,
+            'windows' => [['window_code' => 'MORNING', 'window_type' => 'PICKUP', 'label_fa' => 'صبح', 'start_time' => '09:00', 'end_time' => '13:00', 'booking_cutoff_time' => '23:59', 'applicable_weekdays' => [1, 2, 3, 4, 5, 6, 7], 'day_offset' => 0, 'active' => true]],
+            'scopes' => [['scope_type' => 'NODE', 'node_id' => $nodeId]],
+        ], (string) Str::uuid());
+        $scheduleService->transition($checker, $schedule['commitment_schedule_version_id'], 'approve', (string) Str::uuid());
+        $schedule = $scheduleService->transition($maker, $schedule['commitment_schedule_version_id'], 'publish', (string) Str::uuid());
 
         $offering = $catalog->createIdentity($maker, 'offerings', [
             'code' => 'EXPRESS_GROUND', 'labels' => ['en' => 'Express Ground'], 'description' => null,
@@ -128,6 +138,7 @@ final class ServiceCatalogPricingIntegrationTest extends MySqlRedisTestCase
                 ['service_option_version_id' => $options['DANGEROUS']['service_option_version_id'], 'compatibility' => 'FORBIDDEN'],
                 ['service_option_version_id' => $options['INSURANCE']['service_option_version_id'], 'compatibility' => 'CONDITIONAL', 'condition' => ['fact_key' => 'insurance_enabled', 'operator' => 'EQ', 'expected_value' => true]],
             ], 'eligibility_rules' => [], 'coverage_references' => [],
+            'commitment_binding' => ['commitment_schedule_version_id' => $schedule['commitment_schedule_version_id'], 'pickup_mode' => 'SELECTABLE_WINDOW', 'delivery_mode' => 'COMPUTED', 'duration_value' => 72, 'duration_unit' => 'HOUR', 'duration_anchor' => 'PICKUP_COMMITMENT_END'],
             'availability_bindings' => [['scope_type' => 'TENANT', 'scope_value' => $tenant['hq_id'], 'enabled' => true]],
             'valid_from' => $validFrom, 'valid_to' => null,
         ], (string) Str::uuid());
@@ -136,12 +147,12 @@ final class ServiceCatalogPricingIntegrationTest extends MySqlRedisTestCase
 
         $selectionContext = [...$this->consignmentDraft($type, $method, $offering), 'selected_option_version_ids' => []];
         foreach ([
-            'SERVICE_OPTION_REQUIRED' => [],
-            'SERVICE_OPTION_FORBIDDEN' => [$options['SIGNATURE']['service_option_version_id'], $options['DANGEROUS']['service_option_version_id']],
-            'SERVICE_OPTION_CONDITION_NOT_MET' => [$options['SIGNATURE']['service_option_version_id'], $options['INSURANCE']['service_option_version_id']],
-        ] as $reasonCode => $selectedOptions) {
+            'SERVICE_OPTION_REQUIRED' => [[], true],
+            'SERVICE_OPTION_FORBIDDEN' => [[$options['SIGNATURE']['service_option_version_id'], $options['DANGEROUS']['service_option_version_id']], true],
+            'SERVICE_OPTION_CONDITION_NOT_MET' => [[$options['SIGNATURE']['service_option_version_id'], $options['INSURANCE']['service_option_version_id']], false],
+        ] as $reasonCode => [$selectedOptions, $insuranceEnabled]) {
             try {
-                $catalog->validateSelection($maker, $offering['service_offering_id'], $offering['service_offering_version_id'], [...$selectionContext, 'selected_option_version_ids' => $selectedOptions]);
+                $catalog->validateSelection($maker, $offering['service_offering_id'], $offering['service_offering_version_id'], [...$selectionContext, 'selected_option_version_ids' => $selectedOptions, 'insurance_enabled' => $insuranceEnabled]);
                 $this->fail("{$reasonCode} must reject the selection.");
             } catch (ApiException $exception) {
                 $this->assertContains($reasonCode, $exception->details['reason_codes']);
@@ -163,6 +174,8 @@ final class ServiceCatalogPricingIntegrationTest extends MySqlRedisTestCase
         $pricing->transition($maker, 'zone-sets', $zoneSet['zone_set_version_id'], 'publish', (string) Str::uuid());
         $zoneId = (string) $zoneSet['zones'][0]['pricing_zone_id'];
         $baseChargeId = (string) DB::table('pricing_charge_types')->where('code', 'BASE_FREIGHT')->value('charge_type_id');
+        $insuranceChargeId = (string) DB::table('pricing_charge_types')->where('code', 'INSURANCE')->value('charge_type_id');
+        $pickupChargeId = (string) DB::table('pricing_charge_types')->where('code', 'PICKUP_FEE')->value('charge_type_id');
         $taxChargeId = (string) DB::table('pricing_charge_types')->where('code', 'TAX')->value('charge_type_id');
         $tariff = $pricing->createTariff($maker, [
             'code' => 'STANDARD_SALES', 'purpose' => 'SALES', 'currency' => 'IRR', 'scope_type' => 'TENANT',
@@ -171,6 +184,8 @@ final class ServiceCatalogPricingIntegrationTest extends MySqlRedisTestCase
             'weight_rounding_step_kg' => 0.5, 'rounding_mode' => 'STEP_UP',
             'rules' => [
                 ['service_offering_version_id' => $offering['service_offering_version_id'], 'charge_type_id' => $baseChargeId, 'origin_zone_id' => $zoneId, 'destination_zone_id' => $zoneId, 'calculation_method' => 'FIXED', 'basis' => 'SHIPMENT', 'fixed_amount' => 10000, 'priority' => 10],
+                ['service_offering_version_id' => $offering['service_offering_version_id'], 'charge_type_id' => $insuranceChargeId, 'origin_zone_id' => $zoneId, 'destination_zone_id' => $zoneId, 'calculation_method' => 'PERCENT', 'basis' => 'DECLARED_VALUE', 'percentage_bps' => 2, 'amount_rounding_mode' => 'CEIL', 'amount_rounding_step' => 10000, 'priority' => 20],
+                ['service_offering_version_id' => $offering['service_offering_version_id'], 'service_option_version_id' => $options['PACKAGING']['service_option_version_id'], 'charge_type_id' => $pickupChargeId, 'origin_zone_id' => $zoneId, 'destination_zone_id' => $zoneId, 'calculation_method' => 'FIXED', 'basis' => 'SHIPMENT', 'fixed_amount' => 3000, 'priority' => 30],
                 ['service_offering_version_id' => $offering['service_offering_version_id'], 'charge_type_id' => $taxChargeId, 'origin_zone_id' => $zoneId, 'destination_zone_id' => $zoneId, 'calculation_method' => 'PERCENT', 'basis' => 'SHIPMENT', 'percentage_bps' => 900, 'basis_charge_codes' => ['BASE_FREIGHT'], 'priority' => 100],
             ],
         ], (string) Str::uuid());
@@ -180,21 +195,29 @@ final class ServiceCatalogPricingIntegrationTest extends MySqlRedisTestCase
         $draft = $this->consignmentDraft($type, $method, $offering);
         $draft['selected_option_version_ids'] = [$options['SIGNATURE']['service_option_version_id']];
         $quote = $this->app->make(ConsignmentPricingService::class)->calculate($maker, $nodeId, 'CREATE', $draft, null, null);
-        $this->assertSame(10900, $quote['options'][0]['total_amount']);
-        $this->assertCount(2, $quote['options'][0]['charge_lines']);
+        $this->assertSame(20900, $quote['options'][0]['total_amount']);
+        $this->assertCount(3, $quote['options'][0]['charge_lines']);
+        $draft['selected_option_version_ids'][] = $options['PACKAGING']['service_option_version_id'];
+        $quote = $this->app->make(ConsignmentPricingService::class)->calculate($maker, $nodeId, 'CREATE', $draft, null, null);
+        $this->assertSame(23900, $quote['options'][0]['total_amount']);
+        $this->assertCount(4, $quote['options'][0]['charge_lines']);
         $internalQuote = $pricing->quoteDetail($maker, $quote['options'][0]['internal_quote_id']);
         $this->assertSame('PER_PARCEL', $internalQuote['resolution_evidence']['weight']['weight_evidence']);
         $this->assertSame('CITY', $internalQuote['resolution_evidence']['origin']['member_type']);
         $this->assertSame(1.5, (float) $internalQuote['resolution_evidence']['weight']['billable_weight_kg']);
+        $this->assertSame($schedule['commitment_schedule_version_id'], $internalQuote['resolution_evidence']['service']['commitment']['schedule_version_id']);
         $created = $this->app->make(ConsignmentService::class)->create($maker, $nodeId, [...$draft, 'accepted_quote' => [
             'quote_id' => $quote['quote_id'], 'quote_version' => 1, 'option_id' => $quote['options'][0]['option_id'],
         ]], (string) Str::uuid());
 
         $this->assertSame('LOCKED', $created['commercial_pricing_state']);
         $this->assertSame($offering['service_offering_version_id'], $created['service_offering_version_id']);
-        $this->assertDatabaseHas('pricing_snapshots', ['object_id' => $created['consignment_id'], 'total_amount' => 10900]);
-        $this->assertDatabaseCount('pricing_charge_lines', 2);
-        $this->assertDatabaseHas('consignment_pricing_versions', ['consignment_id' => $created['consignment_id'], 'provider_code' => 'INTERNAL', 'total_amount' => 10900]);
+        $this->assertSame($schedule['commitment_schedule_version_id'], $created['commitment_schedule_version_id']);
+        $this->assertSame('MORNING', $created['pickup_window_code']);
+        $this->assertNotNull($created['delivery_commitment_at']);
+        $this->assertDatabaseHas('pricing_snapshots', ['object_id' => $created['consignment_id'], 'total_amount' => 23900]);
+        $this->assertDatabaseCount('pricing_charge_lines', 4);
+        $this->assertDatabaseHas('consignment_pricing_versions', ['consignment_id' => $created['consignment_id'], 'provider_code' => 'INTERNAL', 'total_amount' => 23900]);
 
         $bindingId = (string) DB::table('service_availability_bindings')->where('service_offering_version_id', $offering['service_offering_version_id'])->value('availability_binding_id');
         try {
@@ -316,6 +339,57 @@ final class ServiceCatalogPricingIntegrationTest extends MySqlRedisTestCase
         $this->assertContains('PRICING_ZONE_AMBIGUOUS', array_column($pricing->validateZoneSet($maker, $ambiguousZoneSet['zone_set_version_id'])['errors'], 'code'));
     }
 
+    public function test_reusable_commitment_schedule_is_tenant_scoped_resolvable_and_immutable_after_publish(): void
+    {
+        $this->app->make(AuthorizationCatalogSeeder::class)->run();
+        [$tenant, $maker, $checker, $nodeId] = $this->administratorContext('COMMITMENTS');
+        $schedules = $this->app->make(CommitmentScheduleService::class);
+        $monday = CarbonImmutable::parse('2026-08-17 07:00:00', 'Asia/Tehran');
+        CarbonImmutable::setTestNow($monday);
+
+        try {
+            $draft = $schedules->create($maker, [
+                'code' => 'TEHRAN_STANDARD', 'title' => 'برنامه استاندارد تهران',
+                'timezone' => 'Asia/Tehran', 'calendar_code' => 'IR_STANDARD',
+                'valid_from' => $monday->subMinute()->utc()->toISOString(), 'valid_to' => null,
+                'windows' => [
+                    ['window_code' => 'MORNING', 'window_type' => 'PICKUP', 'label_fa' => 'صبح', 'start_time' => '08:00', 'end_time' => '12:00', 'booking_cutoff_time' => '09:00', 'applicable_weekdays' => [1, 2, 3, 4, 5, 6], 'day_offset' => 0, 'active' => true],
+                    ['window_code' => 'NEXT_DAY', 'window_type' => 'DELIVERY', 'label_fa' => 'روز بعد', 'start_time' => '09:00', 'end_time' => '17:00', 'booking_cutoff_time' => '23:59', 'applicable_weekdays' => [1, 2, 3, 4, 5, 6], 'day_offset' => 1, 'active' => true],
+                ],
+                'scopes' => [['scope_type' => 'NODE', 'node_id' => $nodeId]],
+            ], (string) Str::uuid());
+            $versionId = (string) $draft['commitment_schedule_version_id'];
+            $this->assertSame(['valid' => true, 'errors' => []], $schedules->validate($maker, $versionId));
+            $schedules->transition($checker, $versionId, 'approve', (string) Str::uuid());
+            $published = $schedules->transition($maker, $versionId, 'publish', (string) Str::uuid());
+            $this->assertSame('PUBLISHED', $published['status']);
+
+            $windows = $schedules->pickupWindows($maker, $nodeId, $monday->utc()->toISOString());
+            $this->assertCount(1, $windows);
+            $this->assertSame('MORNING', $windows[0]['window_code']);
+            $this->assertSame($versionId, $windows[0]['commitment_schedule_version_id']);
+
+            [, $foreign] = $this->administratorContext('COMMITMENTS-FOREIGN');
+            $this->assertSame([], $schedules->list($foreign, [])->items());
+            try {
+                $schedules->versionDetail($foreign, $versionId);
+                $this->fail('A foreign tenant must not read the schedule version.');
+            } catch (ApiException $exception) {
+                $this->assertSame(ApiErrorCode::ResourceNotFound, $exception->errorCode);
+            }
+
+            try {
+                DB::table('commitment_schedule_windows')->where('commitment_schedule_version_id', $versionId)->update(['label_fa' => 'دستکاری']);
+                $this->fail('Published commitment windows must be immutable.');
+            } catch (QueryException $exception) {
+                $this->assertStringContainsString('immutable published commitment schedule child', $exception->getMessage());
+            }
+            $this->assertDatabaseHas('commitment_schedules', ['hq_id' => $tenant['hq_id'], 'code' => 'TEHRAN_STANDARD']);
+        } finally {
+            CarbonImmutable::setTestNow();
+        }
+    }
+
     public function test_admin_http_boundaries_reject_malformed_nested_configuration(): void
     {
         $this->app->make(AuthorizationCatalogSeeder::class)->run();
@@ -371,6 +445,6 @@ final class ServiceCatalogPricingIntegrationTest extends MySqlRedisTestCase
     /** @param array<string,mixed> $type @param array<string,mixed> $method @param array<string,mixed> $offering @return array<string,mixed> */
     private function consignmentDraft(array $type, array $method, array $offering): array
     {
-        return ['sender' => ['contact_name' => 'Sender', 'mobile' => '09120000001', 'address_text' => 'Tehran', 'city_id' => GeographyIds::city('10866'), 'state' => 'Tehran', 'city' => 'Tehran'], 'receiver' => ['contact_name' => 'Receiver', 'mobile' => '09120000002', 'address_text' => 'Tehran', 'city_id' => GeographyIds::city('10866'), 'state' => 'Tehran', 'city' => 'Tehran'], 'service_type_id' => $type['service_type_id'], 'shipping_method_id' => $method['shipping_method_id'], 'service_offering_id' => $offering['service_offering_id'], 'service_offering_version_id' => $offering['service_offering_version_id'], 'selected_option_version_ids' => [], 'pickup_commitment_at' => now()->addHour()->utc()->toISOString(), 'delivery_commitment_at' => now()->addDay()->utc()->toISOString(), 'weight_kg' => 1.1, 'width_cm' => 10, 'length_cm' => 10, 'height_cm' => 10, 'declared_value_amount' => 100000, 'insurance_enabled' => false, 'insurance_value_amount' => null, 'cod_enabled' => false, 'cod_amount' => null, 'payer' => 'SENDER', 'payment_method' => 'CASH', 'parcels' => [['weight_kg' => 1.1, 'width_cm' => 10, 'length_cm' => 10, 'height_cm' => 10]]];
+        return ['sender' => ['contact_name' => 'Sender', 'mobile' => '09120000001', 'address_text' => 'Tehran', 'city_id' => GeographyIds::city('10866'), 'state' => 'Tehran', 'city' => 'Tehran'], 'receiver' => ['contact_name' => 'Receiver', 'mobile' => '09120000002', 'address_text' => 'Tehran', 'city_id' => GeographyIds::city('10866'), 'state' => 'Tehran', 'city' => 'Tehran'], 'service_type_id' => $type['service_type_id'], 'shipping_method_id' => $method['shipping_method_id'], 'service_offering_id' => $offering['service_offering_id'], 'service_offering_version_id' => $offering['service_offering_version_id'], 'selected_option_version_ids' => [], 'pickup_service_date' => now('Asia/Tehran')->toDateString(), 'pickup_window_code' => 'MORNING', 'delivery_window_code' => null, 'pickup_commitment_at' => now()->addHour()->utc()->toISOString(), 'delivery_commitment_at' => now()->addDay()->utc()->toISOString(), 'weight_kg' => 1.1, 'width_cm' => 10, 'length_cm' => 10, 'height_cm' => 10, 'declared_value_amount' => 100000, 'insurance_enabled' => true, 'insurance_value_amount' => 100000, 'cod_enabled' => false, 'cod_amount' => null, 'payer' => 'SENDER', 'payment_method' => 'CASH', 'parcels' => [['content_description' => 'کالا', 'weight_kg' => 1.1, 'width_cm' => 10, 'length_cm' => 10, 'height_cm' => 10]]];
     }
 }

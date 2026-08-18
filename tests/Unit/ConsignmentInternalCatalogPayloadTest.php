@@ -19,5 +19,8 @@ final class ConsignmentInternalCatalogPayloadTest extends TestCase
         self::assertContains('service_offering_id', $allowedFields);
         self::assertContains('service_offering_version_id', $allowedFields);
         self::assertContains('selected_option_version_ids', $allowedFields);
+        self::assertContains('pickup_service_date', $allowedFields);
+        self::assertContains('pickup_window_code', $allowedFields);
+        self::assertContains('delivery_window_code', $allowedFields);
     }
 }

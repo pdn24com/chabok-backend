@@ -31,6 +31,7 @@ final readonly class ServiceCatalogService implements ServiceEligibilityResolver
         private TransactionManager $transactions,
         private AuditWriter $audit,
         private OutboxWriter $outbox,
+        private CommitmentScheduleService $commitments,
     ) {}
 
     /** @param array<string, mixed> $filters */
@@ -249,6 +250,15 @@ final readonly class ServiceCatalogService implements ServiceEligibilityResolver
                     $errors[] = ['code' => 'SERVICE_OPTION_CONDITION_REQUIRED', 'field' => 'option_rules'];
                 }
             }
+            $binding = $row['commitment_binding'] ?? null;
+            if ($binding !== null) {
+                if (! DB::table('commitment_schedule_versions')->where('commitment_schedule_version_id', $binding['commitment_schedule_version_id'])->where('hq_id', $actor->hqId)->where('status', 'PUBLISHED')->exists()) {
+                    $errors[] = ['code' => 'COMMITMENT_SCHEDULE_VERSION_NOT_PUBLISHED', 'field' => 'commitment_binding.commitment_schedule_version_id'];
+                }
+                if ($binding['delivery_mode'] === 'COMPUTED' && (empty($binding['duration_value']) || empty($binding['duration_unit']) || empty($binding['duration_anchor']))) {
+                    $errors[] = ['code' => 'COMPUTED_DELIVERY_CONFIGURATION_REQUIRED', 'field' => 'commitment_binding'];
+                }
+            }
         }
         $overlap = $this->hasEffectiveOverlap($resource, $row);
         if ($overlap) {
@@ -322,7 +332,9 @@ final readonly class ServiceCatalogService implements ServiceEligibilityResolver
             }
             $decision = $this->evaluate((array) $row, $context);
             if ($decision['outcome'] !== 'INELIGIBLE') {
-                $results[] = [...$this->decode((array) $row), ...$decision, 'options' => $this->resolvedOptions((string) $row->service_offering_version_id, $context), 'commitment' => $this->commitment((array) $row, $context)];
+                $commitment = $this->commitments->resolveForOffering((string) $row->service_offering_version_id, $context);
+                if ($commitment !== null && $commitment['eligible'] !== true) continue;
+                $results[] = [...$this->decode((array) $row), ...$decision, 'options' => $this->resolvedOptions((string) $row->service_offering_version_id, $context), 'commitment' => $commitment ?? $this->commitment((array) $row, $context)];
             }
         }
 
@@ -354,7 +366,11 @@ final readonly class ServiceCatalogService implements ServiceEligibilityResolver
             throw new ApiException(ApiErrorCode::ValidationError, 422, 'The selected Service Offering is not eligible.', details: $decision);
         }
 
-        return [...$this->decode((array) $row), ...$decision, 'options' => $this->resolvedOptions((string) $row->service_offering_version_id, $context), 'commitment' => $this->commitment((array) $row, $context)];
+        $commitment = $this->commitments->resolveForOffering((string) $row->service_offering_version_id, $context);
+        if ($commitment !== null && $commitment['eligible'] !== true) {
+            throw new ApiException(ApiErrorCode::ValidationError, 422, 'The selected Pickup commitment is not eligible.', details: ['reason_code' => $commitment['reason_code']]);
+        }
+        return [...$this->decode((array) $row), ...$decision, 'options' => $this->resolvedOptions((string) $row->service_offering_version_id, $context), 'commitment' => $commitment ?? $this->commitment((array) $row, $context)];
     }
 
     /** @param array<string, mixed> $context @return array<string, mixed> */
@@ -402,7 +418,7 @@ final readonly class ServiceCatalogService implements ServiceEligibilityResolver
     /** @param array<string, mixed> $input */
     private function replaceOfferingChildren(string $versionId, array $input, ?string $hqId): void
     {
-        foreach (['service_offering_option_rules', 'service_eligibility_rules', 'service_coverage_references', 'service_availability_bindings'] as $table) {
+        foreach (['service_offering_option_rules', 'service_eligibility_rules', 'service_coverage_references', 'service_availability_bindings', 'service_offering_commitment_bindings'] as $table) {
             DB::table($table)->where('service_offering_version_id', $versionId)->delete();
         }
         foreach ((array) ($input['option_rules'] ?? []) as $rule) {
@@ -435,6 +451,18 @@ final readonly class ServiceCatalogService implements ServiceEligibilityResolver
                 'enabled' => $binding['enabled'] ?? true,
             ]);
         }
+        if (isset($input['commitment_binding']) && is_array($input['commitment_binding'])) {
+            $binding = $input['commitment_binding'];
+            DB::table('service_offering_commitment_bindings')->insert([
+                'offering_commitment_binding_id' => (string) Str::uuid(),
+                'service_offering_version_id' => $versionId,
+                'commitment_schedule_version_id' => $binding['commitment_schedule_version_id'],
+                'pickup_mode' => $binding['pickup_mode'], 'delivery_mode' => $binding['delivery_mode'],
+                'duration_value' => $binding['delivery_mode'] === 'COMPUTED' ? ($binding['duration_value'] ?? null) : null,
+                'duration_unit' => $binding['delivery_mode'] === 'COMPUTED' ? ($binding['duration_unit'] ?? null) : null,
+                'duration_anchor' => $binding['delivery_mode'] === 'COMPUTED' ? ($binding['duration_anchor'] ?? null) : null,
+            ]);
+        }
     }
 
     private function cloneOfferingChildren(string $from, string $to): void
@@ -444,6 +472,7 @@ final readonly class ServiceCatalogService implements ServiceEligibilityResolver
             'service_eligibility_rules' => 'eligibility_rule_id',
             'service_coverage_references' => 'coverage_reference_id',
             'service_availability_bindings' => 'availability_binding_id',
+            'service_offering_commitment_bindings' => 'offering_commitment_binding_id',
         ];
         foreach ($specs as $table => $primary) {
             foreach (DB::table($table)->where('service_offering_version_id', $from)->get() as $row) {
@@ -469,6 +498,8 @@ final readonly class ServiceCatalogService implements ServiceEligibilityResolver
             $result['eligibility_rules'] = $this->decodedRows('service_eligibility_rules', $versionIdValue);
             $result['coverage_references'] = $this->decodedRows('service_coverage_references', $versionIdValue);
             $result['availability_bindings'] = $this->decodedRows('service_availability_bindings', $versionIdValue);
+            $binding = DB::table('service_offering_commitment_bindings')->where('service_offering_version_id', $versionIdValue)->first();
+            $result['commitment_binding'] = $binding === null ? null : (array) $binding;
         }
 
         return $result;

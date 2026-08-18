@@ -184,6 +184,7 @@ final class ConsignmentIntegrationTest extends MySqlRedisTestCase
         $pricing = $this->app->make(PricingService::class);
         $quote = $pricing->calculate($principal, $node, 'CREATE', $draft, null, null);
         $draft['declared_value_amount']++;
+        $draft['insurance_value_amount']++;
         try {
             $this->app->make(ConsignmentService::class)->create(
                 $principal,
@@ -433,15 +434,15 @@ final class ConsignmentIntegrationTest extends MySqlRedisTestCase
             'length_cm' => 20,
             'height_cm' => 30,
             'declared_value_amount' => 2000000,
-            'insurance_enabled' => false,
-            'insurance_value_amount' => null,
+            'insurance_enabled' => true,
+            'insurance_value_amount' => 2000000,
             'cod_enabled' => false,
             'cod_amount' => null,
             'payer' => 'SENDER',
             'payment_method' => 'CASH',
             'parcels' => [
-                ['weight_kg' => 1, 'width_cm' => 10, 'length_cm' => 20, 'height_cm' => 30],
-                ['weight_kg' => 1, 'width_cm' => 10, 'length_cm' => 20, 'height_cm' => 30],
+                ['content_description' => 'اسناد', 'weight_kg' => 1, 'width_cm' => 10, 'length_cm' => 20, 'height_cm' => 30],
+                ['content_description' => 'قطعات', 'weight_kg' => 1, 'width_cm' => 10, 'length_cm' => 20, 'height_cm' => 30],
             ],
         ];
     }

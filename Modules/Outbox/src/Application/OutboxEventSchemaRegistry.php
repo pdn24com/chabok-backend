@@ -83,6 +83,10 @@ final class OutboxEventSchemaRegistry
                 'target_type' => 'string',
                 'target_id' => 'string',
             ],
+            'service.catalog.commitment-schedule.changed' => [
+                'action' => 'string',
+                'target_id' => 'string',
+            ],
             'pricing.configuration.changed' => [
                 'action' => 'string',
                 'target_type' => 'string',

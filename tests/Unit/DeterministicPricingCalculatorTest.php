@@ -39,6 +39,28 @@ final class DeterministicPricingCalculatorTest extends TestCase
         self::assertMatchesRegularExpression('/^[a-f0-9]{64}$/', $first['result_fingerprint']);
     }
 
+    public function test_insurance_percentage_ceil_rounds_to_independent_money_step_with_evidence(): void
+    {
+        $rule = $this->rule(
+            'insurance', 'INSURANCE', 'SURCHARGE', 'PERCENT',
+            basis: 'DECLARED_VALUE', percentage: 2,
+            amountRoundingMode: 'CEIL', amountRoundingStep: 10000,
+        );
+        $result = (new DeterministicCalculator())->calculate([$rule], [
+            'actual_weight_kg' => 1, 'billable_weight_kg' => 1, 'parcel_count' => 1,
+            'declared_value_amount' => 290000000, 'cod_amount' => 0,
+            'insurance_enabled' => true, 'cod_enabled' => false, 'remote_area' => false,
+        ]);
+
+        self::assertSame(60000, $result['lines'][0]['amount']);
+        self::assertSame([
+            'range_from' => null, 'range_to' => null, 'declared_value_basis' => 290000000,
+            'percentage_bps' => 2, 'raw_amount' => 58000,
+            'amount_rounding_mode' => 'CEIL', 'amount_rounding_step' => 10000,
+            'final_amount' => 60000,
+        ], $result['lines'][0]['explanation']);
+    }
+
     /** @return array<string,mixed> */
     private function rule(
         string $id,
@@ -56,7 +78,9 @@ final class DeterministicPricingCalculatorTest extends TestCase
         array $bases = [],
         array $conditions = [],
         int $priority = 100,
+        string $amountRoundingMode = 'NONE',
+        ?int $amountRoundingStep = null,
     ): array {
-        return ['rate_rule_id' => $id, 'charge_type_id' => 'ct-'.$id, 'charge_type_code' => $code, 'title' => $code, 'category' => $category, 'accounting_mapping_key' => $code, 'calculation_method' => $method, 'basis' => $basis, 'range_from' => $from, 'range_to' => $to, 'fixed_amount' => $fixed, 'unit_rate' => $rate, 'percentage_bps' => $percentage, 'minimum_amount' => $minimum, 'maximum_amount' => $maximum, 'basis_charge_codes' => $bases, 'conditions' => $conditions, 'priority' => $priority];
+        return ['rate_rule_id' => $id, 'charge_type_id' => 'ct-'.$id, 'charge_type_code' => $code, 'title' => $code, 'category' => $category, 'accounting_mapping_key' => $code, 'calculation_method' => $method, 'basis' => $basis, 'range_from' => $from, 'range_to' => $to, 'fixed_amount' => $fixed, 'unit_rate' => $rate, 'percentage_bps' => $percentage, 'minimum_amount' => $minimum, 'maximum_amount' => $maximum, 'amount_rounding_mode' => $amountRoundingMode, 'amount_rounding_step' => $amountRoundingStep, 'basis_charge_codes' => $bases, 'conditions' => $conditions, 'priority' => $priority];
     }
 }
