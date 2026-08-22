@@ -123,6 +123,12 @@ final class OutboxEventSchemaRegistry
                 'manifest_status' => 'string',
                 'succeeded_count' => 'string',
             ],
+            'operations.command.executed' => [
+                'command' => 'string',
+                'resource_id' => 'string',
+                'consignment_id' => 'string',
+                'status' => 'string',
+            ],
         ];
     }
 }
