@@ -13,5 +13,6 @@
     "Dashboard": true,
     "ServiceCatalog": true,
     "Pricing": true,
-    "Geography": true
+    "Geography": true,
+    "Operations": true
 }

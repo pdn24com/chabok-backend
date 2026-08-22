@@ -67,6 +67,7 @@ final class ArchitectureBoundaryTest extends TestCase
             'ServiceCatalog' => ['ServiceCatalog', 'Foundation'],
             'Pricing' => ['Pricing', 'Foundation', 'Geography', 'ServiceCatalog'],
             'Geography' => ['Geography', 'Foundation'],
+            'Operations' => ['Operations', 'Foundation'],
         ];
         $violations = [];
 
