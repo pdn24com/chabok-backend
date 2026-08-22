@@ -18,7 +18,7 @@ use Modules\Foundation\Domain\AuthenticatedPrincipal;
 final readonly class ConsignmentController
 {
     private const DRAFT_FIELDS = [
-        'sender', 'receiver', 'service_type_id', 'shipping_method_id',
+        'sender', 'receiver', 'delivery_node_id', 'service_type_id', 'shipping_method_id',
         'service_offering_id', 'service_offering_version_id',
         'selected_option_version_ids',
         'pickup_service_date', 'pickup_window_code', 'delivery_window_code',
@@ -185,6 +185,7 @@ final readonly class ConsignmentController
         return [
             ...$this->contactRules('sender', true),
             ...$this->contactRules('receiver', true),
+            'delivery_node_id' => ['sometimes', 'nullable', 'uuid'],
             'service_type_id' => ['required_without:service_offering_id', 'nullable', 'uuid'],
             'shipping_method_id' => ['required_without:service_offering_id', 'nullable', 'uuid'],
             'service_offering_id' => ['sometimes', 'nullable', 'uuid'],

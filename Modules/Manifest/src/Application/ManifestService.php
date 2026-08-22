@@ -17,6 +17,7 @@ use Modules\Foundation\Domain\ApiException;
 use Modules\Foundation\Domain\AuthenticatedPrincipal;
 use Modules\Manifest\Domain\ManifestPolicy;
 use Modules\Manifest\Infrastructure\Persistence\ManifestNumberAllocator;
+use Modules\Operations\Application\DeliveryTaskService;
 
 final readonly class ManifestService
 {
@@ -27,6 +28,7 @@ final readonly class ManifestService
         private OutboxWriter $outbox,
         private ManifestPolicy $policy,
         private ManifestNumberAllocator $numbers,
+        private DeliveryTaskService $deliveryTasks,
     ) {}
 
     /** @param array<string, mixed> $filters */
@@ -53,12 +55,20 @@ final readonly class ManifestService
         $context = $this->access($actor, $nodeId, 'manifest.create');
         $driver = isset($input['assigned_driver_id']) ? (string) $input['assigned_driver_id'] : null;
         $this->policy->assertContext((string) $input['manifest_status'], $driver);
+        $this->assertOperationalContext($actor, $nodeId, $input);
         $id = $this->transactions->run(function () use ($actor, $nodeId, $input, $driver, $correlationId): string {
             $id = (string) Str::uuid();
             DB::table('manifests')->insert([
                 'manifest_id' => $id, 'hq_id' => $actor->hqId,
                 'manifest_number' => $this->numbers->next(), 'node_id' => $nodeId,
                 'manifest_status' => $input['manifest_status'], 'assigned_driver_id' => $driver,
+                'manifest_type' => $this->manifestType((string) $input['manifest_status']),
+                'origin_node_id' => $input['origin_node_id'] ?? ($input['manifest_status'] === 'OF' ? $nodeId : null),
+                'destination_node_id' => $input['destination_node_id'] ?? ($input['manifest_status'] === 'IR' ? $nodeId : null),
+                'route_plan_id' => $input['route_plan_id'] ?? null,
+                'route_plan_leg_id' => $input['route_plan_leg_id'] ?? null,
+                'transport_run_id' => $input['transport_run_id'] ?? null,
+                'assigned_vehicle_id' => $input['assigned_vehicle_id'] ?? null,
                 'state' => 'DRAFT', 'version' => 1, 'created_by' => $actor->userId,
                 'created_at' => now(), 'updated_at' => now(),
             ]);
@@ -90,12 +100,27 @@ final readonly class ManifestService
                 ? ($input['assigned_driver_id'] === null ? null : (string) $input['assigned_driver_id'])
                 : $manifest->assigned_driver_id;
             $this->policy->assertContext($target, $driver);
+            $mergedContext = [
+                'manifest_status' => $target,
+                'origin_node_id' => $input['origin_node_id'] ?? $manifest->origin_node_id,
+                'destination_node_id' => $input['destination_node_id'] ?? $manifest->destination_node_id,
+                'route_plan_id' => $input['route_plan_id'] ?? $manifest->route_plan_id,
+                'route_plan_leg_id' => $input['route_plan_leg_id'] ?? $manifest->route_plan_leg_id,
+                'transport_run_id' => $input['transport_run_id'] ?? $manifest->transport_run_id,
+                'assigned_driver_id' => $driver,
+                'assigned_vehicle_id' => $input['assigned_vehicle_id'] ?? $manifest->assigned_vehicle_id,
+            ];
+            $this->assertOperationalContext($actor, $nodeId, $mergedContext);
             if ($target !== $manifest->manifest_status
                 && DB::table('manifest_parcels')->where('manifest_id', $id)->exists()) {
                 throw new ApiException(ApiErrorCode::ValidationError, 422, 'Target status cannot change after Parcel insertion.');
             }
             DB::table('manifests')->where('manifest_id', $id)->update([
-                'manifest_status' => $target, 'assigned_driver_id' => $driver,
+                'manifest_status' => $target, 'manifest_type' => $this->manifestType($target),
+                'origin_node_id' => $mergedContext['origin_node_id'], 'destination_node_id' => $mergedContext['destination_node_id'],
+                'route_plan_id' => $mergedContext['route_plan_id'], 'route_plan_leg_id' => $mergedContext['route_plan_leg_id'],
+                'transport_run_id' => $mergedContext['transport_run_id'],
+                'assigned_driver_id' => $driver, 'assigned_vehicle_id' => $mergedContext['assigned_vehicle_id'],
                 'version' => $manifest->version + 1, 'updated_at' => now(),
             ]);
             $this->audit->write($actor->hqId, $actor->userId, 'MANIFEST_CONTEXT_UPDATED', 'MANIFEST', $id, $correlationId);
@@ -113,7 +138,7 @@ final readonly class ManifestService
             $join->on('c.consignment_id', '=', 'p.consignment_id')->on('c.hq_id', '=', 'p.hq_id');
         })->where('p.hq_id', $actor->hqId)->whereIn('p.current_status', $statuses)
             ->where(fn ($q) => $q->whereNull('c.service_offering_id')->orWhere('c.commercial_pricing_state', 'LOCKED'))
-            ->where(fn ($q) => $q->where('c.pickup_node_id', $nodeId)->orWhere('c.delivery_node_id', $nodeId))
+            ->where(fn ($q) => $this->visibleParcelAtNode($q, $nodeId))
             ->whereNotExists(fn ($q) => $q->selectRaw('1')->from('manifest_parcels as mp')
                 ->whereColumn('mp.parcel_id', 'p.parcel_id')->whereNotNull('mp.active_slot'))
             ->when(($filters['search'] ?? null) !== null, fn ($q) => $q->where(fn ($s) => $s
@@ -191,7 +216,7 @@ final readonly class ManifestService
             foreach (DB::table('manifest_parcels')->where('manifest_id', $id)->whereIn('manifest_parcel_status', ['PENDING', 'VALIDATED'])->lockForUpdate()->get() as $row) {
                 $parcel = DB::table('parcels')->where(['hq_id' => $actor->hqId, 'parcel_id' => $row->parcel_id])->first();
                 $pricingReady = $parcel !== null && DB::table('consignments')->where(['hq_id' => $actor->hqId, 'consignment_id' => $parcel->consignment_id])->where(fn ($q) => $q->whereNull('service_offering_id')->orWhere('commercial_pricing_state', 'LOCKED'))->exists();
-                $valid = $parcel !== null && $pricingReady && $this->policy->canTransition((string) $parcel->current_status, (string) $m->manifest_status);
+                $valid = $parcel !== null && $pricingReady && $this->policy->canTransition((string) $parcel->current_status, (string) $m->manifest_status) && $this->parcelContextValid($parcel, $m, $nodeId);
                 DB::table('manifest_parcels')->where('manifest_parcel_id', $row->manifest_parcel_id)->update($valid ? [
                     'manifest_parcel_status' => 'VALIDATED', 'updated_at' => now(),
                 ] : [
@@ -224,7 +249,7 @@ final readonly class ManifestService
             foreach ($rows as $row) {
                 $parcel = DB::table('parcels')->where(['hq_id' => $actor->hqId, 'parcel_id' => $row->parcel_id])->lockForUpdate()->first();
                 $pricingReady = $parcel !== null && DB::table('consignments')->where(['hq_id' => $actor->hqId, 'consignment_id' => $parcel->consignment_id])->where(fn ($q) => $q->whereNull('service_offering_id')->orWhere('commercial_pricing_state', 'LOCKED'))->exists();
-                if ($parcel === null || ! $pricingReady || ! $this->policy->canTransition((string) $parcel->current_status, (string) $m->manifest_status)) {
+                if ($parcel === null || ! $pricingReady || ! $this->policy->canTransition((string) $parcel->current_status, (string) $m->manifest_status) || ! $this->parcelContextValid($parcel, $m, $nodeId)) {
                     DB::table('manifest_parcels')->where('manifest_parcel_id', $row->manifest_parcel_id)->update([
                         'manifest_parcel_status' => 'FAILED', 'failure_code' => $pricingReady ? 'INVALID_STATUS_TRANSITION' : 'PRICING_STALE',
                         'failure_reason' => $pricingReady ? 'Parcel eligibility changed before confirmation.' : 'Consignment pricing must be recalculated before issuance.', 'active_slot' => null,
@@ -232,8 +257,27 @@ final readonly class ManifestService
                     ]);
                     continue;
                 }
-                DB::table('parcels')->where('parcel_id', $parcel->parcel_id)->update(['current_status' => $m->manifest_status, 'updated_at' => now()]);
+                $custody = $m->manifest_status === 'OD' ? 'DELIVERY_DRIVER' : 'NODE';
+                $custodian = $m->manifest_status === 'OD' ? $m->assigned_driver_id : $nodeId;
+                $nextNode = $m->manifest_status === 'OD' ? null : $nodeId;
+                DB::table('parcels')->where('parcel_id', $parcel->parcel_id)->update([
+                    'current_status' => $m->manifest_status, 'current_node_id' => $nextNode,
+                    'current_custody_type' => $custody, 'current_custodian_id' => $custodian,
+                    'active_transport_run_id' => $m->manifest_status === 'IR' ? null : $parcel->active_transport_run_id,
+                    'version' => (int) $parcel->version + 1, 'updated_at' => now(),
+                ]);
                 $this->statusEvent($actor, $nodeId, (string) $parcel->consignment_id, (string) $parcel->parcel_id, (string) $parcel->current_status, (string) $m->manifest_status, $id);
+                DB::table('parcel_custody_events')->insert([
+                    'custody_event_id' => (string) Str::uuid(), 'hq_id' => $actor->hqId,
+                    'consignment_id' => $parcel->consignment_id, 'parcel_id' => $parcel->parcel_id,
+                    'from_node_id' => $parcel->current_node_id, 'to_node_id' => $nextNode,
+                    'from_custody_type' => $parcel->current_custody_type, 'to_custody_type' => $custody,
+                    'from_custodian_id' => $parcel->current_custodian_id, 'to_custodian_id' => $custodian,
+                    'command_name' => 'MANIFEST_CONFIRMED', 'initiator_id' => $actor->userId,
+                    'manifest_id' => $id, 'route_plan_id' => $m->route_plan_id,
+                    'route_plan_leg_id' => $m->route_plan_leg_id, 'transport_run_id' => $m->transport_run_id,
+                    'created_at' => now(),
+                ]);
                 DB::table('manifest_parcels')->where('manifest_parcel_id', $row->manifest_parcel_id)->update([
                     'manifest_parcel_status' => 'SUCCEEDED', 'active_slot' => null, 'processed_at' => now(), 'updated_at' => now(),
                 ]);
@@ -266,7 +310,11 @@ final readonly class ManifestService
                         $this->statusEvent($actor, $nodeId, $consignmentId, null, (string) $old, (string) $m->manifest_status, $id);
                     }
                 }
+                if ($m->manifest_status === 'OD') {
+                    $this->deliveryTasks->activateFromManifest($actor, $nodeId, $consignmentId, (string) $m->assigned_driver_id, $id);
+                }
             }
+            $this->applyRouteProgress($m);
             DB::table('manifests')->where('manifest_id', $id)->update([
                 'state' => 'CLOSED', 'approved_by' => $actor->userId, 'closed_at' => now(),
                 'version' => $m->version + 1, 'updated_at' => now(),
@@ -286,7 +334,11 @@ final readonly class ManifestService
         return [
             'manifest_id' => (string) $r['manifest_id'], 'manifest_number' => (string) $r['manifest_number'],
             'node_id' => (string) $r['node_id'], 'manifest_status' => (string) $r['manifest_status'],
-            'state' => (string) $r['state'], 'assigned_driver_id' => $r['assigned_driver_id'],
+            'state' => (string) $r['state'], 'manifest_type' => $r['manifest_type'] === null ? $this->manifestType((string) $r['manifest_status']) : (string) $r['manifest_type'],
+            'origin_node_id' => $r['origin_node_id'], 'destination_node_id' => $r['destination_node_id'],
+            'route_plan_id' => $r['route_plan_id'], 'route_plan_leg_id' => $r['route_plan_leg_id'],
+            'transport_run_id' => $r['transport_run_id'],
+            'assigned_driver_id' => $r['assigned_driver_id'], 'assigned_vehicle_id' => $r['assigned_vehicle_id'],
             'version' => (int) $r['version'], 'total_count' => array_sum($counts),
             'succeeded_count' => $counts['succeeded'], 'failed_count' => $counts['failed'],
             'created_at' => $this->time($r['created_at']), 'updated_at' => $this->time($r['updated_at']),
@@ -360,7 +412,7 @@ final readonly class ManifestService
     {
         return DB::table('parcels as p')->join('consignments as c', function ($j): void {
             $j->on('c.consignment_id', '=', 'p.consignment_id')->on('c.hq_id', '=', 'p.hq_id');
-        })->where('p.hq_id', $actor->hqId)->where(fn ($q) => $q->where('c.pickup_node_id', $nodeId)->orWhere('c.delivery_node_id', $nodeId))
+        })->where('p.hq_id', $actor->hqId)->where(fn ($q) => $this->visibleParcelAtNode($q, $nodeId))
             ->where(fn ($q) => $q->where('p.parcel_number', $identifier)->orWhere('c.consignment_number', $identifier))
             ->select(['p.parcel_id', 'p.parcel_number'])->orderBy('p.parcel_number')->get()->all();
     }
@@ -387,5 +439,73 @@ final readonly class ManifestService
     private function time(mixed $value): string
     {
         return \Carbon\CarbonImmutable::parse((string) $value, 'UTC')->utc()->toISOString();
+    }
+
+    /** @param array<string,mixed> $input */
+    private function assertOperationalContext(AuthenticatedPrincipal $actor, string $nodeId, array $input): void
+    {
+        $target = (string) $input['manifest_status'];
+        if ($target === 'OD') {
+            $driverId = (string) ($input['assigned_driver_id'] ?? '');
+            $eligible = DB::table('drivers as d')->where(['d.hq_id' => $actor->hqId, 'd.driver_id' => $driverId, 'd.home_node_id' => $nodeId, 'd.status' => 'ACTIVE', 'd.availability_status' => 'AVAILABLE'])
+                ->whereExists(fn ($q) => $q->selectRaw('1')->from('driver_capabilities as dc')->whereColumn('dc.driver_id', 'd.driver_id')->where('dc.capability', 'DELIVERY'))->exists();
+            if (! $eligible) throw new ApiException(ApiErrorCode::ValidationError, 422, 'An active available delivery driver in scope is required.');
+        }
+        if (in_array($target, ['OF', 'IR'], true) && isset($input['route_plan_leg_id'])) {
+            $leg = DB::table('route_plan_legs')->where(['hq_id' => $actor->hqId, 'route_plan_leg_id' => $input['route_plan_leg_id']])->first();
+            if ($leg === null) throw new ApiException(ApiErrorCode::ValidationError, 422, 'The route leg does not belong to this tenant.');
+            $expectedNode = $target === 'OF' ? $leg->origin_node_id : $leg->destination_node_id;
+            if ((string) $expectedNode !== $nodeId) throw new ApiException(ApiErrorCode::ValidationError, 422, 'The route leg does not belong to the executing node.');
+        }
+    }
+
+    private function manifestType(string $target): string
+    {
+        return match ($target) { 'IR' => 'INBOUND_RECEPTION', 'OF' => 'OUTBOUND_TRANSFER', 'OD' => 'DELIVERY_ASSIGNMENT' };
+    }
+
+    private function parcelContextValid(object $parcel, object $manifest, string $nodeId): bool
+    {
+        if ($manifest->manifest_status === 'IR' && $parcel->current_status === 'PU') {
+            if ((string) $parcel->current_custody_type === 'PICKUP_DRIVER') return true;
+            return DB::table('consignments')->where(['hq_id' => $manifest->hq_id, 'consignment_id' => $parcel->consignment_id, 'pickup_node_id' => $nodeId])->exists();
+        }
+        if ($manifest->manifest_status === 'IR' && $parcel->current_status === 'OS') {
+            if ($manifest->transport_run_id === null || (string) $parcel->active_transport_run_id !== (string) $manifest->transport_run_id) return false;
+            return DB::table('transport_runs')->where(['hq_id' => $manifest->hq_id, 'transport_run_id' => $manifest->transport_run_id, 'destination_node_id' => $nodeId, 'status' => 'ARRIVED'])->exists();
+        }
+        if ($manifest->manifest_status === 'OF') {
+            if ($parcel->active_route_plan_id === null && $manifest->route_plan_id === null) {
+                return DB::table('consignments')->where(['hq_id' => $manifest->hq_id, 'consignment_id' => $parcel->consignment_id])->where(fn ($q) => $q->where('pickup_node_id', $nodeId)->orWhere('delivery_node_id', $nodeId))->exists();
+            }
+            return (string) $parcel->current_node_id === $nodeId && (string) $parcel->active_route_plan_leg_id === (string) $manifest->route_plan_leg_id;
+        }
+        if ($manifest->manifest_status === 'OD') {
+            $allReceived = DB::table('route_plan_legs')->where('route_plan_id', $parcel->active_route_plan_id)->whereNot('status', 'RECEIVED')->doesntExist();
+            return (string) $parcel->current_node_id === $nodeId && $allReceived;
+        }
+        return false;
+    }
+
+    private function applyRouteProgress(object $manifest): void
+    {
+        if ($manifest->route_plan_leg_id === null) return;
+        if ($manifest->manifest_status === 'OF') {
+            DB::table('route_plan_legs')->where(['route_plan_leg_id' => $manifest->route_plan_leg_id, 'status' => 'ROUTED'])->update(['status' => 'OUTBOUND_CONFIRMED', 'updated_at' => now()]);
+        }
+        if ($manifest->manifest_status === 'IR' && $manifest->transport_run_id !== null) {
+            DB::table('route_plan_legs')->where('route_plan_leg_id', $manifest->route_plan_leg_id)->update(['status' => 'RECEIVED', 'received_at' => now(), 'updated_at' => now()]);
+            $remaining = DB::table('route_plan_legs')->where('route_plan_id', $manifest->route_plan_id)->whereNot('status', 'RECEIVED')->exists();
+            if (! $remaining) DB::table('route_plans')->where('route_plan_id', $manifest->route_plan_id)->update(['status' => 'COMPLETED', 'active_slot' => null, 'updated_at' => now()]);
+        }
+    }
+
+    private function visibleParcelAtNode($query, string $nodeId): void
+    {
+        $query->where('p.current_node_id', $nodeId)
+            ->orWhereExists(fn ($q) => $q->selectRaw('1')->from('route_plan_legs as rpl')->whereColumn('rpl.route_plan_leg_id', 'p.active_route_plan_leg_id')->where('rpl.destination_node_id', $nodeId)->whereIn('rpl.status', ['IN_TRANSIT', 'ARRIVED']))
+            ->orWhereExists(fn ($q) => $q->selectRaw('1')->from('pickup_tasks as pt')->whereColumn('pt.consignment_id', 'p.consignment_id')->where('pt.node_id', $nodeId)->whereIn('pt.status', ['PENDING', 'ASSIGNED', 'IN_PROGRESS']))
+            ->orWhereExists(fn ($q) => $q->selectRaw('1')->from('delivery_tasks as dt')->whereColumn('dt.consignment_id', 'p.consignment_id')->where('dt.node_id', $nodeId)->whereIn('dt.status', ['PENDING', 'ASSIGNED', 'IN_PROGRESS']))
+            ->orWhere('c.pickup_node_id', $nodeId)->orWhere('c.delivery_node_id', $nodeId);
     }
 }

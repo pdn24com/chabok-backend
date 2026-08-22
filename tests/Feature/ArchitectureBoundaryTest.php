@@ -62,7 +62,7 @@ final class ArchitectureBoundaryTest extends TestCase
             'Authorization' => ['Authorization', 'Foundation', 'Identity', 'User'],
             'Notification' => ['Notification', 'Foundation'],
             'Consignment' => ['Consignment', 'Foundation', 'Geography', 'Pricing'],
-            'Manifest' => ['Manifest', 'Foundation'],
+            'Manifest' => ['Manifest', 'Foundation', 'Operations'],
             'Dashboard' => ['Dashboard', 'Foundation'],
             'ServiceCatalog' => ['ServiceCatalog', 'Foundation'],
             'Pricing' => ['Pricing', 'Foundation', 'Geography', 'ServiceCatalog'],

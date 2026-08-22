@@ -36,10 +36,16 @@ final readonly class ManifestController
 
     public function store(Request $request): JsonResponse
     {
-        StrictPayload::assertOnly($request, ['manifest_status', 'assigned_driver_id']);
+        StrictPayload::assertOnly($request, ['manifest_status', 'origin_node_id', 'destination_node_id', 'route_plan_id', 'route_plan_leg_id', 'transport_run_id', 'assigned_driver_id', 'assigned_vehicle_id']);
         $input = $request->validate([
             'manifest_status' => ['required', 'in:IR,OF,OD'],
+            'origin_node_id' => ['sometimes', 'nullable', 'uuid'],
+            'destination_node_id' => ['sometimes', 'nullable', 'uuid'],
+            'route_plan_id' => ['sometimes', 'nullable', 'uuid'],
+            'route_plan_leg_id' => ['sometimes', 'nullable', 'uuid'],
+            'transport_run_id' => ['sometimes', 'nullable', 'uuid'],
             'assigned_driver_id' => ['sometimes', 'nullable', 'uuid'],
+            'assigned_vehicle_id' => ['sometimes', 'nullable', 'uuid'],
         ]);
 
         return ApiResponder::success(
@@ -64,11 +70,17 @@ final readonly class ManifestController
 
     public function update(Request $request, string $manifestId): JsonResponse
     {
-        StrictPayload::assertOnly($request, ['expected_version', 'manifest_status', 'assigned_driver_id']);
+        StrictPayload::assertOnly($request, ['expected_version', 'manifest_status', 'origin_node_id', 'destination_node_id', 'route_plan_id', 'route_plan_leg_id', 'transport_run_id', 'assigned_driver_id', 'assigned_vehicle_id']);
         $input = $request->validate([
             'expected_version' => ['required', 'integer', 'min:1'],
             'manifest_status' => ['sometimes', 'in:IR,OF,OD'],
+            'origin_node_id' => ['sometimes', 'nullable', 'uuid'],
+            'destination_node_id' => ['sometimes', 'nullable', 'uuid'],
+            'route_plan_id' => ['sometimes', 'nullable', 'uuid'],
+            'route_plan_leg_id' => ['sometimes', 'nullable', 'uuid'],
+            'transport_run_id' => ['sometimes', 'nullable', 'uuid'],
             'assigned_driver_id' => ['sometimes', 'nullable', 'uuid'],
+            'assigned_vehicle_id' => ['sometimes', 'nullable', 'uuid'],
         ]);
         if (count($input) === 1) {
             throw new ApiException(ApiErrorCode::ValidationError, 422, 'A context change is required.');

@@ -44,14 +44,6 @@ final class ManifestPolicy
                 ['assigned_driver_id' => ['An assigned driver is required.']],
             );
         }
-        if ($targetStatus === 'OD') {
-            throw new ApiException(
-                ApiErrorCode::ValidationError,
-                422,
-                'Driver-backed Manifest status is not available yet.',
-                ['manifest_status' => ['The Driver dependency is not available.']],
-            );
-        }
     }
 
     public function canTransition(string $currentStatus, string $targetStatus): bool
