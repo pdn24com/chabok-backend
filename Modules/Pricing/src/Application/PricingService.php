@@ -356,7 +356,22 @@ final readonly class PricingService
     {
         $row = DB::table('pricing_zone_set_versions as v')->join('pricing_zone_sets as s', 's.pricing_zone_set_id', '=', 'v.pricing_zone_set_id')->where('v.zone_set_version_id', $versionId)->where(fn ($q) => $q->whereNull('s.hq_id')->orWhere('s.hq_id', $actor->hqId))->select(['v.*', 's.code', 's.title', 's.purpose'])->first();
         if ($row === null) throw new ApiException(ApiErrorCode::ResourceNotFound, 404, 'Resource not found.');
-        $result = (array) $row; $result['zones'] = DB::table('pricing_zones')->where('zone_set_version_id', $versionId)->get()->map(function ($z) { $zone = (array) $z; $zone['members'] = DB::table('pricing_zone_members as m')->leftJoin('cities as c', 'c.city_id', '=', 'm.city_id')->leftJoin('provinces as p', 'p.province_id', '=', 'm.province_id')->where('m.pricing_zone_id', $z->pricing_zone_id)->select('m.*', 'c.name_fa as city_name_fa', 'c.legacy_city_code', 'p.name_fa as province_name_fa', 'p.legacy_province_code')->get()->map(fn ($m) => (array) $m)->all(); return $zone; })->all(); return $result;
+        $result = (array) $row;
+        $result['zones'] = DB::table('pricing_zones')->where('zone_set_version_id', $versionId)->get()->map(function ($z) {
+            $zone = (array) $z;
+            $zone['members'] = DB::table('pricing_zone_members as m')
+                ->leftJoin('cities as c', 'c.city_id', '=', 'm.city_id')
+                ->leftJoin('provinces as p', DB::raw('p.province_id'), '=', DB::raw('COALESCE(c.province_id, m.province_id)'))
+                ->where('m.pricing_zone_id', $z->pricing_zone_id)
+                ->select([
+                    'm.zone_member_id', 'm.pricing_zone_id', 'm.member_type', 'm.reference_value',
+                    'm.city_id', DB::raw('COALESCE(c.province_id, m.province_id) as province_id'),
+                    'm.range_end', 'm.precedence', 'c.name_fa as city_name_fa', 'c.legacy_city_code',
+                    'p.name_fa as province_name_fa', 'p.legacy_province_code',
+                ])->get()->map(fn ($m) => (array) $m)->all();
+            return $zone;
+        })->all();
+        return $result;
     }
 
     /** @return array<string,mixed> */
@@ -376,7 +391,8 @@ final readonly class PricingService
             DB::table('pricing_zones')->insert(['pricing_zone_id' => $zoneId, 'zone_set_version_id' => $versionId, 'code' => Str::upper($zone['code']), 'title' => $zone['title'], 'remote_area' => $zone['remote_area'] ?? false]);
             foreach ((array) ($zone['members'] ?? []) as $member) {
                 $type = (string) $member['member_type'];
-                $cityId = $type === 'CITY' ? $this->canonicalCityMemberId($member) : null;
+                $city = $type === 'CITY' ? $this->canonicalCityMember($member) : null;
+                $cityId = $city['city_id'] ?? null;
                 $provinceId = $type === 'PROVINCE' ? (string) ($member['province_id'] ?? '') : null;
                 if ($type === 'PROVINCE' && ($provinceId === '' || ! DB::table('provinces')->where('province_id', $provinceId)->where('is_active', true)->exists())) {
                     throw new ApiException(ApiErrorCode::ValidationError, 422, 'Zone member province is inactive or invalid.');
@@ -426,15 +442,33 @@ final readonly class PricingService
         unset($input['_hq_id'], $input['_node_id'], $input['_actor_user_id'], $input['_actor_session_id'], $input['_pricing_request_id']); foreach (['sender', 'receiver'] as $party) { $input[$party] = $this->geography->canonicalizeContact((array) ($input[$party] ?? []), false); unset($input[$party]['city_reference']); } $input['purpose'] = $input['purpose'] ?? 'SALES'; $input['channel'] = $input['channel'] ?? 'BRANCH'; $input['as_of_timestamp'] = CarbonImmutable::parse((string) ($input['as_of_timestamp'] ?? now()->toISOString()))->utc()->toISOString(); $input['selected_option_version_ids'] = array_values((array) ($input['selected_option_version_ids'] ?? [])); return $input;
     }
 
-    /** @param array<string,mixed> $member */
-    private function canonicalCityMemberId(array $member): string
+    /**
+     * @param array<string,mixed> $member
+     * @return array{city_id:string,province_id:string}
+     */
+    private function canonicalCityMember(array $member): array
     {
         $cityId = (string) ($member['city_id'] ?? '');
-        if ($cityId !== '' && DB::table('cities')->where('city_id', $cityId)->where('is_active', true)->exists()) return $cityId;
-        $legacyName = trim((string) ($member['reference_value'] ?? ''));
-        $matches = DB::table('cities')->where('normalized_name', $this->normalizer->normalize($legacyName))->where('is_active', true)->pluck('city_id');
-        if ($matches->count() !== 1) throw new ApiException(ApiErrorCode::ValidationError, 422, 'Legacy CITY member cannot be mapped unambiguously to canonical Geography.');
-        return (string) $matches->first();
+        if ($cityId !== '') {
+            $city = DB::table('cities')->where('city_id', $cityId)->where('is_active', true)->first(['city_id', 'province_id']);
+        } else {
+            $legacyName = trim((string) ($member['reference_value'] ?? ''));
+            $matches = DB::table('cities')->where('normalized_name', $this->normalizer->normalize($legacyName))->where('is_active', true)->get(['city_id', 'province_id']);
+            if ($matches->count() !== 1) throw new ApiException(ApiErrorCode::ValidationError, 422, 'Legacy CITY member cannot be mapped unambiguously to canonical Geography.');
+            $city = $matches->first();
+        }
+        if ($city === null) throw new ApiException(ApiErrorCode::ValidationError, 422, 'Zone member city is inactive or invalid.');
+        $canonicalProvinceId = (string) $city->province_id;
+        $providedProvinceId = (string) ($member['province_id'] ?? '');
+        if ($providedProvinceId !== '' && $providedProvinceId !== $canonicalProvinceId) {
+            throw new ApiException(
+                ApiErrorCode::ValidationError,
+                422,
+                'Zone member province does not match the selected City.',
+                fieldErrors: ['province_id' => ['Province must match the selected City.']],
+            );
+        }
+        return ['city_id' => (string) $city->city_id, 'province_id' => $canonicalProvinceId];
     }
 
     private function memberPrecedence(string $type): int

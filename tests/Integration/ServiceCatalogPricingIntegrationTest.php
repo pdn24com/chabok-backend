@@ -339,6 +339,62 @@ final class ServiceCatalogPricingIntegrationTest extends MySqlRedisTestCase
         $this->assertContains('PRICING_ZONE_AMBIGUOUS', array_column($pricing->validateZoneSet($maker, $ambiguousZoneSet['zone_set_version_id'])['errors'], 'code'));
     }
 
+    public function test_zone_city_members_rehydrate_with_canonical_province_context(): void
+    {
+        $this->app->make(AuthorizationCatalogSeeder::class)->run();
+        [, $maker] = $this->administratorContext('ZONE-CITY-CONTEXT');
+        $pricing = $this->app->make(PricingService::class);
+        $cityProvinceId = GeographyIds::province('8');
+        $cityIds = DB::table('cities')->where('province_id', $cityProvinceId)->where('is_active', true)->orderBy('legacy_city_code')->limit(2)->pluck('city_id')->map(fn ($id) => (string) $id)->all();
+        $this->assertCount(2, $cityIds);
+        $provinceMemberId = (string) DB::table('provinces')->where('province_id', '!=', $cityProvinceId)->where('is_active', true)->orderBy('legacy_province_code')->value('province_id');
+
+        $created = $pricing->createZoneSet($maker, [
+            'code' => 'CITY_CONTEXT', 'purpose' => 'SALES', 'title' => 'Canonical City context', 'valid_from' => null, 'valid_to' => null,
+            'zones' => [[
+                'code' => 'GROUPED', 'title' => 'Grouped cities', 'members' => [
+                    ['member_type' => 'CITY', 'city_id' => $cityIds[0]],
+                    ['member_type' => 'CITY', 'city_id' => $cityIds[1], 'province_id' => $cityProvinceId],
+                    ['member_type' => 'PROVINCE', 'province_id' => $provinceMemberId],
+                ],
+            ]],
+        ], (string) Str::uuid());
+
+        $cityMembers = collect($created['zones'][0]['members'])->where('member_type', 'CITY')->values();
+        $this->assertEqualsCanonicalizing($cityIds, $cityMembers->pluck('city_id')->all());
+        $this->assertSame([$cityProvinceId, $cityProvinceId], $cityMembers->pluck('province_id')->all());
+        $this->assertDatabaseHas('pricing_zone_members', ['member_type' => 'CITY', 'city_id' => $cityIds[0], 'province_id' => null]);
+        $provinceMember = collect($created['zones'][0]['members'])->firstWhere('member_type', 'PROVINCE');
+        $this->assertSame($provinceMemberId, $provinceMember['province_id']);
+        $this->assertNull($provinceMember['city_id']);
+
+        $saved = $pricing->updateZoneVersion($maker, $created['zone_set_version_id'], [
+            'expected_version' => 1, 'valid_from' => null, 'valid_to' => null,
+            'zones' => [[
+                'code' => 'GROUPED', 'title' => 'Grouped cities', 'remote_area' => false,
+                'members' => [...$cityMembers->map(fn ($member) => ['member_type' => 'CITY', 'city_id' => $member['city_id'], 'province_id' => $member['province_id']])->all(),
+                    ['member_type' => 'PROVINCE', 'province_id' => $provinceMemberId],
+                ],
+            ]],
+        ]);
+        $reopened = $pricing->history($maker, 'zone-sets', $created['pricing_zone_set_id'])[0];
+        $this->assertSame($saved['zone_set_version_id'], $reopened['zone_set_version_id']);
+        $this->assertSame([$cityProvinceId, $cityProvinceId], collect($reopened['zones'][0]['members'])->where('member_type', 'CITY')->pluck('province_id')->values()->all());
+        $this->assertSame($provinceMemberId, collect($reopened['zones'][0]['members'])->firstWhere('member_type', 'PROVINCE')['province_id']);
+
+        $mismatchedProvinceId = (string) DB::table('provinces')->where('province_id', '!=', $cityProvinceId)->where('is_active', true)->orderByDesc('legacy_province_code')->value('province_id');
+        try {
+            $pricing->updateZoneVersion($maker, $created['zone_set_version_id'], [
+                'expected_version' => 2, 'valid_from' => null, 'valid_to' => null,
+                'zones' => [['code' => 'GROUPED', 'title' => 'Grouped cities', 'members' => [['member_type' => 'CITY', 'city_id' => $cityIds[0], 'province_id' => $mismatchedProvinceId]]]],
+            ]);
+            $this->fail('A mismatched City and Province must be rejected.');
+        } catch (ApiException $exception) {
+            $this->assertSame(ApiErrorCode::ValidationError, $exception->errorCode);
+            $this->assertSame(422, $exception->httpStatus);
+        }
+    }
+
     public function test_reusable_commitment_schedule_is_tenant_scoped_resolvable_and_immutable_after_publish(): void
     {
         $this->app->make(AuthorizationCatalogSeeder::class)->run();
@@ -421,6 +477,15 @@ final class ServiceCatalogPricingIntegrationTest extends MySqlRedisTestCase
         $this->assertDatabaseHas('pricing_zone_members', [
             'member_type' => 'PROVINCE', 'province_id' => GeographyIds::province('8'), 'precedence' => 100,
         ]);
+
+        $mismatchedProvinceId = (string) DB::table('provinces')->where('province_id', '!=', GeographyIds::province('8'))->where('is_active', true)->value('province_id');
+        $this->withToken($token)->postJson('/api/v1/admin/pricing/zone-sets', [
+            'code' => 'MISMATCHED_CITY_PROVINCE', 'purpose' => 'SALES', 'title' => 'Mismatched canonical geography',
+            'zones' => [[
+                'code' => 'INVALID_CITY_CONTEXT', 'title' => 'Invalid City context',
+                'members' => [['member_type' => 'CITY', 'city_id' => GeographyIds::city('10866'), 'province_id' => $mismatchedProvinceId]],
+            ]],
+        ])->assertStatus(422)->assertJsonPath('error_code', 'VALIDATION_ERROR');
 
         $this->withToken($token)->postJson('/api/v1/admin/pricing/tariff-families', [
             'code' => 'INVALID_TARIFF', 'purpose' => 'SALES', 'currency' => 'IRR', 'zone_set_version_id' => (string) Str::uuid(),
