@@ -6,6 +6,7 @@ use Illuminate\Support\Facades\Route;
 use Modules\Operations\Infrastructure\Http\OperationalDirectoryController;
 use Modules\Operations\Infrastructure\Http\PickupTaskController;
 use Modules\Operations\Infrastructure\Http\DeliveryTaskController;
+use Modules\Operations\Infrastructure\Http\MovementController;
 
 Route::prefix('api/v1')->middleware(['api', 'access.auth', 'node.access', 'password.changed'])->group(function (): void {
     Route::get('/drivers', [OperationalDirectoryController::class, 'drivers'])->name('operations.drivers.index');
@@ -21,4 +22,13 @@ Route::prefix('api/v1')->middleware(['api', 'access.auth', 'node.access', 'passw
     Route::get('/delivery-tasks/{id}', [DeliveryTaskController::class, 'show'])->whereUuid('id')->name('delivery-tasks.show');
     Route::post('/delivery-tasks/{id}/complete', [DeliveryTaskController::class, 'complete'])->middleware('idempotent:delivery-tasks.complete')->whereUuid('id')->name('delivery-tasks.complete');
     Route::post('/delivery-tasks/{id}/fail', [DeliveryTaskController::class, 'fail'])->middleware('idempotent:delivery-tasks.fail')->whereUuid('id')->name('delivery-tasks.fail');
+    Route::post('/consignments/{consignmentId}/route-plan', [MovementController::class, 'plan'])->middleware('idempotent:route-plans.create')->whereUuid('consignmentId')->name('route-plans.store');
+    Route::get('/route-plans/{id}', [MovementController::class, 'showPlan'])->whereUuid('id')->name('route-plans.show');
+    Route::post('/consignments/{consignmentId}/cluster', [MovementController::class, 'cluster'])->middleware('idempotent:route-plans.cluster')->whereUuid('consignmentId')->name('route-plans.cluster');
+    Route::post('/transport-runs', [MovementController::class, 'createRun'])->middleware('idempotent:transport-runs.create')->name('transport-runs.store');
+    Route::get('/transport-runs/{id}', [MovementController::class, 'showRun'])->whereUuid('id')->name('transport-runs.show');
+    Route::post('/transport-runs/{id}/load', [MovementController::class, 'load'])->middleware('idempotent:transport-runs.load')->whereUuid('id')->name('transport-runs.load');
+    Route::post('/transport-runs/{id}/depart', [MovementController::class, 'depart'])->middleware('idempotent:transport-runs.depart')->whereUuid('id')->name('transport-runs.depart');
+    Route::post('/transport-runs/{id}/arrive', [MovementController::class, 'arrive'])->middleware('idempotent:transport-runs.arrive')->whereUuid('id')->name('transport-runs.arrive');
+    Route::post('/transport-runs/{id}/close', [MovementController::class, 'close'])->middleware('idempotent:transport-runs.close')->whereUuid('id')->name('transport-runs.close');
 });
