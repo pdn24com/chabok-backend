@@ -17,7 +17,7 @@ use Modules\Manifest\Application\ManifestService;
 use Modules\Operations\Application\DeliveryTaskService;
 use Modules\Operations\Application\MovementService;
 use Modules\Operations\Application\PickupTaskService;
-use Modules\Operations\Infrastructure\Database\Seeders\OperationalPilotSeeder as Pilot;
+use Tests\Fixtures\OperationalPilotFixtureSeeder as Pilot;
 
 final class OperationalPilotAcceptanceTest extends MySqlRedisTestCase
 {

@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace Modules\Operations\Infrastructure\Database\Seeders;
+namespace Tests\Fixtures;
 
 use Illuminate\Database\Seeder;
 use Illuminate\Support\Facades\DB;
@@ -17,10 +17,10 @@ use Modules\ServiceCatalog\Application\CommitmentScheduleService;
 use Modules\ServiceCatalog\Application\ServiceCatalogService;
 
 /**
- * Explicit local/UAT fixture. Invoke with --class; production boot never calls it.
+ * Explicit isolated-test fixture. Production boot and runtime commands never call it.
  * Passwords are intentionally not embedded. Set CHABOK_PILOT_PASSWORD to make actors login-capable.
  */
-final class OperationalPilotSeeder extends Seeder
+final class OperationalPilotFixtureSeeder extends Seeder
 {
     public const HQ_ID = '10000000-0000-4000-8000-000000000001';
     public const AREA_ID = '10000000-0000-4000-8000-000000000002';
@@ -51,8 +51,8 @@ final class OperationalPilotSeeder extends Seeder
 
     public function run(): void
     {
-        if (! app()->environment(['local', 'testing', 'uat'])) {
-            throw new \RuntimeException('The operational pilot fixture is restricted to local, testing, and UAT environments.');
+        if (! app()->environment('testing')) {
+            throw new \RuntimeException('The operational integration fixture is restricted to isolated tests.');
         }
         app(AuthorizationCatalogSeeder::class)->run();
         app(IranGeographySeeder::class)->run();
