@@ -14,6 +14,7 @@ use Modules\Foundation\Domain\ApiException;
 use Modules\Foundation\Domain\AuthenticatedPrincipal;
 use Modules\Manifest\Application\ManifestService;
 use Modules\Manifest\Domain\ManifestEligibilityReason;
+use Modules\Operations\Application\DeliveryTaskService;
 
 final class ManifestIntegrationTest extends MySqlRedisTestCase
 {
@@ -271,6 +272,11 @@ final class ManifestIntegrationTest extends MySqlRedisTestCase
         );
         $driver = $this->driver($tenant['hq_id'], $node, 'DELIVERY');
         $vehicle = $this->vehicle($tenant['hq_id'], $node);
+        $this->app->make(DeliveryTaskService::class)->ensurePending(
+            $principal,
+            $node,
+            $deliveryConsignment,
+        );
         $delivery = $service->create($principal, $node, [
             'manifest_status' => 'OD', 'origin_node_id' => $node,
             'assigned_driver_id' => $driver, 'assigned_vehicle_id' => $vehicle,
@@ -284,7 +290,7 @@ final class ManifestIntegrationTest extends MySqlRedisTestCase
         $this->assertSame('DELIVERY_DRIVER', DB::table('parcels')->where('parcel_id', $deliveryParcel)->value('current_custody_type'));
         $this->assertDatabaseHas('delivery_tasks', [
             'consignment_id' => $deliveryConsignment, 'manifest_id' => $deliveryClosed['manifest_id'],
-            'assigned_driver_id' => $driver, 'status' => 'ASSIGNED',
+            'assigned_driver_id' => $driver, 'status' => 'IN_PROGRESS',
         ]);
     }
 
