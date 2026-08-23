@@ -30,6 +30,11 @@ enum ApiErrorCode: string
     case PricingQuoteExpired = 'PRICING_QUOTE_EXPIRED';
     case PricingQuoteMismatch = 'PRICING_QUOTE_MISMATCH';
     case ServiceIneligible = 'SERVICE_INELIGIBLE';
+    case CoverageNotFound = 'COVERAGE_NOT_FOUND';
+    case CoverageAmbiguous = 'COVERAGE_AMBIGUOUS';
+    case RouteNotFound = 'ROUTE_NOT_FOUND';
+    case RouteAmbiguous = 'ROUTE_AMBIGUOUS';
+    case ConfigVersionUnavailable = 'CONFIG_VERSION_UNAVAILABLE';
     case PricingTariffNotFound = 'PRICING_TARIFF_NOT_FOUND';
     case PricingZoneUnresolved = 'PRICING_ZONE_UNRESOLVED';
     case PricingZoneAmbiguous = 'PRICING_ZONE_AMBIGUOUS';
