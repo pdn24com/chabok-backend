@@ -92,6 +92,18 @@ final class OutboxEventSchemaRegistry
                 'target_type' => 'string',
                 'target_id' => 'string',
             ],
+            'network.configuration.changed' => [
+                'action' => 'string',
+                'target_type' => 'string',
+                'target_id' => 'string',
+                'status' => 'optional_string',
+            ],
+            'fleet.configuration.changed' => [
+                'action' => 'string',
+                'target_type' => 'string',
+                'target_id' => 'string',
+                'status' => 'string',
+            ],
             'consignment.created' => [
                 'consignment_id' => 'string',
                 'version' => 'string',
