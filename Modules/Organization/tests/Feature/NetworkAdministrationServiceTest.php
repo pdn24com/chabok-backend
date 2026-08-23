@@ -12,8 +12,6 @@ use Modules\Foundation\Application\Contracts\OutboxWriter;
 use Modules\Foundation\Domain\ApiErrorCode;
 use Modules\Foundation\Domain\ApiException;
 use Modules\Foundation\Domain\AuthenticatedPrincipal;
-use Modules\Geography\Domain\GeographyIds;
-use Modules\Geography\Infrastructure\Database\Seeders\IranGeographySeeder;
 use Modules\Organization\Application\NetworkAdministrationService;
 use Tests\TestCase;
 
@@ -26,7 +24,9 @@ final class NetworkAdministrationServiceTest extends TestCase
         $hqId = (string) Str::uuid(); $userId = (string) Str::uuid();
         DB::table('hq_tenants')->insert(['hq_id' => $hqId, 'hq_code' => 'HQ-NETWORK', 'hq_title' => 'Network HQ', 'status' => 'ACTIVE', 'created_at' => now(), 'updated_at' => now()]);
         DB::table('users')->insert(['user_id' => $userId, 'hq_id' => $hqId, 'username' => 'network.admin', 'normalized_username' => 'network.admin', 'first_name' => 'Network', 'last_name' => 'Admin', 'display_name' => 'Network Admin', 'status' => 'ACTIVE', 'must_change_password' => false, 'created_at' => now(), 'updated_at' => now()]);
-        app(IranGeographySeeder::class)->run();
+        $provinceId = (string) Str::uuid(); $cityId = (string) Str::uuid();
+        DB::table('provinces')->insert(['province_id' => $provinceId, 'legacy_province_code' => '1', 'name_fa' => 'آذربایجان شرقی', 'normalized_name' => 'azerbaijan-sharghi', 'latitude' => 38.0962, 'longitude' => 46.2738, 'is_active' => true, 'created_at' => now(), 'updated_at' => now()]);
+        DB::table('cities')->insert(['city_id' => $cityId, 'province_id' => $provinceId, 'legacy_city_code' => '10712', 'name_fa' => 'تبریز', 'normalized_name' => 'tabriz', 'is_active' => true, 'created_at' => now(), 'updated_at' => now()]);
         $resolver = new class implements AuthorizationContextResolver {
             /** @var list<string> */ public array $permissions = ['network.area.view', 'network.area.manage', 'network.node.view', 'network.node.manage'];
             public function resolve(AuthenticatedPrincipal $principal): array { return ['permissions' => $this->permissions, 'module_entitlements' => [['module_code' => 'LiveOperations', 'status' => 'ENABLED']]]; }
@@ -41,7 +41,7 @@ final class NetworkAdministrationServiceTest extends TestCase
         $service = app(NetworkAdministrationService::class); $actor = new AuthenticatedPrincipal($userId, (string) Str::uuid(), $hqId, false);
 
         $area = $service->createArea($actor, ['area_code' => 'NW', 'area_title' => 'شمال‌غرب', 'parent_area_id' => null], (string) Str::uuid());
-        $node = $service->createNode($actor, ['area_id' => $area['area_id'], 'node_code' => 'TBZ-HUB', 'node_title' => 'هاب تبریز', 'node_type' => 'HUB', 'capabilities' => ['CONSOLIDATION', 'LINEHAUL'], 'address' => ['country_code' => 'IR', 'province_id' => GeographyIds::province('1'), 'city_id' => GeographyIds::city('10712'), 'postal_code' => null, 'line' => 'تبریز', 'location' => ['latitude' => 38.0962, 'longitude' => 46.2738]]], (string) Str::uuid());
+        $node = $service->createNode($actor, ['area_id' => $area['area_id'], 'node_code' => 'TBZ-HUB', 'node_title' => 'هاب تبریز', 'node_type' => 'HUB', 'capabilities' => ['CONSOLIDATION', 'LINEHAUL'], 'address' => ['country_code' => 'IR', 'province_id' => $provinceId, 'city_id' => $cityId, 'postal_code' => null, 'line' => 'تبریز', 'location' => ['latitude' => 38.0962, 'longitude' => 46.2738]]], (string) Str::uuid());
         $updated = $service->updateNode($actor, $node['node_id'], ['node_title' => 'هاب اصلی تبریز', 'expected_version' => 1], (string) Str::uuid());
 
         $this->assertSame(2, $updated['version']);

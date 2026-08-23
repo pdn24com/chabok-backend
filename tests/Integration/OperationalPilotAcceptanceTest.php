@@ -69,19 +69,19 @@ final class OperationalPilotAcceptanceTest extends MySqlRedisTestCase
         $this->assertStatus($consignmentId, 'IR', 'NODE', Pilot::TBZ_BRANCH_ID);
 
         $movement = $this->app->make(MovementService::class);
-        $plan = $movement->plan($tbzBranch, Pilot::TBZ_BRANCH_ID, $consignmentId, Pilot::ROUTE_ID, $this->correlation('route-plan'));
+        $plan = $movement->plan($tbzBranch, Pilot::TBZ_BRANCH_ID, $consignmentId, $this->correlation('route-plan'));
         $runs = []; $manifestIds = [];
         $legs = [
-            ['pilot.tbz.branch.operator', Pilot::TBZ_BRANCH_ID, 'pilot.tbz.hub.operator', Pilot::TBZ_HUB_ID],
-            ['pilot.tbz.hub.operator', Pilot::TBZ_HUB_ID, 'pilot.thr.hub.operator', Pilot::THR_HUB_ID],
-            ['pilot.thr.hub.operator', Pilot::THR_HUB_ID, 'pilot.tajrish.operator', Pilot::TAJRISH_BRANCH_ID],
+            ['pilot.tbz.branch.operator', Pilot::TBZ_BRANCH_ID, 'pilot.tbz.hub.operator', Pilot::TBZ_HUB_ID, Pilot::LINEHAUL_DRIVER_ID, Pilot::VEHICLE_ID],
+            ['pilot.tbz.hub.operator', Pilot::TBZ_HUB_ID, 'pilot.thr.hub.operator', Pilot::THR_HUB_ID, Pilot::TBZ_HUB_LINEHAUL_DRIVER_ID, Pilot::TBZ_HUB_VEHICLE_ID],
+            ['pilot.thr.hub.operator', Pilot::THR_HUB_ID, 'pilot.tajrish.operator', Pilot::TAJRISH_BRANCH_ID, Pilot::THR_HUB_LINEHAUL_DRIVER_ID, Pilot::THR_HUB_VEHICLE_ID],
         ];
-        foreach ($legs as $index => [$originActorName, $originNode, $destinationActorName, $destinationNode]) {
+        foreach ($legs as $index => [$originActorName, $originNode, $destinationActorName, $destinationNode, $driverId, $vehicleId]) {
             $originActor = $this->actor($originActorName); $destinationActor = $this->actor($destinationActorName);
             $plan = $movement->cluster($originActor, $originNode, $consignmentId, $plan['version'], $this->correlation("cluster-{$index}"));
             $leg = $plan['legs'][$index]; $this->assertSame('ROUTED', $leg['status']); $this->assertStatus($consignmentId, 'ROU', 'NODE', $originNode);
-            $run = $movement->createRun($originActor, $originNode, $leg['route_plan_leg_id'], Pilot::LINEHAUL_DRIVER_ID, Pilot::VEHICLE_ID, $this->correlation("run-create-{$index}"));
-            $outbound = $this->confirmManifest($originActor, $originNode, $parcelNumber, ['manifest_status' => 'OF', 'origin_node_id' => $originNode, 'destination_node_id' => $destinationNode, 'route_plan_id' => $plan['route_plan_id'], 'route_plan_leg_id' => $leg['route_plan_leg_id'], 'transport_run_id' => $run['transport_run_id'], 'assigned_driver_id' => Pilot::LINEHAUL_DRIVER_ID, 'assigned_vehicle_id' => Pilot::VEHICLE_ID], "outbound-{$index}");
+            $run = $movement->createRun($originActor, $originNode, $leg['route_plan_leg_id'], $driverId, $vehicleId, $this->correlation("run-create-{$index}"));
+            $outbound = $this->confirmManifest($originActor, $originNode, $parcelNumber, ['manifest_status' => 'OF', 'origin_node_id' => $originNode, 'destination_node_id' => $destinationNode, 'route_plan_id' => $plan['route_plan_id'], 'route_plan_leg_id' => $leg['route_plan_leg_id']], "outbound-{$index}");
             $manifestIds[] = $outbound['manifest_id']; $this->assertStatus($consignmentId, 'OF', 'NODE', $originNode);
             $run = $movement->load($originActor, $originNode, $run['transport_run_id'], [$parcelId], 1, $this->correlation("run-load-{$index}"));
             $run = $movement->depart($originActor, $originNode, $run['transport_run_id'], 2, $this->correlation("run-depart-{$index}"));
@@ -90,7 +90,7 @@ final class OperationalPilotAcceptanceTest extends MySqlRedisTestCase
             if ($index === 0) $this->expectApi(ApiErrorCode::ResourceNotFound, fn () => $this->app->make(ConsignmentService::class)->get($this->actor('pilot.thr.hub.operator'), Pilot::THR_HUB_ID, $consignmentId));
             $run = $movement->arrive($destinationActor, $destinationNode, $run['transport_run_id'], 3, $this->correlation("run-arrive-{$index}"));
             $this->assertStatus($consignmentId, 'OS', 'TRANSPORT_RUN', null);
-            $inbound = $this->confirmManifest($destinationActor, $destinationNode, $parcelNumber, ['manifest_status' => 'IR', 'origin_node_id' => $originNode, 'destination_node_id' => $destinationNode, 'route_plan_id' => $plan['route_plan_id'], 'route_plan_leg_id' => $leg['route_plan_leg_id'], 'transport_run_id' => $run['transport_run_id'], 'assigned_driver_id' => Pilot::LINEHAUL_DRIVER_ID, 'assigned_vehicle_id' => Pilot::VEHICLE_ID], "inbound-{$index}");
+            $inbound = $this->confirmManifest($destinationActor, $destinationNode, $parcelNumber, ['manifest_status' => 'IR', 'origin_node_id' => $originNode, 'destination_node_id' => $destinationNode, 'route_plan_id' => $plan['route_plan_id'], 'route_plan_leg_id' => $leg['route_plan_leg_id'], 'transport_run_id' => $run['transport_run_id'], 'assigned_driver_id' => $driverId, 'assigned_vehicle_id' => $vehicleId], "inbound-{$index}");
             $manifestIds[] = $inbound['manifest_id']; $this->assertStatus($consignmentId, 'IR', 'NODE', $destinationNode);
             $run = $movement->close($destinationActor, $destinationNode, $run['transport_run_id'], 4, $this->correlation("run-close-{$index}"));
             $this->assertSame('CLOSED', $run['status']); $runs[] = $run;
@@ -104,7 +104,7 @@ final class OperationalPilotAcceptanceTest extends MySqlRedisTestCase
         $delivery = $deliveries->assign($deliveryDispatcher, Pilot::TAJRISH_BRANCH_ID, $delivery['delivery_task_id'], Pilot::DELIVERY_DRIVER_ID, 1, $this->correlation('delivery-assign'));
         $od = $this->confirmManifest($this->actor('pilot.tajrish.operator'), Pilot::TAJRISH_BRANCH_ID, $parcelNumber, ['manifest_status' => 'OD', 'origin_node_id' => Pilot::TAJRISH_BRANCH_ID, 'assigned_driver_id' => Pilot::DELIVERY_DRIVER_ID], 'delivery-manifest');
         $manifestIds[] = $od['manifest_id']; $this->assertStatus($consignmentId, 'OD', 'DELIVERY_DRIVER', null);
-        $delivery = $deliveries->complete($deliveryDispatcher, Pilot::TAJRISH_BRANCH_ID, $delivery['delivery_task_id'], 2, 'گیرنده پایلوت', now()->utc()->toISOString(), 'تحویل دستی تأیید شد', $this->correlation('delivery-complete'));
+        $delivery = $deliveries->complete($deliveryDispatcher, Pilot::TAJRISH_BRANCH_ID, $delivery['delivery_task_id'], 3, 'گیرنده پایلوت', now()->utc()->toISOString(), 'تحویل دستی تأیید شد', $this->correlation('delivery-complete'));
         $this->assertSame('COMPLETED', $delivery['status']); $this->assertSame('MANUAL_CONFIRMATION', $delivery['proof_type']);
 
         $detail = $this->app->make(ConsignmentService::class)->get($deliveryDispatcher, Pilot::TAJRISH_BRANCH_ID, $consignmentId);
@@ -125,7 +125,10 @@ final class OperationalPilotAcceptanceTest extends MySqlRedisTestCase
         $operator = $this->actor('pilot.tbz.branch.operator'); $dispatcher = $this->actor('pilot.pickup.dispatcher');
         $created = $this->createConsignment($operator, 'negative'); $id = $created['consignment_id'];
         $movement = $this->app->make(MovementService::class);
-        $this->expectApi(ApiErrorCode::ValidationError, fn () => $movement->plan($operator, Pilot::TBZ_BRANCH_ID, $id, '20000000-0000-4000-8000-000000000099', $this->correlation('invalid-route')));
+        $coverageVersion = (string) DB::table('coverage_policy_versions')->where(['hq_id' => Pilot::HQ_ID, 'status' => 'PUBLISHED'])->value('coverage_policy_version_id');
+        DB::table('coverage_policy_versions')->where('coverage_policy_version_id', $coverageVersion)->update(['status' => 'SUPERSEDED']);
+        $this->expectApi(ApiErrorCode::CoverageNotFound, fn () => $movement->plan($operator, Pilot::TBZ_BRANCH_ID, $id, $this->correlation('missing-coverage')));
+        DB::table('coverage_policy_versions')->where('coverage_policy_version_id', $coverageVersion)->update(['status' => 'PUBLISHED']);
         $pickup = $this->app->make(PickupTaskService::class)->create($dispatcher, Pilot::TBZ_BRANCH_ID, $id, $this->correlation('negative-pickup'));
         $this->expectApi(ApiErrorCode::ValidationError, fn () => $this->app->make(PickupTaskService::class)->assign($dispatcher, Pilot::TBZ_BRANCH_ID, $pickup['pickup_task_id'], Pilot::DELIVERY_DRIVER_ID, 1, $this->correlation('wrong-capability')));
         DB::table('drivers')->where('driver_id', Pilot::PICKUP_DRIVER_ID)->update(['status' => 'INACTIVE']);
@@ -174,7 +177,7 @@ final class OperationalPilotAcceptanceTest extends MySqlRedisTestCase
         $movement = $this->app->make(MovementService::class);
         $this->expectApi(ApiErrorCode::ValidationError, fn () => $movement->cluster($operator, Pilot::TBZ_BRANCH_ID, $id, 1, $this->correlation('skip-reception')));
         $this->confirmManifest($operator, Pilot::TBZ_BRANCH_ID, $parcelNumber, ['manifest_status' => 'IR', 'destination_node_id' => Pilot::TBZ_BRANCH_ID], 'guards-reception');
-        $plan = $movement->plan($operator, Pilot::TBZ_BRANCH_ID, $id, Pilot::ROUTE_ID, $this->correlation('guards-plan'));
+        $plan = $movement->plan($operator, Pilot::TBZ_BRANCH_ID, $id, $this->correlation('guards-plan'));
         $this->expectApi(ApiErrorCode::ValidationError, fn () => $movement->cluster($this->actor('pilot.tbz.hub.operator'), Pilot::TBZ_HUB_ID, $id, 1, $this->correlation('later-leg-too-soon')));
         $plan = $movement->cluster($operator, Pilot::TBZ_BRANCH_ID, $id, 1, $this->correlation('guards-cluster'));
         $leg = $plan['legs'][0];
@@ -186,7 +189,7 @@ final class OperationalPilotAcceptanceTest extends MySqlRedisTestCase
         $this->expectApi(ApiErrorCode::ValidationError, fn () => $movement->depart($operator, Pilot::TBZ_BRANCH_ID, $run['transport_run_id'], 1, $this->correlation('depart-before-load')));
         $this->expectApi(ApiErrorCode::ValidationError, fn () => $movement->load($operator, Pilot::TBZ_BRANCH_ID, $run['transport_run_id'], [$parcelId], 1, $this->correlation('load-before-outbound')));
         $this->expectApi(ApiErrorCode::ValidationError, fn () => $this->app->make(ManifestService::class)->create($operator, Pilot::TBZ_BRANCH_ID, ['manifest_status' => 'OF', 'origin_node_id' => Pilot::TBZ_BRANCH_ID, 'destination_node_id' => Pilot::TBZ_HUB_ID, 'route_plan_id' => $plan['route_plan_id'], 'route_plan_leg_id' => '30000000-0000-4000-8000-000000000099', 'transport_run_id' => $run['transport_run_id'], 'assigned_driver_id' => Pilot::LINEHAUL_DRIVER_ID, 'assigned_vehicle_id' => Pilot::VEHICLE_ID], $this->correlation('foreign-route-leg')));
-        $this->confirmManifest($operator, Pilot::TBZ_BRANCH_ID, $parcelNumber, ['manifest_status' => 'OF', 'origin_node_id' => Pilot::TBZ_BRANCH_ID, 'destination_node_id' => Pilot::TBZ_HUB_ID, 'route_plan_id' => $plan['route_plan_id'], 'route_plan_leg_id' => $leg['route_plan_leg_id'], 'transport_run_id' => $run['transport_run_id'], 'assigned_driver_id' => Pilot::LINEHAUL_DRIVER_ID, 'assigned_vehicle_id' => Pilot::VEHICLE_ID], 'guards-outbound');
+        $this->confirmManifest($operator, Pilot::TBZ_BRANCH_ID, $parcelNumber, ['manifest_status' => 'OF', 'origin_node_id' => Pilot::TBZ_BRANCH_ID, 'destination_node_id' => Pilot::TBZ_HUB_ID, 'route_plan_id' => $plan['route_plan_id'], 'route_plan_leg_id' => $leg['route_plan_leg_id']], 'guards-outbound');
         $run = $movement->load($operator, Pilot::TBZ_BRANCH_ID, $run['transport_run_id'], [$parcelId], 1, $this->correlation('guards-load'));
         $this->expectApi(ApiErrorCode::ValidationError, fn () => $movement->arrive($this->actor('pilot.tbz.hub.operator'), Pilot::TBZ_HUB_ID, $run['transport_run_id'], 2, $this->correlation('arrive-before-depart')));
         $run = $movement->depart($operator, Pilot::TBZ_BRANCH_ID, $run['transport_run_id'], 2, $this->correlation('guards-depart'));
@@ -203,8 +206,8 @@ final class OperationalPilotAcceptanceTest extends MySqlRedisTestCase
     {
         ['consignment_id' => $id, 'delivery_task' => $task] = $this->advanceToAssignedDelivery('delivery-failure');
         $service = $this->app->make(DeliveryTaskService::class); $dispatcher = $this->actor('pilot.delivery.dispatcher');
-        $this->expectApi(ApiErrorCode::PermissionDenied, fn () => $service->complete($this->actor('pilot.pickup.driver'), Pilot::TAJRISH_BRANCH_ID, $task['delivery_task_id'], 2, 'گیرنده', now()->toISOString(), null, $this->correlation('wrong-delivery-driver')));
-        $failed = $service->fail($dispatcher, Pilot::TAJRISH_BRANCH_ID, $task['delivery_task_id'], 2, 'RECIPIENT_UNAVAILABLE', 'گیرنده در محل حاضر نبود', $this->correlation('nok-fail'));
+        $this->expectApi(ApiErrorCode::PermissionDenied, fn () => $service->complete($this->actor('pilot.pickup.driver'), Pilot::TAJRISH_BRANCH_ID, $task['delivery_task_id'], $task['version'], 'گیرنده', now()->toISOString(), null, $this->correlation('wrong-delivery-driver')));
+        $failed = $service->fail($dispatcher, Pilot::TAJRISH_BRANCH_ID, $task['delivery_task_id'], $task['version'], 'RECIPIENT_UNAVAILABLE', 'گیرنده در محل حاضر نبود', $this->correlation('nok-fail'));
         $this->assertSame('FAILED', $failed['status']); $this->assertStatus($id, 'NOK', 'DELIVERY_DRIVER', null);
         $this->assertDatabaseHas('operational_exception_cases', ['consignment_id' => $id, 'delivery_task_id' => $task['delivery_task_id'], 'exception_type' => 'NOK', 'reason_code' => 'RECIPIENT_UNAVAILABLE']);
         $this->assertDatabaseHas('operational_exception_history', ['action' => 'APPROVED_AND_APPLIED']);
@@ -216,9 +219,9 @@ final class OperationalPilotAcceptanceTest extends MySqlRedisTestCase
         $parcel = DB::table('parcels')->where('consignment_id', $id)->first(); $manifestId = (string) DB::table('delivery_tasks')->where('delivery_task_id', $task['delivery_task_id'])->value('manifest_id'); $manifest = DB::table('manifests')->where('manifest_id', $manifestId)->first();
         $before = ['status' => DB::table('consignment_status_events')->where('consignment_id', $id)->count(), 'custody' => DB::table('parcel_custody_events')->where('consignment_id', $id)->count(), 'audit' => DB::table('audit_events')->count(), 'outbox' => DB::table('outbox_events')->count()];
         $this->app->instance(OutboxWriter::class, new class implements OutboxWriter { public function write(?string $hqId, string $aggregateType, string $aggregateId, string $eventType, string $correlationId, array $payload, int $eventVersion = 1, ?string $causationId = null): void { throw new \RuntimeException('Injected outbox failure.'); } });
-        try { $this->app->make(DeliveryTaskService::class)->complete($this->actor('pilot.delivery.dispatcher'), Pilot::TAJRISH_BRANCH_ID, $task['delivery_task_id'], 2, 'گیرنده', now()->utc()->toISOString(), 'نباید ثبت شود', $this->correlation('rollback-delivery')); $this->fail('Expected the injected outbox failure.'); } catch (\RuntimeException $e) { $this->assertSame('Injected outbox failure.', $e->getMessage()); }
+        try { $this->app->make(DeliveryTaskService::class)->complete($this->actor('pilot.delivery.dispatcher'), Pilot::TAJRISH_BRANCH_ID, $task['delivery_task_id'], $task['version'], 'گیرنده', now()->utc()->toISOString(), 'نباید ثبت شود', $this->correlation('rollback-delivery')); $this->fail('Expected the injected outbox failure.'); } catch (\RuntimeException $e) { $this->assertSame('Injected outbox failure.', $e->getMessage()); }
         $this->assertSame($before['status'], DB::table('consignment_status_events')->where('consignment_id', $id)->count()); $this->assertSame($before['custody'], DB::table('parcel_custody_events')->where('consignment_id', $id)->count()); $this->assertSame($before['audit'], DB::table('audit_events')->count()); $this->assertSame($before['outbox'], DB::table('outbox_events')->count());
-        $this->assertDatabaseHas('delivery_tasks', ['delivery_task_id' => $task['delivery_task_id'], 'status' => 'ASSIGNED', 'version' => 2, 'recipient_name' => null, 'delivered_at' => null]); $this->assertDatabaseHas('manifests', ['manifest_id' => $manifest->manifest_id, 'state' => 'CLOSED', 'version' => $manifest->version]);
+        $this->assertDatabaseHas('delivery_tasks', ['delivery_task_id' => $task['delivery_task_id'], 'status' => 'IN_PROGRESS', 'version' => $task['version'], 'recipient_name' => null, 'delivered_at' => null]); $this->assertDatabaseHas('manifests', ['manifest_id' => $manifest->manifest_id, 'state' => 'CLOSED', 'version' => $manifest->version]);
         $this->assertDatabaseHas('parcels', ['parcel_id' => $parcel->parcel_id, 'current_status' => 'OD', 'current_custody_type' => 'DELIVERY_DRIVER', 'current_custodian_id' => Pilot::DELIVERY_DRIVER_ID]); $this->assertDatabaseHas('consignments', ['consignment_id' => $id, 'current_status' => 'OD']);
     }
 
@@ -232,29 +235,29 @@ final class OperationalPilotAcceptanceTest extends MySqlRedisTestCase
         $this->replayPost($pickupToken, Pilot::TBZ_BRANCH_ID, "/api/v1/pickup-tasks/{$pickup['pickup_task_id']}/complete", ['expected_version' => 2], 'pickup-complete');
         $this->replayManifest($tbzToken, Pilot::TBZ_BRANCH_ID, $number, ['manifest_status' => 'IR', 'destination_node_id' => Pilot::TBZ_BRANCH_ID], 'pickup-reception');
 
-        $plan = $this->replayPost($tbzToken, Pilot::TBZ_BRANCH_ID, "/api/v1/consignments/{$id}/route-plan", ['route_definition_id' => Pilot::ROUTE_ID], 'route-plan', 201);
+        $plan = $this->replayPost($tbzToken, Pilot::TBZ_BRANCH_ID, "/api/v1/consignments/{$id}/route-plan", [], 'route-plan', 201);
         $legs = [
-            ['pilot.tbz.branch.operator', Pilot::TBZ_BRANCH_ID, 'pilot.tbz.hub.operator', Pilot::TBZ_HUB_ID],
-            ['pilot.tbz.hub.operator', Pilot::TBZ_HUB_ID, 'pilot.thr.hub.operator', Pilot::THR_HUB_ID],
-            ['pilot.thr.hub.operator', Pilot::THR_HUB_ID, 'pilot.tajrish.operator', Pilot::TAJRISH_BRANCH_ID],
+            ['pilot.tbz.branch.operator', Pilot::TBZ_BRANCH_ID, 'pilot.tbz.hub.operator', Pilot::TBZ_HUB_ID, Pilot::LINEHAUL_DRIVER_ID, Pilot::VEHICLE_ID],
+            ['pilot.tbz.hub.operator', Pilot::TBZ_HUB_ID, 'pilot.thr.hub.operator', Pilot::THR_HUB_ID, Pilot::TBZ_HUB_LINEHAUL_DRIVER_ID, Pilot::TBZ_HUB_VEHICLE_ID],
+            ['pilot.thr.hub.operator', Pilot::THR_HUB_ID, 'pilot.tajrish.operator', Pilot::TAJRISH_BRANCH_ID, Pilot::THR_HUB_LINEHAUL_DRIVER_ID, Pilot::THR_HUB_VEHICLE_ID],
         ];
-        foreach ($legs as $index => [$originName, $origin, $destinationName, $destination]) {
+        foreach ($legs as $index => [$originName, $origin, $destinationName, $destination, $driverId, $vehicleId]) {
             $originToken = $this->pilotToken($originName); $destinationToken = $this->pilotToken($destinationName);
             $plan = $this->replayPost($originToken, $origin, "/api/v1/consignments/{$id}/cluster", ['expected_route_plan_version' => $plan['version']], "cluster-{$index}"); $leg = $plan['legs'][$index];
-            $run = $this->replayPost($originToken, $origin, '/api/v1/transport-runs', ['route_plan_leg_id' => $leg['route_plan_leg_id'], 'driver_id' => Pilot::LINEHAUL_DRIVER_ID, 'vehicle_id' => Pilot::VEHICLE_ID], "run-create-{$index}", 201);
-            $context = ['origin_node_id' => $origin, 'destination_node_id' => $destination, 'route_plan_id' => $plan['route_plan_id'], 'route_plan_leg_id' => $leg['route_plan_leg_id'], 'transport_run_id' => $run['transport_run_id'], 'assigned_driver_id' => Pilot::LINEHAUL_DRIVER_ID, 'assigned_vehicle_id' => Pilot::VEHICLE_ID];
-            $this->replayManifest($originToken, $origin, $number, ['manifest_status' => 'OF', ...$context], "outbound-{$index}");
+            $run = $this->replayPost($originToken, $origin, '/api/v1/transport-runs', ['route_plan_leg_id' => $leg['route_plan_leg_id'], 'driver_id' => $driverId, 'vehicle_id' => $vehicleId], "run-create-{$index}", 201);
+            $routeContext = ['origin_node_id' => $origin, 'destination_node_id' => $destination, 'route_plan_id' => $plan['route_plan_id'], 'route_plan_leg_id' => $leg['route_plan_leg_id']];
+            $this->replayManifest($originToken, $origin, $number, ['manifest_status' => 'OF', ...$routeContext], "outbound-{$index}");
             $run = $this->replayPost($originToken, $origin, "/api/v1/transport-runs/{$run['transport_run_id']}/load", ['expected_version' => 1, 'parcel_ids' => [$parcelId]], "run-load-{$index}");
             $run = $this->replayPost($originToken, $origin, "/api/v1/transport-runs/{$run['transport_run_id']}/depart", ['expected_version' => 2], "run-depart-{$index}");
             $run = $this->replayPost($destinationToken, $destination, "/api/v1/transport-runs/{$run['transport_run_id']}/arrive", ['expected_version' => 3], "run-arrive-{$index}");
-            $this->replayManifest($destinationToken, $destination, $number, ['manifest_status' => 'IR', ...$context], "inbound-{$index}");
+            $this->replayManifest($destinationToken, $destination, $number, ['manifest_status' => 'IR', ...$routeContext, 'transport_run_id' => $run['transport_run_id'], 'assigned_driver_id' => $driverId, 'assigned_vehicle_id' => $vehicleId], "inbound-{$index}");
             $this->replayPost($destinationToken, $destination, "/api/v1/transport-runs/{$run['transport_run_id']}/close", ['expected_version' => 4], "run-close-{$index}");
             if ($index < 2) $plan = $this->app->make(MovementService::class)->routePlan($this->actor($destinationName), $destination, $plan['route_plan_id']);
         }
         $deliveryToken = $this->pilotToken('pilot.delivery.dispatcher'); $delivery = $this->app->make(DeliveryTaskService::class)->list($this->actor('pilot.delivery.dispatcher'), Pilot::TAJRISH_BRANCH_ID)[0];
         $delivery = $this->replayPost($deliveryToken, Pilot::TAJRISH_BRANCH_ID, "/api/v1/delivery-tasks/{$delivery['delivery_task_id']}/assign", ['expected_version' => 1, 'driver_id' => Pilot::DELIVERY_DRIVER_ID], 'delivery-assign');
         $this->replayManifest($this->pilotToken('pilot.tajrish.operator'), Pilot::TAJRISH_BRANCH_ID, $number, ['manifest_status' => 'OD', 'origin_node_id' => Pilot::TAJRISH_BRANCH_ID, 'assigned_driver_id' => Pilot::DELIVERY_DRIVER_ID], 'delivery-manifest');
-        $this->replayPost($deliveryToken, Pilot::TAJRISH_BRANCH_ID, "/api/v1/delivery-tasks/{$delivery['delivery_task_id']}/complete", ['expected_version' => 2, 'recipient_name' => 'گیرنده پایلوت', 'delivered_at' => now()->utc()->toISOString(), 'proof_type' => 'MANUAL_CONFIRMATION', 'note' => 'تحویل دستی تأیید شد'], 'delivery-complete');
+        $this->replayPost($deliveryToken, Pilot::TAJRISH_BRANCH_ID, "/api/v1/delivery-tasks/{$delivery['delivery_task_id']}/complete", ['expected_version' => 3, 'recipient_name' => 'گیرنده پایلوت', 'delivered_at' => now()->utc()->toISOString(), 'proof_type' => 'MANUAL_CONFIRMATION', 'note' => 'تحویل دستی تأیید شد'], 'delivery-complete');
         $this->assertStatus($id, 'OK', 'RECIPIENT', null);
         $this->assertSame(1, DB::table('pickup_tasks')->where('consignment_id', $id)->count()); $this->assertSame(1, DB::table('delivery_tasks')->where('consignment_id', $id)->count()); $this->assertSame(1, DB::table('route_plans')->where('consignment_id', $id)->count()); $this->assertSame(8, DB::table('manifests as m')->join('manifest_parcels as mp', 'mp.manifest_id', '=', 'm.manifest_id')->join('parcels as p', 'p.parcel_id', '=', 'mp.parcel_id')->where('p.consignment_id', $id)->distinct()->count('m.manifest_id'));
     }
@@ -283,15 +286,15 @@ final class OperationalPilotAcceptanceTest extends MySqlRedisTestCase
         $created = $this->createConsignment($tbz, $key); $id = $created['consignment_id']; $parcelId = $created['parcels'][0]['parcel_id']; $number = $created['parcels'][0]['parcel_number'];
         $pickups = $this->app->make(PickupTaskService::class); $pickup = $pickups->create($dispatcher, Pilot::TBZ_BRANCH_ID, $id, $this->correlation("{$key}:pickup")); $pickup = $pickups->assign($dispatcher, Pilot::TBZ_BRANCH_ID, $pickup['pickup_task_id'], Pilot::PICKUP_DRIVER_ID, 1, $this->correlation("{$key}:assign-pickup")); $pickups->complete($dispatcher, Pilot::TBZ_BRANCH_ID, $pickup['pickup_task_id'], 2, $this->correlation("{$key}:complete-pickup"));
         $this->confirmManifest($tbz, Pilot::TBZ_BRANCH_ID, $number, ['manifest_status' => 'IR', 'destination_node_id' => Pilot::TBZ_BRANCH_ID], "{$key}:pickup-receive");
-        $movement = $this->app->make(MovementService::class); $plan = $movement->plan($tbz, Pilot::TBZ_BRANCH_ID, $id, Pilot::ROUTE_ID, $this->correlation("{$key}:plan"));
-        $legs = [['pilot.tbz.branch.operator', Pilot::TBZ_BRANCH_ID, 'pilot.tbz.hub.operator', Pilot::TBZ_HUB_ID], ['pilot.tbz.hub.operator', Pilot::TBZ_HUB_ID, 'pilot.thr.hub.operator', Pilot::THR_HUB_ID], ['pilot.thr.hub.operator', Pilot::THR_HUB_ID, 'pilot.tajrish.operator', Pilot::TAJRISH_BRANCH_ID]];
-        foreach ($legs as $index => [$originName, $origin, $destinationName, $destination]) {
+        $movement = $this->app->make(MovementService::class); $plan = $movement->plan($tbz, Pilot::TBZ_BRANCH_ID, $id, $this->correlation("{$key}:plan"));
+        $legs = [['pilot.tbz.branch.operator', Pilot::TBZ_BRANCH_ID, 'pilot.tbz.hub.operator', Pilot::TBZ_HUB_ID, Pilot::LINEHAUL_DRIVER_ID, Pilot::VEHICLE_ID], ['pilot.tbz.hub.operator', Pilot::TBZ_HUB_ID, 'pilot.thr.hub.operator', Pilot::THR_HUB_ID, Pilot::TBZ_HUB_LINEHAUL_DRIVER_ID, Pilot::TBZ_HUB_VEHICLE_ID], ['pilot.thr.hub.operator', Pilot::THR_HUB_ID, 'pilot.tajrish.operator', Pilot::TAJRISH_BRANCH_ID, Pilot::THR_HUB_LINEHAUL_DRIVER_ID, Pilot::THR_HUB_VEHICLE_ID]];
+        foreach ($legs as $index => [$originName, $origin, $destinationName, $destination, $driverId, $vehicleId]) {
             $originActor = $this->actor($originName); $destinationActor = $this->actor($destinationName); $plan = $movement->cluster($originActor, $origin, $id, $plan['version'], $this->correlation("{$key}:cluster:{$index}")); $leg = $plan['legs'][$index];
-            $run = $movement->createRun($originActor, $origin, $leg['route_plan_leg_id'], Pilot::LINEHAUL_DRIVER_ID, Pilot::VEHICLE_ID, $this->correlation("{$key}:run:{$index}")); $context = ['origin_node_id' => $origin, 'destination_node_id' => $destination, 'route_plan_id' => $plan['route_plan_id'], 'route_plan_leg_id' => $leg['route_plan_leg_id'], 'transport_run_id' => $run['transport_run_id'], 'assigned_driver_id' => Pilot::LINEHAUL_DRIVER_ID, 'assigned_vehicle_id' => Pilot::VEHICLE_ID];
-            $this->confirmManifest($originActor, $origin, $number, ['manifest_status' => 'OF', ...$context], "{$key}:outbound:{$index}"); $run = $movement->load($originActor, $origin, $run['transport_run_id'], [$parcelId], 1, $this->correlation("{$key}:load:{$index}")); $run = $movement->depart($originActor, $origin, $run['transport_run_id'], 2, $this->correlation("{$key}:depart:{$index}")); $run = $movement->arrive($destinationActor, $destination, $run['transport_run_id'], 3, $this->correlation("{$key}:arrive:{$index}")); $this->confirmManifest($destinationActor, $destination, $number, ['manifest_status' => 'IR', ...$context], "{$key}:inbound:{$index}"); $movement->close($destinationActor, $destination, $run['transport_run_id'], 4, $this->correlation("{$key}:close:{$index}"));
+            $run = $movement->createRun($originActor, $origin, $leg['route_plan_leg_id'], $driverId, $vehicleId, $this->correlation("{$key}:run:{$index}")); $routeContext = ['origin_node_id' => $origin, 'destination_node_id' => $destination, 'route_plan_id' => $plan['route_plan_id'], 'route_plan_leg_id' => $leg['route_plan_leg_id']];
+            $this->confirmManifest($originActor, $origin, $number, ['manifest_status' => 'OF', ...$routeContext], "{$key}:outbound:{$index}"); $run = $movement->load($originActor, $origin, $run['transport_run_id'], [$parcelId], 1, $this->correlation("{$key}:load:{$index}")); $run = $movement->depart($originActor, $origin, $run['transport_run_id'], 2, $this->correlation("{$key}:depart:{$index}")); $run = $movement->arrive($destinationActor, $destination, $run['transport_run_id'], 3, $this->correlation("{$key}:arrive:{$index}")); $this->confirmManifest($destinationActor, $destination, $number, ['manifest_status' => 'IR', ...$routeContext, 'transport_run_id' => $run['transport_run_id'], 'assigned_driver_id' => $driverId, 'assigned_vehicle_id' => $vehicleId], "{$key}:inbound:{$index}"); $movement->close($destinationActor, $destination, $run['transport_run_id'], 4, $this->correlation("{$key}:close:{$index}"));
             if ($index < 2) $plan = $movement->routePlan($destinationActor, $destination, $plan['route_plan_id']);
         }
-        $deliveryActor = $this->actor('pilot.delivery.dispatcher'); $deliveries = $this->app->make(DeliveryTaskService::class); $delivery = $deliveries->list($deliveryActor, Pilot::TAJRISH_BRANCH_ID)[0]; $delivery = $deliveries->assign($deliveryActor, Pilot::TAJRISH_BRANCH_ID, $delivery['delivery_task_id'], Pilot::DELIVERY_DRIVER_ID, 1, $this->correlation("{$key}:delivery-assign")); $this->confirmManifest($this->actor('pilot.tajrish.operator'), Pilot::TAJRISH_BRANCH_ID, $number, ['manifest_status' => 'OD', 'origin_node_id' => Pilot::TAJRISH_BRANCH_ID, 'assigned_driver_id' => Pilot::DELIVERY_DRIVER_ID], "{$key}:delivery-manifest");
+        $deliveryActor = $this->actor('pilot.delivery.dispatcher'); $deliveries = $this->app->make(DeliveryTaskService::class); $delivery = $deliveries->list($deliveryActor, Pilot::TAJRISH_BRANCH_ID)[0]; $delivery = $deliveries->assign($deliveryActor, Pilot::TAJRISH_BRANCH_ID, $delivery['delivery_task_id'], Pilot::DELIVERY_DRIVER_ID, 1, $this->correlation("{$key}:delivery-assign")); $this->confirmManifest($this->actor('pilot.tajrish.operator'), Pilot::TAJRISH_BRANCH_ID, $number, ['manifest_status' => 'OD', 'origin_node_id' => Pilot::TAJRISH_BRANCH_ID, 'assigned_driver_id' => Pilot::DELIVERY_DRIVER_ID], "{$key}:delivery-manifest"); $delivery = $deliveries->get($deliveryActor, Pilot::TAJRISH_BRANCH_ID, $delivery['delivery_task_id']);
         return ['consignment_id' => $id, 'delivery_task' => $delivery];
     }
 
@@ -300,14 +303,19 @@ final class OperationalPilotAcceptanceTest extends MySqlRedisTestCase
     {
         $manifest = $this->replayPost($token, $nodeId, '/api/v1/manifests', $context, "{$key}:create", 201);
         $path = "/api/v1/manifests/{$manifest['manifest_id']}/parcels";
-        $headers = ['X-Node-Id' => $nodeId, 'X-Correlation-ID' => $this->correlation("{$key}:scan")];
-        $this->withToken($token)->withHeaders($headers)->postJson($path, ['expected_version' => 1, 'input_source' => 'SCAN', 'identifiers' => [$parcelNumber]])->assertOk();
+        $headers = ['X-Node-Id' => $nodeId, 'X-Correlation-ID' => $this->correlation("{$key}:scan"), 'Idempotency-Key' => 'pilot-replay-'.hash('sha256', "{$key}:scan")];
+        $scanPayload = ['expected_version' => 1, 'input_source' => 'SCAN', 'identifiers' => [$parcelNumber]];
+        $firstScan = $this->withToken($token)->withHeaders($headers)->postJson($path, $scanPayload)->assertOk();
         $this->assertSame(1, DB::table('manifest_parcels')->where('manifest_id', $manifest['manifest_id'])->count());
+        $afterScan = $this->materialCounts();
+        $this->withToken($token)->withHeaders($headers)->postJson($path, $scanPayload)->assertOk()->assertExactJson($firstScan->json());
+        $this->assertSame($afterScan, $this->materialCounts());
         $beforeDuplicate = $this->materialCounts();
-        $duplicate = $this->withToken($token)->withHeaders($headers)->postJson($path, ['expected_version' => 2, 'input_source' => 'SCAN', 'identifiers' => [$parcelNumber]]);
+        $duplicateHeaders = ['X-Node-Id' => $nodeId, 'X-Correlation-ID' => $this->correlation("{$key}:duplicate"), 'Idempotency-Key' => 'pilot-replay-'.hash('sha256', "{$key}:duplicate")];
+        $duplicate = $this->withToken($token)->withHeaders($duplicateHeaders)->postJson($path, ['expected_version' => 2, 'input_source' => 'SCAN', 'identifiers' => [$parcelNumber]]);
         $duplicate->assertOk()->assertJsonPath('meta.input_outcomes.0.result', 'DUPLICATE');
         $this->assertSame($beforeDuplicate, $this->materialCounts());
-        $this->withToken($token)->withHeaders(['X-Node-Id' => $nodeId, 'X-Correlation-ID' => $this->correlation("{$key}:validate")])->postJson("/api/v1/manifests/{$manifest['manifest_id']}/validate", ['expected_version' => 2])->assertOk();
+        $this->withToken($token)->withHeaders(['X-Node-Id' => $nodeId, 'X-Correlation-ID' => $this->correlation("{$key}:validate"), 'Idempotency-Key' => 'pilot-replay-'.hash('sha256', "{$key}:validate")])->postJson("/api/v1/manifests/{$manifest['manifest_id']}/validate", ['expected_version' => 2])->assertOk();
         return $this->replayPost($token, $nodeId, "/api/v1/manifests/{$manifest['manifest_id']}/confirm", ['expected_version' => 3, 'acknowledge_partial_success' => true], "{$key}:confirm");
     }
 

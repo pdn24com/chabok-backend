@@ -32,7 +32,11 @@ final class OperationalPilotFixtureSeeder extends Seeder
     public const PICKUP_DRIVER_ID = '10000000-0000-4000-8000-000000000021';
     public const LINEHAUL_DRIVER_ID = '10000000-0000-4000-8000-000000000022';
     public const DELIVERY_DRIVER_ID = '10000000-0000-4000-8000-000000000023';
+    public const TBZ_HUB_LINEHAUL_DRIVER_ID = '10000000-0000-4000-8000-000000000024';
+    public const THR_HUB_LINEHAUL_DRIVER_ID = '10000000-0000-4000-8000-000000000025';
     public const VEHICLE_ID = '10000000-0000-4000-8000-000000000030';
+    public const TBZ_HUB_VEHICLE_ID = '10000000-0000-4000-8000-000000000031';
+    public const THR_HUB_VEHICLE_ID = '10000000-0000-4000-8000-000000000032';
 
     /** @var array<string,array{0:string,1:string,2:string}> */
     public const ACTORS = [
@@ -67,12 +71,12 @@ final class OperationalPilotFixtureSeeder extends Seeder
             DB::table('hq_tenants')->updateOrInsert(['hq_id' => self::HQ_ID], ['hq_code' => 'PILOT-TBZ-THR', 'hq_title' => 'ستاد پایلوت تبریز تهران', 'status' => 'ACTIVE', 'created_at' => now(), 'updated_at' => now()]);
             DB::table('areas')->updateOrInsert(['area_id' => self::AREA_ID], ['hq_id' => self::HQ_ID, 'area_title' => 'شبکه پایلوت تبریز تهران', 'status' => 'ACTIVE', 'created_at' => now(), 'updated_at' => now()]);
             foreach ([
-                self::TBZ_BRANCH_ID => ['TBZ-BR-04', 'شعبه تبریز ۴', 'BRANCH'],
-                self::TBZ_HUB_ID => ['TBZ-HUB-MAIN', 'هاب اصلی تبریز', 'HUB'],
-                self::THR_HUB_ID => ['THR-HUB-MAIN', 'هاب اصلی تهران', 'HUB'],
-                self::TAJRISH_BRANCH_ID => ['THR-BR-05-TAJRISH', 'شعبه تهران ۵، تجریش', 'BRANCH'],
-            ] as $id => [$code, $title, $type]) {
-                DB::table('nodes')->updateOrInsert(['node_id' => $id], ['hq_id' => self::HQ_ID, 'area_id' => self::AREA_ID, 'node_code' => $code, 'node_title' => $title, 'node_type' => $type, 'status' => 'ACTIVE', 'created_at' => now(), 'updated_at' => now()]);
+                self::TBZ_BRANCH_ID => ['TBZ-BR-04', 'شعبه تبریز ۴', 'BRANCH', ['PICKUP', 'LINEHAUL']],
+                self::TBZ_HUB_ID => ['TBZ-HUB-MAIN', 'هاب اصلی تبریز', 'HUB', ['CONSOLIDATION', 'LINEHAUL']],
+                self::THR_HUB_ID => ['THR-HUB-MAIN', 'هاب اصلی تهران', 'HUB', ['CONSOLIDATION', 'LINEHAUL']],
+                self::TAJRISH_BRANCH_ID => ['THR-BR-05-TAJRISH', 'شعبه تهران ۵، تجریش', 'BRANCH', ['LINEHAUL', 'DELIVERY']],
+            ] as $id => [$code, $title, $type, $capabilities]) {
+                DB::table('nodes')->updateOrInsert(['node_id' => $id], ['hq_id' => self::HQ_ID, 'area_id' => self::AREA_ID, 'node_code' => $code, 'node_title' => $title, 'node_type' => $type, 'capabilities' => json_encode($capabilities, JSON_THROW_ON_ERROR), 'status' => 'ACTIVE', 'created_at' => now(), 'updated_at' => now()]);
             }
             foreach (self::ACTORS as $username => [$id, $first, $last]) {
                 DB::table('users')->updateOrInsert(['user_id' => $id], ['hq_id' => self::HQ_ID, 'username' => $username, 'normalized_username' => $username, 'mobile' => null, 'normalized_mobile' => null, 'email' => null, 'normalized_email' => null, 'first_name' => $first, 'last_name' => $last, 'display_name' => "{$first} {$last}", 'status' => 'ACTIVE', 'must_change_password' => false, 'activated_at' => now(), 'created_at' => now(), 'updated_at' => now()]);
@@ -100,19 +104,35 @@ final class OperationalPilotFixtureSeeder extends Seeder
 
             foreach ([
                 [self::PICKUP_DRIVER_ID, 'DRV-PICKUP-TBZ', 'راننده جمع‌آوری تبریز', 'pilot.pickup.driver', self::TBZ_BRANCH_ID, 'PICKUP'],
-                [self::LINEHAUL_DRIVER_ID, 'DRV-LINEHAUL-TBZ-THR', 'راننده خطی تبریز تهران', 'pilot.linehaul.driver', self::TBZ_HUB_ID, 'LINEHAUL'],
+                [self::LINEHAUL_DRIVER_ID, 'DRV-LINEHAUL-TBZ-BR', 'راننده خطی شعبه تبریز', 'pilot.linehaul.driver', self::TBZ_BRANCH_ID, 'LINEHAUL'],
+                [self::TBZ_HUB_LINEHAUL_DRIVER_ID, 'DRV-LINEHAUL-TBZ-HUB', 'راننده خطی هاب تبریز', null, self::TBZ_HUB_ID, 'LINEHAUL'],
+                [self::THR_HUB_LINEHAUL_DRIVER_ID, 'DRV-LINEHAUL-THR-HUB', 'راننده خطی هاب تهران', null, self::THR_HUB_ID, 'LINEHAUL'],
                 [self::DELIVERY_DRIVER_ID, 'DRV-DELIVERY-TAJRISH', 'راننده تحویل تجریش', 'pilot.delivery.driver', self::TAJRISH_BRANCH_ID, 'DELIVERY'],
             ] as [$id, $code, $name, $username, $node, $capability]) {
-                DB::table('drivers')->updateOrInsert(['driver_id' => $id], ['hq_id' => self::HQ_ID, 'user_id' => self::ACTORS[$username][0], 'driver_code' => $code, 'display_name' => $name, 'home_node_id' => $node, 'operational_type' => $capability, 'status' => 'ACTIVE', 'availability_status' => 'AVAILABLE', 'version' => 1, 'created_at' => now(), 'updated_at' => now()]);
+                DB::table('drivers')->updateOrInsert(['driver_id' => $id], ['hq_id' => self::HQ_ID, 'user_id' => $username === null ? null : self::ACTORS[$username][0], 'driver_code' => $code, 'display_name' => $name, 'home_node_id' => $node, 'operational_type' => $capability, 'status' => 'ACTIVE', 'availability_status' => 'AVAILABLE', 'version' => 1, 'created_at' => now(), 'updated_at' => now()]);
                 DB::table('driver_capabilities')->updateOrInsert(['driver_id' => $id, 'capability' => $capability], ['driver_capability_id' => $this->id("capability:{$id}:{$capability}"), 'hq_id' => self::HQ_ID, 'created_at' => now()]);
             }
-            DB::table('vehicles')->updateOrInsert(['vehicle_id' => self::VEHICLE_ID], ['hq_id' => self::HQ_ID, 'vehicle_code' => 'VEH-LINEHAUL-01', 'registration_number' => 'IR-15-پایلوت-01', 'vehicle_type' => 'TRUCK', 'home_node_id' => self::TBZ_BRANCH_ID, 'status' => 'ACTIVE', 'availability_status' => 'AVAILABLE', 'version' => 1, 'created_at' => now(), 'updated_at' => now()]);
+            foreach ([[self::VEHICLE_ID, 'VEH-LINEHAUL-TBZ-BR', 'IR-15-پایلوت-01', self::TBZ_BRANCH_ID], [self::TBZ_HUB_VEHICLE_ID, 'VEH-LINEHAUL-TBZ-HUB', 'IR-15-پایلوت-02', self::TBZ_HUB_ID], [self::THR_HUB_VEHICLE_ID, 'VEH-LINEHAUL-THR-HUB', 'IR-15-پایلوت-03', self::THR_HUB_ID]] as [$id, $code, $plate, $node]) {
+                DB::table('vehicles')->updateOrInsert(['vehicle_id' => $id], ['hq_id' => self::HQ_ID, 'vehicle_code' => $code, 'registration_number' => $plate, 'plate_number' => $plate, 'vehicle_type' => 'TRUCK', 'home_node_id' => $node, 'status' => 'ACTIVE', 'availability_status' => 'AVAILABLE', 'version' => 1, 'created_at' => now(), 'updated_at' => now()]);
+            }
             $pilotLegs = [[1, self::TBZ_BRANCH_ID, self::TBZ_HUB_ID], [2, self::TBZ_HUB_ID, self::THR_HUB_ID], [3, self::THR_HUB_ID, self::TAJRISH_BRANCH_ID]];
             $this->assertPilotRoute($pilotLegs);
             DB::table('route_definitions')->updateOrInsert(['route_definition_id' => self::ROUTE_ID], ['hq_id' => self::HQ_ID, 'route_code' => 'TBZ-THR-PILOT', 'route_title' => 'مسیر پایلوت تبریز به تجریش', 'status' => 'ACTIVE', 'version' => 1, 'created_at' => now(), 'updated_at' => now()]);
             foreach ($pilotLegs as [$order, $origin, $destination]) {
                 DB::table('route_definition_legs')->updateOrInsert(['route_definition_id' => self::ROUTE_ID, 'leg_order' => $order], ['route_definition_leg_id' => $this->id('route-leg:'.$order), 'hq_id' => self::HQ_ID, 'origin_node_id' => $origin, 'destination_node_id' => $destination, 'status' => 'ACTIVE', 'created_at' => now(), 'updated_at' => now()]);
             }
+            $routeVersionId = $this->id('route-version:1');
+            DB::table('route_definition_versions')->updateOrInsert(['route_definition_version_id' => $routeVersionId], ['hq_id' => self::HQ_ID, 'route_definition_id' => self::ROUTE_ID, 'version_number' => 1, 'status' => 'PUBLISHED', 'purpose' => 'TRUNK', 'origin_node_id' => self::TBZ_BRANCH_ID, 'destination_node_id' => self::TAJRISH_BRANCH_ID, 'priority' => 100, 'version' => 1, 'created_by' => self::ACTORS['pilot.catalog.admin'][0], 'published_by' => self::ACTORS['pilot.catalog.admin'][0], 'published_at' => now(), 'content_digest' => hash('sha256', json_encode($pilotLegs, JSON_THROW_ON_ERROR)), 'created_at' => now(), 'updated_at' => now()]);
+            foreach ($pilotLegs as [$order, $origin, $destination]) {
+                DB::table('route_definition_version_legs')->updateOrInsert(['route_definition_version_id' => $routeVersionId, 'leg_order' => $order], ['route_definition_version_leg_id' => $this->id('route-version-leg:'.$order), 'hq_id' => self::HQ_ID, 'origin_node_id' => $origin, 'destination_node_id' => $destination, 'created_at' => now(), 'updated_at' => now()]);
+            }
+            DB::table('route_definitions')->where('route_definition_id', self::ROUTE_ID)->update(['published_version_id' => $routeVersionId]);
+
+            $coveragePolicyId = $this->id('destination-gateway-policy'); $coverageVersionId = $this->id('destination-gateway-version:1');
+            DB::table('coverage_policies')->updateOrInsert(['coverage_policy_id' => $coveragePolicyId], ['hq_id' => self::HQ_ID, 'policy_code' => 'PILOT_DESTINATION_GATEWAY', 'policy_title' => 'پوشش مقصد آزمون تهران', 'published_version_id' => null, 'created_at' => now(), 'updated_at' => now()]);
+            DB::table('coverage_policy_versions')->updateOrInsert(['coverage_policy_version_id' => $coverageVersionId], ['hq_id' => self::HQ_ID, 'coverage_policy_id' => $coveragePolicyId, 'version_number' => 1, 'status' => 'PUBLISHED', 'version' => 1, 'created_by' => self::ACTORS['pilot.catalog.admin'][0], 'published_by' => self::ACTORS['pilot.catalog.admin'][0], 'published_at' => now(), 'content_digest' => hash('sha256', 'pilot-destination-gateway-v1'), 'created_at' => now(), 'updated_at' => now()]);
+            DB::table('coverage_rules')->updateOrInsert(['coverage_rule_id' => $this->id('destination-gateway-rule:tehran')], ['hq_id' => self::HQ_ID, 'coverage_policy_version_id' => $coverageVersionId, 'target' => 'DESTINATION_GATEWAY', 'target_node_id' => self::TAJRISH_BRANCH_ID, 'priority' => 100, 'criterion_type' => 'CITY', 'city_id' => GeographyIds::city('10866'), 'created_at' => now(), 'updated_at' => now()]);
+            DB::table('coverage_policies')->where('coverage_policy_id', $coveragePolicyId)->update(['published_version_id' => $coverageVersionId]);
         });
     }
 
