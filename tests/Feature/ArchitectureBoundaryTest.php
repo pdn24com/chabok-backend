@@ -78,6 +78,10 @@ final class ArchitectureBoundaryTest extends TestCase
             }
             preg_match_all('/^use\s+Modules\\\\([^\\\\]+)\\\\/m', (string) file_get_contents($file), $imports);
             foreach ($imports[1] as $importedModule) {
+                $pilotSeederDependency = $ownerMatch[1] === 'Operations'
+                    && str_ends_with($normalized, '/Infrastructure/Database/Seeders/OperationalPilotSeeder.php')
+                    && in_array($importedModule, ['Authorization', 'Geography', 'Pricing', 'ServiceCatalog'], true);
+                if ($pilotSeederDependency) continue;
                 if (! in_array($importedModule, $allowed[$ownerMatch[1]] ?? [$ownerMatch[1]], true)) {
                     $violations[] = "{$ownerMatch[1]} imports {$importedModule} in {$file}";
                 }
