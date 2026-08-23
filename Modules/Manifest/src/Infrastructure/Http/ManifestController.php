@@ -60,6 +60,14 @@ final readonly class ManifestController
         );
     }
 
+    public function contextOptions(Request $request): JsonResponse
+    {
+        return ApiResponder::success(
+            $request,
+            $this->manifests->contextOptions($this->actor($request), $this->node($request)),
+        );
+    }
+
     public function show(Request $request, string $manifestId): JsonResponse
     {
         return ApiResponder::success(
@@ -111,14 +119,7 @@ final readonly class ManifestController
                 $manifestId,
                 $input,
             ),
-            static fn ($row): array => [
-                'parcel_id' => (string) $row->parcel_id,
-                'parcel_number' => (string) $row->parcel_number,
-                'consignment_id' => (string) $row->consignment_id,
-                'consignment_number' => (string) $row->consignment_number,
-                'receiver_contact_name' => (string) $row->receiver_contact_name,
-                'current_status' => (string) $row->current_status,
-            ],
+            static fn ($row): array => (array) $row,
         );
     }
 
@@ -165,13 +166,28 @@ final readonly class ManifestController
             'acknowledge_partial_success' => ['required', 'accepted'],
         ]);
 
-        return ApiResponder::success($request, $this->manifests->confirm(
-            $this->actor($request),
-            $this->node($request),
-            $manifestId,
-            (int) $input['expected_version'],
-            $this->correlation($request),
-        ));
+        try {
+            return ApiResponder::success($request, $this->manifests->confirm(
+                $this->actor($request),
+                $this->node($request),
+                $manifestId,
+                (int) $input['expected_version'],
+                $this->correlation($request),
+            ));
+        } catch (ApiException $exception) {
+            if ($exception->errorCode !== ApiErrorCode::ManifestNoSuccessfulParcels) {
+                throw $exception;
+            }
+
+            return ApiResponder::error(
+                $request,
+                $exception->errorCode,
+                $exception->getMessage(),
+                $exception->httpStatus,
+                $exception->fieldErrors,
+                $exception->details,
+            );
+        }
     }
 
     private function expected(Request $request): int
