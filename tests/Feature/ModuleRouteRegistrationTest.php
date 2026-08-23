@@ -41,6 +41,7 @@ final class ModuleRouteRegistrationTest extends TestCase
             'GET /api/v1/delivery-tasks/{id}',
             'GET /api/v1/drivers',
             'GET /api/v1/manifests',
+            'GET /api/v1/manifests/context-options',
             'GET /api/v1/manifests/{manifestId}',
             'GET /api/v1/manifests/{manifestId}/eligible-parcels',
             'GET /api/v1/iam/module-entitlements',
@@ -75,8 +76,11 @@ final class ModuleRouteRegistrationTest extends TestCase
             'GET /api/v1/reference/cities/{cityId}',
             'GET /api/v1/reference/provinces',
             'GET /api/v1/route-definitions',
+            'GET /api/v1/route-plans',
             'GET /api/v1/route-plans/{id}',
             'GET /api/v1/services/pickup-windows',
+            'GET /api/v1/transport-runs',
+            'GET /api/v1/transport-runs/candidates',
             'GET /api/v1/transport-runs/{id}',
             'GET /api/v1/vehicles',
             'PATCH /api/v1/admin/pricing/tariff-versions/{versionId}',
@@ -125,6 +129,7 @@ final class ModuleRouteRegistrationTest extends TestCase
             'POST /api/v1/delivery-tasks/{id}/assign',
             'POST /api/v1/delivery-tasks/{id}/complete',
             'POST /api/v1/delivery-tasks/{id}/fail',
+            'POST /api/v1/delivery-tasks/{id}/retry',
             'POST /api/v1/iam/roles/{roleId}/clone',
             'POST /api/v1/iam/users',
             'POST /api/v1/iam/users/{userId}/activate',
@@ -167,5 +172,32 @@ final class ModuleRouteRegistrationTest extends TestCase
         ];
         sort($expected);
         $this->assertSame($expected, $routes);
+    }
+
+    public function test_wave2_routes_are_registered_once_with_retry_sensitive_middleware(): void
+    {
+        $routes = collect(app('router')->getRoutes()->getRoutes());
+        $wave2Names = [
+            'route-plans.index',
+            'manifests.context-options.index',
+            'transport-runs.candidates',
+            'transport-runs.index',
+            'delivery-tasks.retry',
+        ];
+
+        foreach ($wave2Names as $name) {
+            $this->assertCount(1, $routes->filter(fn (Route $route): bool => $route->getName() === $name), "Route {$name} must be registered exactly once.");
+        }
+
+        $middlewareByRoute = [
+            'manifests.parcels.store' => 'idempotent:manifests.add-parcels',
+            'manifests.validate' => 'idempotent:manifests.validate',
+            'delivery-tasks.retry' => 'idempotent:delivery-tasks.retry',
+        ];
+        foreach ($middlewareByRoute as $name => $middleware) {
+            $route = $routes->first(fn (Route $route): bool => $route->getName() === $name);
+            $this->assertInstanceOf(Route::class, $route);
+            $this->assertContains($middleware, $route->middleware());
+        }
     }
 }

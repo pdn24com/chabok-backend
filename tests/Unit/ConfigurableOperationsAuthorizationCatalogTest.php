@@ -38,4 +38,26 @@ final class ConfigurableOperationsAuthorizationCatalogTest extends TestCase
             self::assertSame([], array_values(array_intersect($newPermissions, $rolePermissions)));
         }
     }
+
+    public function test_wave2_operational_roles_remain_least_privilege(): void
+    {
+        $grants = AuthorizationCatalog::grants();
+
+        self::assertContains('pickup_request.view', $grants['branch_operator']);
+        self::assertContains('live_operations.view', $grants['branch_operator']);
+        self::assertNotContains('live_operations.intervene', $grants['branch_operator']);
+        self::assertNotContains('manifest.approve', $grants['branch_operator']);
+
+        self::assertContains('pickup_request.assign', $grants['dispatcher']);
+        self::assertContains('live_operations.intervene', $grants['dispatcher']);
+        self::assertNotContains('manifest.approve', $grants['dispatcher']);
+
+        self::assertContains('manifest.view', $grants['branch_read_only']);
+        self::assertContains('pickup_request.view', $grants['branch_read_only']);
+        self::assertContains('live_operations.view', $grants['branch_read_only']);
+        self::assertSame([], array_values(array_filter(
+            $grants['branch_read_only'],
+            static fn (string $permission): bool => preg_match('/\.(create|edit|assign|reassign|cancel|approve|reopen|intervene|manage|publish)$/', $permission) === 1,
+        )));
+    }
 }

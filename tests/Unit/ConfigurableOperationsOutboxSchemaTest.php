@@ -35,4 +35,49 @@ final class ConfigurableOperationsOutboxSchemaTest extends TestCase
 
         self::assertTrue(true);
     }
+
+    #[Test]
+    public function it_accepts_the_exact_wave2_operational_command_envelope(): void
+    {
+        $registry = new OutboxEventSchemaRegistry();
+        $payload = [
+            'command' => 'DELIVERY_TASK_RETRIED',
+            'resource_id' => '00000000-0000-4000-8000-000000000101',
+            'consignment_id' => '00000000-0000-4000-8000-000000000102',
+            'status' => 'PENDING',
+        ];
+
+        $registry->assertValid('operations.command.executed', 1, $payload);
+
+        $this->expectException(\InvalidArgumentException::class);
+        $registry->assertValid('operations.command.executed', 1, [
+            ...$payload,
+            'unrestricted_metadata' => ['unsafe' => true],
+        ]);
+    }
+
+    #[Test]
+    public function it_rejects_incomplete_or_versionless_wave2_operational_events(): void
+    {
+        $registry = new OutboxEventSchemaRegistry();
+
+        try {
+            $registry->assertValid('operations.command.executed', 1, [
+                'command' => 'TRANSPORT_RUN_DEPARTED',
+                'resource_id' => '00000000-0000-4000-8000-000000000201',
+                'consignment_id' => '00000000-0000-4000-8000-000000000202',
+            ]);
+            self::fail('Missing status must be rejected.');
+        } catch (\InvalidArgumentException) {
+            self::assertTrue(true);
+        }
+
+        $this->expectException(\InvalidArgumentException::class);
+        $registry->assertValid('operations.command.executed', 2, [
+            'command' => 'TRANSPORT_RUN_DEPARTED',
+            'resource_id' => '00000000-0000-4000-8000-000000000201',
+            'consignment_id' => '00000000-0000-4000-8000-000000000202',
+            'status' => 'DEPARTED',
+        ]);
+    }
 }
