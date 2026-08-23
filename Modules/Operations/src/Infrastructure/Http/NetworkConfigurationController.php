@@ -37,6 +37,13 @@ final readonly class NetworkConfigurationController
         return ApiResponder::success($request, $this->coverage->createVersion($this->principal($request), $policyId, $input, $this->correlation($request)), status: 201);
     }
 
+    public function coverageVersionIndex(Request $request, string $policyId): JsonResponse
+    {
+        $filters = $request->validate(['page' => ['integer', 'min:1'], 'per_page' => ['integer', 'min:1', 'max:100']]);
+        $page = $this->coverage->history($this->principal($request), $policyId, (int) ($filters['page'] ?? 1), (int) ($filters['per_page'] ?? 20));
+        return ApiResponder::paginated($request, $page, fn ($row): array => $this->coverage->presentVersion($row));
+    }
+
     public function coverageVersionShow(Request $request, string $policyId, string $versionId): JsonResponse { return ApiResponder::success($request, $this->coverage->version($this->principal($request), $policyId, $versionId)); }
     public function coverageVersionUpdate(Request $request, string $policyId, string $versionId): JsonResponse { $input = $request->validate($this->coverageVersionRules(true)); return ApiResponder::success($request, $this->coverage->update($this->principal($request), $policyId, $versionId, $input, $this->correlation($request))); }
     public function coverageTransition(Request $request, string $policyId, string $versionId, string $action): JsonResponse { $input = $request->validate($this->lifecycleRules()); return ApiResponder::success($request, $this->coverage->transition($this->principal($request), $policyId, $versionId, $action, (int) $input['expected_version'], $input['note'] ?? null, $this->correlation($request))); }
@@ -56,6 +63,7 @@ final readonly class NetworkConfigurationController
 
     public function routeShow(Request $request, string $definitionId): JsonResponse { return ApiResponder::success($request, $this->routes->definition($this->principal($request), $definitionId)); }
     public function routeVersionStore(Request $request, string $definitionId): JsonResponse { $input = $request->validate($this->routeVersionRules(false)); return ApiResponder::success($request, $this->routes->createVersion($this->principal($request), $definitionId, $input, $this->correlation($request)), status: 201); }
+    public function routeVersionIndex(Request $request, string $definitionId): JsonResponse { $filters = $request->validate(['page' => ['integer', 'min:1'], 'per_page' => ['integer', 'min:1', 'max:100']]); $page = $this->routes->history($this->principal($request), $definitionId, (int) ($filters['page'] ?? 1), (int) ($filters['per_page'] ?? 20)); return ApiResponder::paginated($request, $page, fn ($row): array => $this->routes->presentVersion($row)); }
     public function routeVersionShow(Request $request, string $definitionId, string $versionId): JsonResponse { return ApiResponder::success($request, $this->routes->version($this->principal($request), $definitionId, $versionId)); }
     public function routeVersionUpdate(Request $request, string $definitionId, string $versionId): JsonResponse { $input = $request->validate($this->routeVersionRules(true)); return ApiResponder::success($request, $this->routes->update($this->principal($request), $definitionId, $versionId, $input, $this->correlation($request))); }
     public function routeTransition(Request $request, string $definitionId, string $versionId, string $action): JsonResponse { $input = $request->validate($this->lifecycleRules()); return ApiResponder::success($request, $this->routes->transition($this->principal($request), $definitionId, $versionId, $action, (int) $input['expected_version'], $input['note'] ?? null, $this->correlation($request))); }

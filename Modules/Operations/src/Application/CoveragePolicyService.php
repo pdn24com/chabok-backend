@@ -60,6 +60,16 @@ final readonly class CoveragePolicyService
         return $this->policyArray($row);
     }
 
+    public function history(AuthenticatedPrincipal $actor, string $policyId, int $page = 1, int $perPage = 20): LengthAwarePaginator
+    {
+        $hq = $this->access->assert($actor, 'network.coverage.view');
+        if (! DB::table('coverage_policies')->where(['hq_id' => $hq, 'coverage_policy_id' => $policyId])->exists()) throw new ApiException(ApiErrorCode::ResourceNotFound, 404, 'Resource not found.');
+        return DB::table('coverage_policy_versions')->where(['hq_id' => $hq, 'coverage_policy_id' => $policyId])->orderByDesc('version_number')->paginate($perPage, ['*'], 'page', $page);
+    }
+
+    /** @return array<string,mixed> */
+    public function presentVersion(object $row): array { return $this->versionArray($row); }
+
     /** @param array<string,mixed> $input @return array<string,mixed> */
     public function createVersion(AuthenticatedPrincipal $actor, string $policyId, array $input, string $correlationId): array
     {

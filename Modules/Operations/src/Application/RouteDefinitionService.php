@@ -57,6 +57,16 @@ final readonly class RouteDefinitionService
         return $this->definitionArray($row);
     }
 
+    public function history(AuthenticatedPrincipal $actor, string $definitionId, int $page = 1, int $perPage = 20): LengthAwarePaginator
+    {
+        $hq = $this->access->assert($actor, 'network.route.view');
+        if (! DB::table('route_definitions')->where(['hq_id' => $hq, 'route_definition_id' => $definitionId])->exists()) throw new ApiException(ApiErrorCode::ResourceNotFound, 404, 'Resource not found.');
+        return DB::table('route_definition_versions')->where(['hq_id' => $hq, 'route_definition_id' => $definitionId])->orderByDesc('version_number')->paginate($perPage, ['*'], 'page', $page);
+    }
+
+    /** @return array<string,mixed> */
+    public function presentVersion(object $row): array { return $this->versionArray($row); }
+
     /** @param array<string,mixed> $input @return array<string,mixed> */
     public function createVersion(AuthenticatedPrincipal $actor, string $definitionId, array $input, string $correlationId): array
     {
