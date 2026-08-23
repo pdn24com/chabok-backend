@@ -144,17 +144,63 @@ final readonly class CoveragePolicyService
         $at ??= now();
         $rows = DB::table('coverage_rules as r')->join('coverage_policy_versions as v', 'v.coverage_policy_version_id', '=', 'r.coverage_policy_version_id')->join('coverage_policies as p', 'p.coverage_policy_id', '=', 'v.coverage_policy_id')->join('nodes as n', 'n.node_id', '=', 'r.target_node_id')
             ->where(['r.hq_id' => $hqId, 'r.target' => $target, 'v.status' => 'PUBLISHED', 'n.status' => 'ACTIVE'])
+            ->whereColumn('p.published_version_id', 'v.coverage_policy_version_id')
             ->where(fn ($q) => $q->whereNull('v.effective_from')->orWhere('v.effective_from', '<=', $at))
             ->where(fn ($q) => $q->whereNull('v.effective_to')->orWhere('v.effective_to', '>', $at))
             ->where(fn ($q) => $q->whereNull('r.offering_version_id')->when($offeringVersionId !== null, fn ($inner) => $inner->orWhere('r.offering_version_id', $offeringVersionId)))
-            ->get(['r.*', 'v.coverage_policy_id', 'v.coverage_policy_version_id']);
+            ->get(['r.*', 'v.coverage_policy_id', 'v.coverage_policy_version_id', 'v.version_number', 'p.policy_code', 'p.policy_title']);
         $matches = $rows->filter(fn ($row): bool => $this->matches($row, $input))->values();
         if ($matches->isEmpty()) throw new ApiException(ApiErrorCode::CoverageNotFound, 422, 'No published Coverage Rule matches the request.');
         $ranked = $matches->sortByDesc(fn ($row): string => sprintf('%011d-%d', (int) $row->priority + 100000, self::SPECIFICITY[$row->criterion_type]))->values();
         $best = $ranked->first();
         $ties = $ranked->filter(fn ($row): bool => (int) $row->priority === (int) $best->priority && self::SPECIFICITY[$row->criterion_type] === self::SPECIFICITY[$best->criterion_type]);
         if ($ties->count() > 1) throw new ApiException(ApiErrorCode::CoverageAmbiguous, 422, 'More than one published Coverage Rule has the best rank.', details: ['coverage_rule_ids' => $ties->pluck('coverage_rule_id')->all()]);
-        return ['coverage_policy_id' => (string) $best->coverage_policy_id, 'coverage_policy_version_id' => (string) $best->coverage_policy_version_id, 'coverage_rule_id' => (string) $best->coverage_rule_id, 'target_node_id' => (string) $best->target_node_id, 'criterion_type' => (string) $best->criterion_type, 'priority' => (int) $best->priority, 'input' => $input, 'resolved_at' => $at->toISOString()];
+        return [
+            'coverage_policy_id' => (string) $best->coverage_policy_id,
+            'coverage_policy_version_id' => (string) $best->coverage_policy_version_id,
+            'coverage_rule_id' => (string) $best->coverage_rule_id,
+            'policy_code' => (string) $best->policy_code,
+            'policy_title' => (string) $best->policy_title,
+            'version_number' => (int) $best->version_number,
+            'target_node_id' => (string) $best->target_node_id,
+            'criterion_type' => (string) $best->criterion_type,
+            'priority' => (int) $best->priority,
+            'input' => $input,
+            'matched_evidence' => $this->matchedEvidence($best, $input),
+            'resolved_at' => $at->toISOString(),
+        ];
+    }
+
+    /** @param array<string,mixed> $input @return array{geography:?array<string,mixed>,postal:?array<string,mixed>,geometry:?array<string,mixed>} */
+    private function matchedEvidence(object $rule, array $input): array
+    {
+        $geography = match ($rule->criterion_type) {
+            'PROVINCE' => ['province_id' => (string) $rule->province_id],
+            'CITY' => [
+                'province_id' => isset($input['province_id']) ? (string) $input['province_id'] : null,
+                'city_id' => (string) $rule->city_id,
+            ],
+            default => null,
+        };
+        $postal = $rule->criterion_type === 'POSTAL_RANGE' ? [
+            'postal_code' => (string) $input['postal_code'],
+            'postal_code_from' => (string) $rule->postal_code_from,
+            'postal_code_to' => (string) $rule->postal_code_to,
+        ] : null;
+        $geometry = match ($rule->criterion_type) {
+            'POLYGON' => [
+                'point' => ['latitude' => (float) $input['latitude'], 'longitude' => (float) $input['longitude']],
+                'geometry' => json_decode((string) $rule->geometry_geojson, true, 512, JSON_THROW_ON_ERROR),
+            ],
+            'POINT_RADIUS' => [
+                'point' => ['latitude' => (float) $input['latitude'], 'longitude' => (float) $input['longitude']],
+                'center' => ['latitude' => (float) $rule->center_latitude, 'longitude' => (float) $rule->center_longitude],
+                'radius_meters' => (int) $rule->radius_meters,
+            ],
+            default => null,
+        };
+
+        return ['geography' => $geography, 'postal' => $postal, 'geometry' => $geometry];
     }
 
     /** @param array<string,mixed> $input */
