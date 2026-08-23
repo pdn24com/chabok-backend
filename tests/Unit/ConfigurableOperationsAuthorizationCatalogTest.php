@@ -18,16 +18,24 @@ final class ConfigurableOperationsAuthorizationCatalogTest extends TestCase
         foreach ($entitlements as $permission => $entitlement) {
             self::assertArrayHasKey($permission, $permissions);
             self::assertTrue(in_array($entitlement, ['LiveOperations', 'Driver'], true));
+            self::assertSame($entitlement, $permissions[$permission]);
         }
         self::assertSame('LiveOperations', $entitlements['network.route.publish']);
         self::assertSame('Driver', $entitlements['fleet.vehicle.manage']);
     }
 
-    public function test_foundation_does_not_grant_new_administration_permissions_to_default_roles(): void
+    public function test_hq_admin_alone_receives_the_new_administration_permissions(): void
     {
         $newPermissions = array_keys(AuthorizationCatalog::administrativeEntitlements());
-        $defaultGrants = array_merge(...array_values(AuthorizationCatalog::grants()));
+        $grants = AuthorizationCatalog::grants();
 
-        self::assertSame([], array_values(array_intersect($newPermissions, $defaultGrants)));
+        self::assertSame([], array_values(array_diff($newPermissions, $grants['hq_admin'])));
+
+        foreach ($grants as $roleCode => $rolePermissions) {
+            if ($roleCode === 'hq_admin') {
+                continue;
+            }
+            self::assertSame([], array_values(array_intersect($newPermissions, $rolePermissions)));
+        }
     }
 }
