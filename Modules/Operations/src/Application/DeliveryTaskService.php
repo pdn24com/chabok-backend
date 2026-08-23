@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Modules\Operations\Application;
 
+use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Modules\Foundation\Application\Contracts\AuthorizationContextResolver;
@@ -27,16 +28,40 @@ final readonly class DeliveryTaskService
         return DB::table('delivery_tasks')->where(['hq_id' => $actor->hqId, 'node_id' => $nodeId])->orderByDesc('created_at')->get()->map(fn ($row) => $this->item($row))->all();
     }
 
+    /** Called by final-node inbound reception inside the Manifest transaction. */
+    public function ensurePending(AuthenticatedPrincipal $actor, string $nodeId, string $consignmentId): string
+    {
+        $existing = DB::table('delivery_tasks')->where(['hq_id' => $actor->hqId, 'consignment_id' => $consignmentId])->lockForUpdate()->first();
+        if ($existing !== null) return (string) $existing->delivery_task_id;
+        $id = (string) Str::uuid();
+        DB::table('delivery_tasks')->insert(['delivery_task_id' => $id, 'hq_id' => $actor->hqId, 'consignment_id' => $consignmentId, 'node_id' => $nodeId, 'status' => 'PENDING', 'version' => 1, 'created_at' => now(), 'updated_at' => now()]);
+        return $id;
+    }
+
+    /** @return array<string,mixed> */
+    public function assign(AuthenticatedPrincipal $actor, string $nodeId, string $id, string $driverId, int $expected, string $correlationId): array
+    {
+        $this->access($actor, $nodeId, 'live_operations.intervene');
+        $this->transactions->run(function () use ($actor, $nodeId, $id, $driverId, $expected): void {
+            $task = $this->locked($actor, $nodeId, $id); $this->version($task, $expected);
+            if ($task->status !== 'PENDING') throw new ApiException(ApiErrorCode::ValidationError, 422, 'Only a pending Delivery Task can be assigned.');
+            $this->eligibleDriver($actor, $nodeId, $driverId);
+            DB::table('delivery_tasks')->where('delivery_task_id', $id)->update(['assigned_driver_id' => $driverId, 'status' => 'ASSIGNED', 'version' => $expected + 1, 'updated_at' => now()]);
+            DB::table('consignments')->where('consignment_id', $task->consignment_id)->update(['delivery_man_id' => $driverId]);
+        });
+        return $this->get($actor, $nodeId, $id);
+    }
+
     /** Called by Manifest confirmation inside its existing transaction. */
     public function activateFromManifest(AuthenticatedPrincipal $actor, string $nodeId, string $consignmentId, string $driverId, string $manifestId): string
     {
         $this->eligibleDriver($actor, $nodeId, $driverId);
         $existing = DB::table('delivery_tasks')->where(['hq_id' => $actor->hqId, 'consignment_id' => $consignmentId])->lockForUpdate()->first();
         if ($existing !== null) {
-            if ((string) $existing->assigned_driver_id !== $driverId || ! in_array($existing->status, ['PENDING', 'ASSIGNED'], true)) {
+            if (($existing->assigned_driver_id !== null && (string) $existing->assigned_driver_id !== $driverId) || ! in_array($existing->status, ['PENDING', 'ASSIGNED'], true)) {
                 throw new ApiException(ApiErrorCode::ValidationError, 422, 'The Delivery Task conflicts with the Manifest assignment.');
             }
-            DB::table('delivery_tasks')->where('delivery_task_id', $existing->delivery_task_id)->update(['manifest_id' => $manifestId, 'status' => 'ASSIGNED', 'updated_at' => now()]);
+            DB::table('delivery_tasks')->where('delivery_task_id', $existing->delivery_task_id)->update(['assigned_driver_id' => $driverId, 'manifest_id' => $manifestId, 'status' => 'ASSIGNED', 'updated_at' => now()]);
             return (string) $existing->delivery_task_id;
         }
         $id = (string) Str::uuid();
@@ -62,7 +87,7 @@ final readonly class DeliveryTaskService
             $task = $this->locked($actor, $nodeId, $id); $this->version($task, $expected);
             if (! in_array($task->status, ['ASSIGNED', 'IN_PROGRESS'], true)) throw new ApiException(ApiErrorCode::ValidationError, 422, 'The Delivery Task cannot be completed in its current state.');
             $this->lifecycle->transition($actor, (string) $task->consignment_id, 'OD', 'OK', 'DELIVERY_COMPLETED', null, 'RECIPIENT', null, $correlationId, (string) $task->assigned_driver_id, (string) $task->manifest_id, safeNote: $note);
-            DB::table('delivery_tasks')->where('delivery_task_id', $id)->update(['status' => 'COMPLETED', 'recipient_name' => $recipientName, 'proof_type' => 'MANUAL_CONFIRMATION', 'proof_note' => $note, 'delivered_at' => $deliveredAt, 'version' => $expected + 1, 'updated_at' => now()]);
+            DB::table('delivery_tasks')->where('delivery_task_id', $id)->update(['status' => 'COMPLETED', 'recipient_name' => $recipientName, 'proof_type' => 'MANUAL_CONFIRMATION', 'proof_note' => $note, 'delivered_at' => CarbonImmutable::parse($deliveredAt)->utc()->format('Y-m-d H:i:s.u'), 'version' => $expected + 1, 'updated_at' => now()]);
         });
         return $this->get($actor, $nodeId, $id);
     }

@@ -205,6 +205,7 @@ final readonly class ConsignmentService
                 ]);
                 DB::table('parcel_custody_events')->insert([
                     'custody_event_id' => (string) Str::uuid(), 'hq_id' => $actor->hqId,
+                    'event_sequence' => $this->nextSequence('parcel_custody_events', $id),
                     'consignment_id' => $id, 'parcel_id' => $parcelId,
                     'from_node_id' => null, 'to_node_id' => $nodeId,
                     'from_custody_type' => null, 'to_custody_type' => 'NODE',
@@ -547,8 +548,9 @@ final readonly class ConsignmentService
             })->all();
         $statusTimeline = DB::table('consignment_status_events')
             ->where(['hq_id' => $hqId, 'consignment_id' => $id])
-            ->orderBy('created_at')->get()->map(fn ($event): array => [
+            ->orderBy('created_at')->orderByRaw('event_sequence IS NULL')->orderBy('event_sequence')->orderBy('status_event_id')->get()->map(fn ($event): array => [
                 'status_event_id' => (string) $event->status_event_id,
+                'event_sequence' => $event->event_sequence === null ? null : (int) $event->event_sequence,
                 'parcel_id' => $event->parcel_id,
                 'previous_status' => $event->previous_status,
                 'new_status' => (string) $event->new_status,
@@ -572,8 +574,9 @@ final readonly class ConsignmentService
             ])->all()
             : [];
         $custodyTimeline = DB::table('parcel_custody_events')->where(['hq_id' => $hqId, 'consignment_id' => $id])
-            ->orderBy('created_at')->get()->map(fn ($event): array => [
+            ->orderBy('created_at')->orderByRaw('event_sequence IS NULL')->orderBy('event_sequence')->orderBy('custody_event_id')->get()->map(fn ($event): array => [
                 'custody_event_id' => (string) $event->custody_event_id,
+                'event_sequence' => $event->event_sequence === null ? null : (int) $event->event_sequence,
                 'parcel_id' => (string) $event->parcel_id,
                 'from_node_id' => $event->from_node_id, 'to_node_id' => $event->to_node_id,
                 'from_custody_type' => $event->from_custody_type, 'to_custody_type' => (string) $event->to_custody_type,
@@ -949,6 +952,7 @@ final readonly class ConsignmentService
     ): void {
         DB::table('consignment_status_events')->insert([
             'status_event_id' => (string) Str::uuid(),
+            'event_sequence' => $this->nextSequence('consignment_status_events', $consignmentId),
             'hq_id' => $hqId,
             'consignment_id' => $consignmentId,
             'parcel_id' => $parcelId,
@@ -959,6 +963,11 @@ final readonly class ConsignmentService
             'reason_code' => $reason,
             'created_at' => now(),
         ]);
+    }
+
+    private function nextSequence(string $table, string $consignmentId): int
+    {
+        return ((int) DB::table($table)->where('consignment_id', $consignmentId)->max('event_sequence')) + 1;
     }
 
     /** @param array<string, mixed> $row

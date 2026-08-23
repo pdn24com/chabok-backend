@@ -269,6 +269,7 @@ final readonly class ManifestService
                 $this->statusEvent($actor, $nodeId, (string) $parcel->consignment_id, (string) $parcel->parcel_id, (string) $parcel->current_status, (string) $m->manifest_status, $id);
                 DB::table('parcel_custody_events')->insert([
                     'custody_event_id' => (string) Str::uuid(), 'hq_id' => $actor->hqId,
+                    'event_sequence' => $this->nextSequence('parcel_custody_events', (string) $parcel->consignment_id),
                     'consignment_id' => $parcel->consignment_id, 'parcel_id' => $parcel->parcel_id,
                     'from_node_id' => $parcel->current_node_id, 'to_node_id' => $nextNode,
                     'from_custody_type' => $parcel->current_custody_type, 'to_custody_type' => $custody,
@@ -312,6 +313,10 @@ final readonly class ManifestService
                 }
                 if ($m->manifest_status === 'OD') {
                     $this->deliveryTasks->activateFromManifest($actor, $nodeId, $consignmentId, (string) $m->assigned_driver_id, $id);
+                }
+                if ($m->manifest_status === 'IR' && $m->transport_run_id !== null
+                    && DB::table('consignments')->where(['hq_id' => $actor->hqId, 'consignment_id' => $consignmentId, 'delivery_node_id' => $nodeId])->exists()) {
+                    $this->deliveryTasks->ensurePending($actor, $nodeId, $consignmentId);
                 }
             }
             $this->applyRouteProgress($m);
@@ -429,11 +434,17 @@ final readonly class ManifestService
     {
         DB::table('consignment_status_events')->insert([
             'status_event_id' => (string) Str::uuid(), 'hq_id' => $actor->hqId,
+            'event_sequence' => $this->nextSequence('consignment_status_events', $consignmentId),
             'consignment_id' => $consignmentId, 'parcel_id' => $parcelId,
             'previous_status' => $old, 'new_status' => $new, 'initiator_id' => $actor->userId,
             'node_id' => $nodeId, 'manifest_id' => $manifestId,
             'reason_code' => 'MANIFEST_CONFIRMED', 'created_at' => now(),
         ]);
+    }
+
+    private function nextSequence(string $table, string $consignmentId): int
+    {
+        return ((int) DB::table($table)->where('consignment_id', $consignmentId)->max('event_sequence')) + 1;
     }
 
     private function time(mixed $value): string

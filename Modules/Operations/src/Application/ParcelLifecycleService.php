@@ -48,6 +48,7 @@ final readonly class ParcelLifecycleService
             ]);
             DB::table('consignment_status_events')->insert([
                 'status_event_id' => (string) Str::uuid(), 'hq_id' => $actor->hqId,
+                'event_sequence' => $this->nextSequence('consignment_status_events', $consignmentId),
                 'consignment_id' => $consignmentId, 'parcel_id' => $parcel->parcel_id,
                 'previous_status' => $from, 'new_status' => $to, 'initiator_id' => $actor->userId,
                 'node_id' => $nodeId, 'driver_id' => $driverId, 'manifest_id' => $manifestId,
@@ -55,6 +56,7 @@ final readonly class ParcelLifecycleService
             ]);
             DB::table('parcel_custody_events')->insert([
                 'custody_event_id' => (string) Str::uuid(), 'hq_id' => $actor->hqId,
+                'event_sequence' => $this->nextSequence('parcel_custody_events', $consignmentId),
                 'consignment_id' => $consignmentId, 'parcel_id' => $parcel->parcel_id,
                 'from_node_id' => $parcel->current_node_id, 'to_node_id' => $nodeId,
                 'from_custody_type' => $parcel->current_custody_type,
@@ -73,6 +75,7 @@ final readonly class ParcelLifecycleService
         if ((string) $consignment->current_status !== $to) {
             DB::table('consignment_status_events')->insert([
                 'status_event_id' => (string) Str::uuid(), 'hq_id' => $actor->hqId,
+                'event_sequence' => $this->nextSequence('consignment_status_events', $consignmentId),
                 'consignment_id' => $consignmentId, 'parcel_id' => null,
                 'previous_status' => $consignment->current_status, 'new_status' => $to,
                 'initiator_id' => $actor->userId, 'node_id' => $nodeId, 'driver_id' => $driverId,
@@ -85,5 +88,10 @@ final readonly class ParcelLifecycleService
             'command' => $command, 'resource_id' => $consignmentId, 'consignment_id' => $consignmentId, 'status' => $to,
         ]);
         return $ids;
+    }
+
+    private function nextSequence(string $table, string $consignmentId): int
+    {
+        return ((int) DB::table($table)->where('consignment_id', $consignmentId)->max('event_sequence')) + 1;
     }
 }
