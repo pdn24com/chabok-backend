@@ -18,12 +18,21 @@ final class ManifestEligibilityReason
     public const RouteLegMismatch = 'ROUTE_LEG_MISMATCH';
     public const RouteLegNotReady = 'ROUTE_LEG_NOT_READY';
     public const ConfigVersionUnavailable = 'CONFIG_VERSION_UNAVAILABLE';
-    public const TransportRunMismatch = 'TRANSPORT_RUN_MISMATCH';
-    public const TransportRunNotArrived = 'TRANSPORT_RUN_NOT_ARRIVED';
+    public const PickupAssignmentMismatch = 'PICKUP_ASSIGNMENT_MISMATCH';
+    public const RoutePlanUnavailable = 'ROUTE_PLAN_UNAVAILABLE';
+    public const RouteLegUnavailable = 'ROUTE_LEG_UNAVAILABLE';
+    public const PreviousMovementMismatch = 'PREVIOUS_MOVEMENT_MISMATCH';
     public const DeliveryRouteIncomplete = 'DELIVERY_ROUTE_INCOMPLETE';
     public const DeliveryNodeMismatch = 'DELIVERY_NODE_MISMATCH';
     public const DriverUnavailable = 'DRIVER_UNAVAILABLE';
+    public const DriverIncapable = 'DRIVER_INCAPABLE';
+    public const DriverOutOfScope = 'DRIVER_OUT_OF_SCOPE';
     public const VehicleUnavailable = 'VEHICLE_UNAVAILABLE';
+    public const VehicleIncapable = 'VEHICLE_INCAPABLE';
+    public const VehicleOutOfScope = 'VEHICLE_OUT_OF_SCOPE';
+    public const CoverageNotFound = 'COVERAGE_NOT_FOUND';
+    public const CoverageAmbiguous = 'COVERAGE_AMBIGUOUS';
+    public const ExceptionReviewRequired = 'EXCEPTION_REVIEW_REQUIRED';
 
     /** @return array{reason_code:string,eligible:bool,severity:string,presentation:array{title:array{fa:string,en:string},detail:array{fa:string,en:string},suggested_action:array{fa:string,en:string}}} */
     public static function metadata(string $code): array
@@ -59,12 +68,21 @@ final class ManifestEligibilityReason
             self::RouteLegMismatch => self::item('گام مسیر متفاوت است', 'Route Leg mismatch', 'گام مسیر فعال بسته با گام انتخاب‌شده یکسان نیست.', 'The Parcel active Route Leg does not match the selected leg.', 'گام مسیر متناظر بسته را انتخاب کنید.', 'Select the Parcel matching Route Leg.'),
             self::RouteLegNotReady => self::item('گام مسیر آماده نیست', 'Route Leg is not ready', 'گام مسیر در وضعیت لازم برای این عملیات نیست.', 'The Route Leg is not in the lifecycle state required by this operation.', 'مرحله قبلی مسیر را تکمیل کنید.', 'Complete the preceding route operation.'),
             self::ConfigVersionUnavailable => self::item('نسخه مسیر در دسترس نیست', 'Route version unavailable', 'نسخه منتشرشده‌ای که برنامه مسیر به آن ارجاع می‌دهد در دسترس نیست.', 'The published Route Definition Version referenced by the plan is unavailable.', 'پیکربندی مسیر را اصلاح و برنامه جانشین ایجاد کنید.', 'Repair route configuration and create a successor plan.'),
-            self::TransportRunMismatch => self::item('سفر خطی متفاوت است', 'Transport Run mismatch', 'بسته عضو سفر خطی انتخاب‌شده نیست یا سفر فعال آن متفاوت است.', 'The Parcel is not loaded on the selected Transport Run.', 'سفر خطی متناظر را انتخاب کنید.', 'Select the matching Transport Run.'),
-            self::TransportRunNotArrived => self::item('سفر هنوز نرسیده است', 'Transport Run has not arrived', 'سفر خطی در گره جاری به وضعیت رسیده نرسیده است.', 'The Transport Run has not reached ARRIVED at the current node.', 'ابتدا ورود سفر را در عملیات حمل ثبت کنید.', 'Record transport arrival first.'),
+            self::PickupAssignmentMismatch => self::item('تخصیص جمع‌آوری متفاوت است', 'Pickup assignment mismatch', 'تخصیص راننده جمع‌آوری با مانیفست قبلی سازگار نیست.', 'The pickup Driver assignment does not match the preceding PD Manifest.', 'تخصیص جمع‌آوری را بررسی کنید.', 'Review the pickup assignment.'),
+            self::RoutePlanUnavailable => self::item('برنامه مسیر در دسترس نیست', 'Route Plan unavailable', 'برنامه مسیر معتبر و منتشرشده‌ای پیدا نشد.', 'No valid configuration-derived Route Plan is available.', 'پیکربندی مسیر را منتشر کنید.', 'Publish valid route configuration.'),
+            self::RouteLegUnavailable => self::item('گام مسیر در دسترس نیست', 'Route Leg unavailable', 'گام مسیر متناظر در برنامه مسیر پیدا نشد.', 'The required Route Plan Leg is unavailable.', 'برنامه مسیر را بررسی کنید.', 'Review the Route Plan.'),
+            self::PreviousMovementMismatch => self::item('حرکت قبلی متفاوت است', 'Previous movement mismatch', 'شواهد مانیفست خروج با دریافت مقصد سازگار نیست.', 'The preceding OS Manifest evidence does not match destination reception.', 'مانیفست خروج متناظر را انتخاب کنید.', 'Select the matching OS Manifest.'),
             self::DeliveryRouteIncomplete => self::item('مسیر تحویل کامل نیست', 'Delivery route incomplete', 'همه گام‌های مسیر بسته هنوز در گره مقصد دریافت نشده‌اند.', 'Not every Route Plan Leg has been received at the destination node.', 'دریافت گام‌های باقی‌مانده را تکمیل کنید.', 'Complete receipt of the remaining Route Legs.'),
             self::DeliveryNodeMismatch => self::item('گره تحویل متفاوت است', 'Delivery node mismatch', 'این گره، گره تحویل عملیاتی مرسوله نیست.', 'The current node is not the Consignment delivery node.', 'مانیفست تحویل را در گره مقصد ایجاد کنید.', 'Create the delivery Manifest at the destination node.'),
             self::DriverUnavailable => self::item('راننده در دسترس نیست', 'Driver unavailable', 'راننده تحویل انتخاب‌شده دیگر فعال، آزاد، توانمند یا در دامنه این گره نیست.', 'The selected delivery Driver is no longer active, available, capable, and in node scope.', 'راننده معتبر دیگری انتخاب کنید.', 'Select another eligible Driver.'),
+            self::DriverIncapable => self::item('قابلیت راننده کافی نیست', 'Driver incapable', 'راننده قابلیت لازم برای عملیات را ندارد.', 'The selected Driver lacks the required operational capability.', 'راننده توانمند دیگری انتخاب کنید.', 'Select a capable Driver.'),
+            self::DriverOutOfScope => self::item('راننده خارج از دامنه است', 'Driver out of scope', 'راننده به گره یا HQ عملیاتی تعلق ندارد.', 'The selected Driver is outside the authorized HQ or Node.', 'راننده داخل دامنه انتخاب کنید.', 'Select a Driver in scope.'),
             self::VehicleUnavailable => self::item('خودرو در دسترس نیست', 'Vehicle unavailable', 'خودرو انتخاب‌شده دیگر فعال، آزاد یا در دامنه این گره نیست.', 'The selected Vehicle is no longer active, available, and in node scope.', 'خودرو معتبر دیگری انتخاب کنید.', 'Select another eligible Vehicle.'),
+            self::VehicleIncapable => self::item('خودرو نامتناسب است', 'Vehicle incapable', 'خودرو برای حرکت خطی انتخاب‌شده مناسب نیست.', 'The selected Vehicle is not capable of the movement.', 'خودرو مناسب دیگری انتخاب کنید.', 'Select a capable Vehicle.'),
+            self::VehicleOutOfScope => self::item('خودرو خارج از دامنه است', 'Vehicle out of scope', 'خودرو به گره یا HQ عملیاتی تعلق ندارد.', 'The selected Vehicle is outside the authorized HQ or Node.', 'خودرو داخل دامنه انتخاب کنید.', 'Select a Vehicle in scope.'),
+            self::CoverageNotFound => self::item('پوشش یافت نشد', 'Coverage not found', 'پوشش منتشرشده‌ای برای مقصد یافت نشد.', 'No published coverage matches the destination.', 'پیکربندی پوشش را تکمیل کنید.', 'Complete coverage configuration.'),
+            self::CoverageAmbiguous => self::item('پوشش مبهم است', 'Coverage ambiguous', 'بیش از یک پوشش هم‌اولویت با مقصد مطابقت دارد.', 'Multiple equal-priority coverage rules match.', 'پیکربندی پوشش را رفع ابهام کنید.', 'Disambiguate coverage configuration.'),
+            self::ExceptionReviewRequired => self::item('بازبینی استثنا لازم است', 'Exception review required', 'این انتقال فقط پس از تأیید بازبین مجاز اعمال می‌شود.', 'This transition is applied only after authorized Exception Review.', 'درخواست را برای بازبینی ارسال کنید.', 'Submit the Exception for review.'),
         ];
     }
 

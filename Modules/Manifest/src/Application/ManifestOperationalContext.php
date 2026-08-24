@@ -10,470 +10,160 @@ use Modules\Foundation\Domain\ApiErrorCode;
 use Modules\Foundation\Domain\ApiException;
 use Modules\Foundation\Domain\AuthenticatedPrincipal;
 
-final class ManifestOperationalContext
+final readonly class ManifestOperationalContext
 {
-    /** @return array<string, mixed> */
+    /** @return array<string,mixed> */
     public function options(AuthenticatedPrincipal $actor, string $nodeId): array
     {
-        $node = DB::table('nodes')->where([
-            'hq_id' => $actor->hqId,
-            'node_id' => $nodeId,
-            'status' => 'ACTIVE',
-        ])->first();
-        if ($node === null) {
-            throw new ApiException(ApiErrorCode::ScopeAccessDenied, 403, 'Access denied.');
-        }
+        $node = $this->node((string) $actor->hqId, $nodeId);
+        $contexts = collect($this->operationalOptions($actor, $nodeId, $node))
+            ->map(function (array $option): array {
+                unset($option['resolution']);
+
+                return $option;
+            })->all();
 
         return [
             'current_node' => $this->nodeResource($node),
-            'contexts' => [
-                $this->pickupReceptionOption($node),
-                ...$this->transportReceptionOptions((string) $actor->hqId, $nodeId),
-                ...$this->routeOutboundOptions((string) $actor->hqId, $nodeId),
-                $this->deliveryAssignmentOption($node),
-            ],
+            'transition_contracts' => $this->transitionContracts(),
+            'contexts' => $contexts,
             'drivers' => $this->drivers((string) $actor->hqId, $nodeId),
             'vehicles' => $this->vehicles((string) $actor->hqId, $nodeId),
         ];
     }
 
-    /** @param array<string, mixed> $input @return array<string, mixed> */
+    /** @param array<string,mixed> $input @return array<string,mixed> */
     public function normalize(AuthenticatedPrincipal $actor, string $nodeId, array $input): array
     {
-        $target = (string) $input['manifest_status'];
+        $target = (string) ($input['manifest_status'] ?? '');
+        $contextKey = (string) ($input['context_key'] ?? '');
+        $node = $this->node((string) $actor->hqId, $nodeId);
+        $option = collect($this->operationalOptions($actor, $nodeId, $node))->first(
+            fn (array $candidate): bool => $candidate['manifest_status'] === $target && hash_equals((string) $candidate['context_key'], $contextKey),
+        );
+        if (! is_array($option)) throw new ApiException(ApiErrorCode::UnsupportedManifestTransition, 422, 'The selected server context is unavailable.');
+        $normalized = $option['resolution'];
+        $normalized['manifest_status'] = $target;
+        $normalized['context_key'] = $contextKey;
+        $normalized['manifest_type'] = $this->manifestType($target);
+        $normalized['operational_context_type'] = $option['operational_context_type'];
 
-        return match ($target) {
-            'IR' => ($input['transport_run_id'] ?? null) === null
-                ? $this->pickupReception((string) $actor->hqId, $nodeId, $input)
-                : $this->transportReception((string) $actor->hqId, $nodeId, $input),
-            'OF' => $this->routeOutbound((string) $actor->hqId, $nodeId, $input),
-            'OD' => $this->deliveryAssignment((string) $actor->hqId, $nodeId, $input),
-            default => throw new ApiException(ApiErrorCode::ValidationError, 422, 'The Manifest target status is not available.'),
-        };
+        $requiredCapability = match ($target) { 'PD' => 'PICKUP', 'OD' => 'DELIVERY', 'OS' => 'LINEHAUL', default => null };
+        if ($requiredCapability !== null) {
+            $driverId = isset($input['assigned_driver_id']) ? (string) $input['assigned_driver_id'] : '';
+            $this->assertDriver((string) $actor->hqId, $nodeId, $driverId, $requiredCapability);
+            $normalized['assigned_driver_id'] = $driverId;
+        }
+        if ($target === 'OS') {
+            $vehicleId = isset($input['assigned_vehicle_id']) ? (string) $input['assigned_vehicle_id'] : '';
+            $this->assertVehicle((string) $actor->hqId, $nodeId, $vehicleId);
+            $normalized['assigned_vehicle_id'] = $vehicleId;
+        }
+        if (! in_array($target, ['PD','OD','OS'], true) && array_key_exists('assigned_driver_id', $input)
+            && $input['assigned_driver_id'] !== null && (string) $input['assigned_driver_id'] !== (string) ($normalized['assigned_driver_id'] ?? '')) {
+            throw new ApiException(ApiErrorCode::DriverOutOfScope, 422, 'The Driver is derived from the selected server context.');
+        }
+        return $normalized;
     }
 
-    /** @return array<string, mixed> */
+    /** @return list<array<string,mixed>> */
+    private function operationalOptions(AuthenticatedPrincipal $actor, string $nodeId, object $node): array
+    {
+        return [
+            $this->baseOption('PD', 'PICKUP_ASSIGNMENT', "PD:{$nodeId}", $node, 'Pickup assignment'),
+            $this->baseOption('IR', 'PICKUP_RECEPTION', "IR:PICKUP:{$nodeId}", $node, 'Pickup reception'),
+            $this->baseOption('ROU', 'ROUTE_REGISTRATION', "ROU:{$nodeId}", $node, 'Route registration'),
+            $this->baseOption('OD', 'DELIVERY_ASSIGNMENT', "OD:{$nodeId}", $node, 'Delivery assignment'),
+            ...$this->pickupOptions((string) $actor->hqId, $nodeId),
+            ...$this->routeLegOptions((string) $actor->hqId, $nodeId),
+            ...$this->movementReceptionOptions((string) $actor->hqId, $nodeId),
+            ...$this->deliveryOptions((string) $actor->hqId, $nodeId),
+        ];
+    }
+
+    /** @return array<string,mixed> */
     public function summary(object $manifest): array
     {
-        $nodeIds = array_values(array_unique(array_filter([
-            (string) $manifest->node_id,
-            $manifest->origin_node_id === null ? null : (string) $manifest->origin_node_id,
-            $manifest->destination_node_id === null ? null : (string) $manifest->destination_node_id,
-        ])));
-        $nodes = DB::table('nodes')->where('hq_id', $manifest->hq_id)->whereIn('node_id', $nodeIds)
-            ->get()->keyBy('node_id');
-
-        $plan = $manifest->route_plan_id === null ? null : DB::table('route_plans as rp')
-            ->join('consignments as c', function ($join): void {
-                $join->on('c.consignment_id', '=', 'rp.consignment_id')->on('c.hq_id', '=', 'rp.hq_id');
-            })
-            ->join('route_definitions as rd', function ($join): void {
-                $join->on('rd.route_definition_id', '=', 'rp.route_definition_id')->on('rd.hq_id', '=', 'rp.hq_id');
-            })
-            ->where(['rp.hq_id' => $manifest->hq_id, 'rp.route_plan_id' => $manifest->route_plan_id])
-            ->first(['rp.*', 'c.consignment_number', 'rd.route_code', 'rd.route_title']);
-        $leg = $manifest->route_plan_leg_id === null ? null : DB::table('route_plan_legs')->where([
-            'hq_id' => $manifest->hq_id,
-            'route_plan_leg_id' => $manifest->route_plan_leg_id,
-        ])->first();
-        $run = $manifest->transport_run_id === null ? null : DB::table('transport_runs')->where([
-            'hq_id' => $manifest->hq_id,
-            'transport_run_id' => $manifest->transport_run_id,
-        ])->first();
-        $driver = $manifest->assigned_driver_id === null ? null : DB::table('drivers')->where([
-            'hq_id' => $manifest->hq_id,
-            'driver_id' => $manifest->assigned_driver_id,
-        ])->first();
-        $vehicle = $manifest->assigned_vehicle_id === null ? null : DB::table('vehicles')->where([
-            'hq_id' => $manifest->hq_id,
-            'vehicle_id' => $manifest->assigned_vehicle_id,
-        ])->first();
-
-        return [
-            'operational_context_type' => (string) $manifest->operational_context_type,
-            'current_node' => isset($nodes[$manifest->node_id]) ? $this->nodeResource($nodes[$manifest->node_id]) : null,
-            'origin_node' => $manifest->origin_node_id !== null && isset($nodes[$manifest->origin_node_id]) ? $this->nodeResource($nodes[$manifest->origin_node_id]) : null,
-            'destination_node' => $manifest->destination_node_id !== null && isset($nodes[$manifest->destination_node_id]) ? $this->nodeResource($nodes[$manifest->destination_node_id]) : null,
-            'route_plan' => $plan === null ? null : [
-                'route_plan_id' => (string) $plan->route_plan_id,
-                'consignment_id' => (string) $plan->consignment_id,
-                'consignment_number' => (string) $plan->consignment_number,
-                'route_definition_id' => (string) $plan->route_definition_id,
-                'route_code' => (string) $plan->route_code,
-                'route_title' => (string) $plan->route_title,
-                'status' => (string) $plan->status,
-                'version' => (int) $plan->version,
-            ],
-            'route_leg' => $leg === null ? null : [
-                'route_plan_leg_id' => (string) $leg->route_plan_leg_id,
-                'leg_order' => (int) $leg->leg_order,
-                'status' => (string) $leg->status,
-                'origin_node_id' => (string) $leg->origin_node_id,
-                'destination_node_id' => (string) $leg->destination_node_id,
-            ],
-            'transport_run' => $run === null ? null : [
-                'transport_run_id' => (string) $run->transport_run_id,
-                'transport_run_number' => (string) $run->transport_run_number,
-                'status' => (string) $run->status,
-                'version' => (int) $run->version,
-            ],
-            'driver' => $driver === null ? null : $this->driverResource($driver),
-            'vehicle' => $vehicle === null ? null : $this->vehicleResource($vehicle),
-        ];
+        $hq = (string) $manifest->hq_id;
+        return ['operational_context_type'=>(string)$manifest->operational_context_type,'current_node'=>$this->nullableNode($hq,$manifest->node_id),'origin_node'=>$this->nullableNode($hq,$manifest->origin_node_id),'destination_node'=>$this->nullableNode($hq,$manifest->destination_node_id),'route_plan'=>$this->routePlan($hq,$manifest->route_plan_id),'route_leg'=>$this->routeLeg($hq,$manifest->route_plan_leg_id),'driver'=>$this->driver($hq,$manifest->assigned_driver_id),'vehicle'=>$this->vehicle($hq,$manifest->assigned_vehicle_id)];
     }
 
-    /** @param array<string, mixed> $input @return array<string, mixed> */
-    private function pickupReception(string $hqId, string $nodeId, array $input): array
+    /** @return list<array<string,mixed>> */
+    private function pickupOptions(string $hq, string $node): array
     {
-        $this->assertNull($input, ['origin_node_id', 'route_plan_id', 'route_plan_leg_id', 'transport_run_id', 'assigned_driver_id', 'assigned_vehicle_id']);
-        $this->assertMatches($input, 'destination_node_id', $nodeId);
-        $this->activeNode($hqId, $nodeId);
-
-        return [
-            'manifest_status' => 'IR',
-            'manifest_type' => 'INBOUND_RECEPTION',
-            'operational_context_type' => 'PICKUP_RECEPTION',
-            'origin_node_id' => null,
-            'destination_node_id' => $nodeId,
-            'route_plan_id' => null,
-            'route_plan_leg_id' => null,
-            'transport_run_id' => null,
-            'assigned_driver_id' => null,
-            'assigned_vehicle_id' => null,
-        ];
+        return DB::table('pickup_tasks as t')->join('consignments as c','c.consignment_id','=','t.consignment_id')->where(['t.hq_id'=>$hq,'t.node_id'=>$node])->whereIn('t.status',['ASSIGNED','IN_PROGRESS','COMPLETED'])->orderBy('c.consignment_number')->get(['t.*','c.consignment_number'])->flatMap(function(object $r) use($node):array {
+            $s=$this->emptySelection(); $s['origin_node_id']=$node; $s['destination_node_id']=$node; $s['assigned_driver_id']=(string)$r->assigned_driver_id;
+            return [$this->option('PU','PICKUP_COMPLETION','PICKUP:'.$r->pickup_task_id.':PU',"{$r->consignment_number} · pickup completion",$s),$this->option('NPU','PICKUP_EXCEPTION','PICKUP:'.$r->pickup_task_id.':NPU',"{$r->consignment_number} · pickup exception",$s)];
+        })->all();
     }
 
-    /** @param array<string, mixed> $input @return array<string, mixed> */
-    private function transportReception(string $hqId, string $nodeId, array $input): array
+    /** @return list<array<string,mixed>> */
+    private function routeLegOptions(string $hq, string $node): array
     {
-        $run = DB::table('transport_runs as tr')
-            ->join('route_plan_legs as rpl', function ($join): void {
-                $join->on('rpl.route_plan_leg_id', '=', 'tr.route_plan_leg_id')->on('rpl.hq_id', '=', 'tr.hq_id');
-            })
-            ->where([
-                'tr.hq_id' => $hqId,
-                'tr.transport_run_id' => $input['transport_run_id'],
-                'tr.destination_node_id' => $nodeId,
-                'tr.status' => 'ARRIVED',
-                'rpl.status' => 'ARRIVED',
-            ])->first(['tr.*', 'rpl.route_plan_id']);
-        if ($run === null) {
-            throw $this->contextError('transport_run_id', 'The selected Transport Run is not an arrived run for this node.');
+        $rows=DB::table('route_plan_legs as l')->join('route_plans as p','p.route_plan_id','=','l.route_plan_id')->join('consignments as c','c.consignment_id','=','p.consignment_id')->where(['l.hq_id'=>$hq,'l.origin_node_id'=>$node])->whereIn('l.status',['ROUTED','OUTBOUND_CONFIRMED'])->orderBy('c.consignment_number')->get(['l.*','p.route_definition_version_id','c.consignment_number']); $out=[];
+        foreach($rows->where('status','ROUTED') as $r){$s=$this->emptySelection();$s['origin_node_id']=$node;$s['destination_node_id']=(string)$r->destination_node_id;$s['route_plan_id']=(string)$r->route_plan_id;$s['route_plan_leg_id']=(string)$r->route_plan_leg_id;$s['route_definition_version_id']=(string)$r->route_definition_version_id;$s['route_definition_version_leg_id']=(string)$r->source_route_definition_version_leg_id;$out[]=$this->option('OF','OUTBOUND_CONFIRMATION','OF:'.$r->route_plan_leg_id,"{$r->consignment_number} · outbound leg {$r->leg_order}",$s);}
+        foreach($rows->where('status','OUTBOUND_CONFIRMED')->groupBy(fn(object $r):string=>$r->source_route_definition_version_leg_id.'|'.$r->destination_node_id) as $key=>$group){$r=$group->first();$s=$this->emptySelection();$s['origin_node_id']=$node;$s['destination_node_id']=(string)$r->destination_node_id;$s['route_definition_version_leg_id']=(string)$r->source_route_definition_version_leg_id;$out[]=$this->option('OS','LINEHAUL_DEPARTURE','OS:'.$key,'Linehaul departure · '.$group->count().' compatible consignment(s)',$s);}
+        return $out;
+    }
+
+    /** @return list<array<string,mixed>> */
+    private function movementReceptionOptions(string $hq,string $node):array
+    {
+        return DB::table('manifests')->where(['hq_id'=>$hq,'manifest_status'=>'OS','state'=>'CLOSED','destination_node_id'=>$node])->whereExists(fn(Builder $q)=>$q->selectRaw('1')->from('manifest_parcels as mp')->join('parcels as p','p.parcel_id','=','mp.parcel_id')->whereColumn('mp.manifest_id','manifests.manifest_id')->where(['mp.manifest_parcel_status'=>'SUCCEEDED','p.current_status'=>'OS']))->orderBy('closed_at')->get()->map(function(object $r):array{$s=$this->emptySelection();$s['origin_node_id']=(string)$r->origin_node_id;$s['destination_node_id']=(string)$r->destination_node_id;$s['source_manifest_id']=(string)$r->manifest_id;$s['assigned_driver_id']=(string)$r->assigned_driver_id;$s['assigned_vehicle_id']=(string)$r->assigned_vehicle_id;return $this->option('IR','MOVEMENT_RECEPTION','IR:OS:'.$r->manifest_id,'Movement reception · '.$r->manifest_number,$s);})->all();
+    }
+
+    /** @return list<array<string,mixed>> */
+    private function deliveryOptions(string $hq,string $node):array
+    {
+        return DB::table('delivery_tasks as t')->join('consignments as c','c.consignment_id','=','t.consignment_id')->where(['t.hq_id'=>$hq,'t.node_id'=>$node,'t.status'=>'IN_PROGRESS'])->orderBy('c.consignment_number')->get(['t.*','c.consignment_number'])->flatMap(function(object $r)use($node):array{$s=$this->emptySelection();$s['origin_node_id']=$node;$s['assigned_driver_id']=(string)$r->assigned_driver_id;return[$this->option('OK','DELIVERY_COMPLETION','DELIVERY:'.$r->delivery_task_id.':OK',"{$r->consignment_number} · delivery completion",$s),$this->option('NOK','DELIVERY_EXCEPTION','DELIVERY:'.$r->delivery_task_id.':NOK',"{$r->consignment_number} · delivery exception",$s)];})->all();
+    }
+
+    /** @return array<string,mixed> */
+    private function baseOption(string $target,string $type,string $key,object $node,string $label):array{$s=$this->emptySelection();$s['origin_node_id']=(string)$node->node_id;if($type==='PICKUP_RECEPTION')$s['destination_node_id']=(string)$node->node_id;return $this->option($target,$type,$key,$label.' · '.$node->node_title,$s);}
+    /** @param array<string,mixed> $selection @return array<string,mixed> */
+    private function option(string $target,string $type,string $key,string $label,array $selection):array
+    {
+        $request = [
+            'expected_version' => 0,
+            'manifest_status' => $target,
+            'context_key' => $key,
+        ];
+        if ($selection['assigned_driver_id'] !== null) {
+            $request['assigned_driver_id'] = $selection['assigned_driver_id'];
         }
-        $this->assertMatches($input, 'origin_node_id', (string) $run->origin_node_id);
-        $this->assertMatches($input, 'destination_node_id', $nodeId);
-        $this->assertMatches($input, 'route_plan_id', (string) $run->route_plan_id);
-        $this->assertMatches($input, 'route_plan_leg_id', (string) $run->route_plan_leg_id);
-        $this->assertMatches($input, 'assigned_driver_id', (string) $run->driver_id);
-        $this->assertMatches($input, 'assigned_vehicle_id', (string) $run->vehicle_id);
-
-        return [
-            'manifest_status' => 'IR',
-            'manifest_type' => 'INBOUND_RECEPTION',
-            'operational_context_type' => 'TRANSPORT_RECEPTION',
-            'origin_node_id' => (string) $run->origin_node_id,
-            'destination_node_id' => $nodeId,
-            'route_plan_id' => (string) $run->route_plan_id,
-            'route_plan_leg_id' => (string) $run->route_plan_leg_id,
-            'transport_run_id' => (string) $run->transport_run_id,
-            'assigned_driver_id' => (string) $run->driver_id,
-            'assigned_vehicle_id' => (string) $run->vehicle_id,
-        ];
-    }
-
-    /** @param array<string, mixed> $input @return array<string, mixed> */
-    private function routeOutbound(string $hqId, string $nodeId, array $input): array
-    {
-        if (($input['route_plan_leg_id'] ?? null) === null) {
-            throw $this->contextError('route_plan_leg_id', 'A routed Route Plan Leg is required for OF.');
+        if ($selection['assigned_vehicle_id'] !== null) {
+            $request['assigned_vehicle_id'] = $selection['assigned_vehicle_id'];
         }
-        $leg = DB::table('route_plan_legs as rpl')
-            ->join('route_plans as rp', function ($join): void {
-                $join->on('rp.route_plan_id', '=', 'rpl.route_plan_id')->on('rp.hq_id', '=', 'rpl.hq_id');
-            })
-            ->join('route_definition_versions as rdv', function ($join): void {
-                $join->on('rdv.route_definition_version_id', '=', 'rp.route_definition_version_id')->on('rdv.hq_id', '=', 'rp.hq_id');
-            })
-            ->where([
-                'rpl.hq_id' => $hqId,
-                'rpl.route_plan_leg_id' => $input['route_plan_leg_id'],
-                'rpl.origin_node_id' => $nodeId,
-                'rpl.status' => 'ROUTED',
-                'rp.status' => 'IN_PROGRESS',
-            ])->whereIn('rdv.status', ['PUBLISHED', 'SUPERSEDED'])
-            ->first(['rpl.*', 'rp.route_plan_id']);
-        if ($leg === null) {
-            throw $this->contextError('route_plan_leg_id', 'The selected Route Plan Leg is not routed from this node or its configuration version is unavailable.');
-        }
-        $this->assertMatches($input, 'route_plan_id', (string) $leg->route_plan_id);
-        $this->assertMatches($input, 'origin_node_id', $nodeId);
-        $this->assertMatches($input, 'destination_node_id', (string) $leg->destination_node_id);
-        $this->assertNull($input, ['transport_run_id', 'assigned_driver_id', 'assigned_vehicle_id']);
 
         return [
-            'manifest_status' => 'OF',
-            'manifest_type' => 'OUTBOUND_TRANSFER',
-            'operational_context_type' => 'ROUTE_OUTBOUND',
-            'origin_node_id' => $nodeId,
-            'destination_node_id' => (string) $leg->destination_node_id,
-            'route_plan_id' => (string) $leg->route_plan_id,
-            'route_plan_leg_id' => (string) $leg->route_plan_leg_id,
-            'transport_run_id' => null,
-            'assigned_driver_id' => null,
-            'assigned_vehicle_id' => null,
+            'context_key' => $key,
+            'operational_context_type' => $type,
+            'manifest_status' => $target,
+            'label' => ['fa' => $label, 'en' => $label],
+            'selection' => $request,
+            'resolution' => $selection,
         ];
     }
+    /** @return array<string,mixed> */
+    private function emptySelection():array{return['origin_node_id'=>null,'destination_node_id'=>null,'route_plan_id'=>null,'route_definition_version_id'=>null,'route_plan_leg_id'=>null,'route_definition_version_leg_id'=>null,'source_manifest_id'=>null,'assigned_driver_id'=>null,'assigned_vehicle_id'=>null];}
 
-    /** @param array<string, mixed> $input @return array<string, mixed> */
-    private function deliveryAssignment(string $hqId, string $nodeId, array $input): array
-    {
-        $driverId = $input['assigned_driver_id'] ?? null;
-        if (! is_string($driverId) || ! $this->deliveryDriverExists($hqId, $nodeId, $driverId)) {
-            throw $this->contextError('assigned_driver_id', 'An active available delivery Driver at this node is required.');
-        }
-        $vehicleId = $input['assigned_vehicle_id'] ?? null;
-        if ($vehicleId !== null && ! DB::table('vehicles')->where([
-            'hq_id' => $hqId,
-            'vehicle_id' => $vehicleId,
-            'home_node_id' => $nodeId,
-            'status' => 'ACTIVE',
-            'availability_status' => 'AVAILABLE',
-        ])->exists()) {
-            throw $this->contextError('assigned_vehicle_id', 'The selected Vehicle is not active and available at this node.');
-        }
-        $this->assertMatches($input, 'origin_node_id', $nodeId);
-        $this->assertNull($input, ['destination_node_id', 'route_plan_id', 'route_plan_leg_id', 'transport_run_id']);
+    private function assertDriver(string $hq,string $node,string $id,string $capability):void{$r=DB::table('drivers')->where(['hq_id'=>$hq,'driver_id'=>$id])->first();if($r===null||(string)$r->home_node_id!==$node)throw new ApiException(ApiErrorCode::DriverOutOfScope,422,'The selected Driver is outside the authorized Node.');if(!DB::table('driver_capabilities')->where(['hq_id'=>$hq,'driver_id'=>$id,'capability'=>$capability])->exists())throw new ApiException(ApiErrorCode::DriverIncapable,422,'The selected Driver lacks the required capability.');if((string)$r->status!=='ACTIVE'||(string)$r->availability_status!=='AVAILABLE')throw new ApiException(ApiErrorCode::DriverUnavailable,422,'The selected Driver is unavailable.');}
+    private function assertVehicle(string $hq,string $node,string $id):void{$r=DB::table('vehicles')->where(['hq_id'=>$hq,'vehicle_id'=>$id])->first();if($r===null||(string)$r->home_node_id!==$node)throw new ApiException(ApiErrorCode::VehicleOutOfScope,422,'The selected Vehicle is outside the authorized Node.');if((string)$r->status!=='ACTIVE'||(string)$r->availability_status!=='AVAILABLE')throw new ApiException(ApiErrorCode::VehicleUnavailable,422,'The selected Vehicle is unavailable.');}
+    /** @return list<array<string,mixed>> */
+    private function drivers(string $hq,string $node):array{return DB::table('drivers')->where(['hq_id'=>$hq,'home_node_id'=>$node,'status'=>'ACTIVE','availability_status'=>'AVAILABLE'])->orderBy('driver_code')->get()->map(fn(object $r):array=>[...$this->driverResource($r),'capabilities'=>DB::table('driver_capabilities')->where(['hq_id'=>$hq,'driver_id'=>$r->driver_id])->orderBy('capability')->pluck('capability')->all()])->all();}
+    /** @return list<array<string,mixed>> */
+    private function vehicles(string $hq,string $node):array{return DB::table('vehicles')->where(['hq_id'=>$hq,'home_node_id'=>$node,'status'=>'ACTIVE','availability_status'=>'AVAILABLE'])->orderBy('vehicle_code')->get()->map(fn(object $r):array=>[...$this->vehicleResource($r),'capabilities'=>['LINEHAUL','DELIVERY']])->all();}
+    private function node(string $hq,string $node):object{$r=DB::table('nodes')->where(['hq_id'=>$hq,'node_id'=>$node,'status'=>'ACTIVE'])->first();if($r===null)throw new ApiException(ApiErrorCode::CurrentNodeMismatch,422,'The operational Node is unavailable.');return$r;}
+    private function nullableNode(string $hq,mixed $id):?array{return$id===null?null:(($r=DB::table('nodes')->where(['hq_id'=>$hq,'node_id'=>$id])->first())?$this->nodeResource($r):null);}
+    private function routePlan(string $hq,mixed $id):?array{if($id===null)return null;$r=DB::table('route_plans as p')->join('consignments as c','c.consignment_id','=','p.consignment_id')->join('route_definitions as d','d.route_definition_id','=','p.route_definition_id')->where(['p.hq_id'=>$hq,'p.route_plan_id'=>$id])->first();return$r?['route_plan_id'=>(string)$r->route_plan_id,'consignment_id'=>(string)$r->consignment_id,'consignment_number'=>(string)$r->consignment_number,'route_definition_id'=>(string)$r->route_definition_id,'route_code'=>(string)$r->route_code,'route_title'=>(string)$r->route_title,'status'=>(string)$r->status,'version'=>(int)$r->version]:null;}
+    private function routeLeg(string $hq,mixed $id):?array{if($id===null)return null;$r=DB::table('route_plan_legs')->where(['hq_id'=>$hq,'route_plan_leg_id'=>$id])->first();return$r?['route_plan_leg_id'=>(string)$r->route_plan_leg_id,'leg_order'=>(int)$r->leg_order,'status'=>(string)$r->status,'origin_node_id'=>(string)$r->origin_node_id,'destination_node_id'=>(string)$r->destination_node_id]:null;}
+    private function driver(string $hq,mixed $id):?array{if($id===null)return null;$r=DB::table('drivers')->where(['hq_id'=>$hq,'driver_id'=>$id])->first();return$r?$this->driverResource($r):null;}
+    private function vehicle(string $hq,mixed $id):?array{if($id===null)return null;$r=DB::table('vehicles')->where(['hq_id'=>$hq,'vehicle_id'=>$id])->first();return$r?$this->vehicleResource($r):null;}
+    private function nodeResource(object $r):array{return['node_id'=>(string)$r->node_id,'node_code'=>(string)$r->node_code,'node_title'=>(string)$r->node_title,'node_type'=>(string)$r->node_type,'status'=>(string)$r->status];}
+    private function driverResource(object $r):array{return['driver_id'=>(string)$r->driver_id,'driver_code'=>(string)$r->driver_code,'display_name'=>(string)$r->display_name,'home_node_id'=>(string)$r->home_node_id,'status'=>(string)$r->status,'availability_status'=>(string)$r->availability_status];}
+    private function vehicleResource(object $r):array{return['vehicle_id'=>(string)$r->vehicle_id,'vehicle_code'=>(string)$r->vehicle_code,'registration_number'=>(string)$r->registration_number,'vehicle_type'=>(string)$r->vehicle_type,'home_node_id'=>(string)$r->home_node_id,'status'=>(string)$r->status,'availability_status'=>(string)$r->availability_status];}
+    private function manifestType(string $t):string{return match($t){'PD'=>'PICKUP_ASSIGNMENT','PU'=>'PICKUP_COMPLETION','NPU'=>'PICKUP_EXCEPTION','IR'=>'INBOUND_RECEPTION','ROU'=>'ROUTE_REGISTRATION','OF'=>'OUTBOUND_TRANSFER','OS'=>'LINEHAUL_DEPARTURE','OD'=>'DELIVERY_ASSIGNMENT','OK'=>'DELIVERY_COMPLETION','NOK'=>'DELIVERY_EXCEPTION'};}
 
-        return [
-            'manifest_status' => 'OD',
-            'manifest_type' => 'DELIVERY_ASSIGNMENT',
-            'operational_context_type' => 'DELIVERY_ASSIGNMENT',
-            'origin_node_id' => $nodeId,
-            'destination_node_id' => null,
-            'route_plan_id' => null,
-            'route_plan_leg_id' => null,
-            'transport_run_id' => null,
-            'assigned_driver_id' => $driverId,
-            'assigned_vehicle_id' => $vehicleId,
-        ];
-    }
-
-    /** @return list<array<string, mixed>> */
-    private function transportReceptionOptions(string $hqId, string $nodeId): array
-    {
-        return DB::table('transport_runs as tr')
-            ->join('route_plan_legs as rpl', function ($join): void {
-                $join->on('rpl.route_plan_leg_id', '=', 'tr.route_plan_leg_id')->on('rpl.hq_id', '=', 'tr.hq_id');
-            })
-            ->join('route_plans as rp', function ($join): void {
-                $join->on('rp.route_plan_id', '=', 'rpl.route_plan_id')->on('rp.hq_id', '=', 'rpl.hq_id');
-            })
-            ->join('consignments as c', function ($join): void {
-                $join->on('c.consignment_id', '=', 'rp.consignment_id')->on('c.hq_id', '=', 'rp.hq_id');
-            })
-            ->join('nodes as origin', function ($join): void {
-                $join->on('origin.node_id', '=', 'tr.origin_node_id')->on('origin.hq_id', '=', 'tr.hq_id');
-            })
-            ->join('nodes as destination', function ($join): void {
-                $join->on('destination.node_id', '=', 'tr.destination_node_id')->on('destination.hq_id', '=', 'tr.hq_id');
-            })
-            ->where(['tr.hq_id' => $hqId, 'tr.destination_node_id' => $nodeId, 'tr.status' => 'ARRIVED', 'rpl.status' => 'ARRIVED'])
-            ->orderByDesc('tr.arrived_at')->get([
-                'tr.*', 'rpl.route_plan_id', 'rpl.leg_order', 'c.consignment_number',
-                'origin.node_code as origin_code', 'origin.node_title as origin_title',
-                'destination.node_code as destination_code', 'destination.node_title as destination_title',
-            ])->map(fn (object $row): array => [
-                'context_key' => 'TRANSPORT_RECEPTION:'.$row->transport_run_id,
-                'operational_context_type' => 'TRANSPORT_RECEPTION',
-                'manifest_status' => 'IR',
-                'label' => ['fa' => "ورود {$row->transport_run_number} · {$row->origin_title} ← {$row->destination_title}", 'en' => "Arrival {$row->transport_run_number} · {$row->origin_title} to {$row->destination_title}"],
-                'selection' => [
-                    'manifest_status' => 'IR', 'origin_node_id' => (string) $row->origin_node_id,
-                    'destination_node_id' => (string) $row->destination_node_id,
-                    'route_plan_id' => (string) $row->route_plan_id,
-                    'route_plan_leg_id' => (string) $row->route_plan_leg_id,
-                    'transport_run_id' => (string) $row->transport_run_id,
-                    'assigned_driver_id' => (string) $row->driver_id,
-                    'assigned_vehicle_id' => (string) $row->vehicle_id,
-                ],
-                'consignment_number' => (string) $row->consignment_number,
-                'route_leg_order' => (int) $row->leg_order,
-                'transport_run_number' => (string) $row->transport_run_number,
-            ])->all();
-    }
-
-    /** @return list<array<string, mixed>> */
-    private function routeOutboundOptions(string $hqId, string $nodeId): array
-    {
-        return DB::table('route_plan_legs as rpl')
-            ->join('route_plans as rp', function ($join): void {
-                $join->on('rp.route_plan_id', '=', 'rpl.route_plan_id')->on('rp.hq_id', '=', 'rpl.hq_id');
-            })
-            ->join('route_definition_versions as rdv', function ($join): void {
-                $join->on('rdv.route_definition_version_id', '=', 'rp.route_definition_version_id')->on('rdv.hq_id', '=', 'rp.hq_id');
-            })
-            ->join('route_definitions as rd', function ($join): void {
-                $join->on('rd.route_definition_id', '=', 'rp.route_definition_id')->on('rd.hq_id', '=', 'rp.hq_id');
-            })
-            ->join('consignments as c', function ($join): void {
-                $join->on('c.consignment_id', '=', 'rp.consignment_id')->on('c.hq_id', '=', 'rp.hq_id');
-            })
-            ->join('nodes as destination', function ($join): void {
-                $join->on('destination.node_id', '=', 'rpl.destination_node_id')->on('destination.hq_id', '=', 'rpl.hq_id');
-            })
-            ->where(['rpl.hq_id' => $hqId, 'rpl.origin_node_id' => $nodeId, 'rpl.status' => 'ROUTED', 'rp.status' => 'IN_PROGRESS'])
-            ->whereIn('rdv.status', ['PUBLISHED', 'SUPERSEDED'])
-            ->orderBy('rd.route_code')->orderBy('c.consignment_number')->get([
-                'rpl.*', 'rp.route_plan_id', 'c.consignment_number', 'rd.route_code', 'rd.route_title',
-                'destination.node_code as destination_code', 'destination.node_title as destination_title',
-            ])->map(fn (object $row): array => [
-                'context_key' => 'ROUTE_OUTBOUND:'.$row->route_plan_leg_id,
-                'operational_context_type' => 'ROUTE_OUTBOUND',
-                'manifest_status' => 'OF',
-                'label' => ['fa' => "{$row->consignment_number} · {$row->route_title} · گام {$row->leg_order} به {$row->destination_title}", 'en' => "{$row->consignment_number} · {$row->route_title} · leg {$row->leg_order} to {$row->destination_title}"],
-                'selection' => [
-                    'manifest_status' => 'OF', 'origin_node_id' => $nodeId,
-                    'destination_node_id' => (string) $row->destination_node_id,
-                    'route_plan_id' => (string) $row->route_plan_id,
-                    'route_plan_leg_id' => (string) $row->route_plan_leg_id,
-                    'transport_run_id' => null, 'assigned_driver_id' => null, 'assigned_vehicle_id' => null,
-                ],
-                'consignment_number' => (string) $row->consignment_number,
-                'route_code' => (string) $row->route_code,
-                'route_leg_order' => (int) $row->leg_order,
-            ])->all();
-    }
-
-    /** @return list<array<string, mixed>> */
-    private function drivers(string $hqId, string $nodeId): array
-    {
-        return DB::table('drivers as d')->where([
-            'd.hq_id' => $hqId, 'd.home_node_id' => $nodeId,
-            'd.status' => 'ACTIVE', 'd.availability_status' => 'AVAILABLE',
-        ])->whereExists(fn (Builder $capability) => $capability->selectRaw('1')->from('driver_capabilities as dc')
-            ->whereColumn('dc.driver_id', 'd.driver_id')->whereColumn('dc.hq_id', 'd.hq_id')->where('dc.capability', 'DELIVERY'))
-            ->orderBy('d.driver_code')->get()->map(fn (object $driver): array => $this->driverResource($driver))->all();
-    }
-
-    /** @return list<array<string, mixed>> */
-    private function vehicles(string $hqId, string $nodeId): array
-    {
-        return DB::table('vehicles')->where([
-            'hq_id' => $hqId, 'home_node_id' => $nodeId,
-            'status' => 'ACTIVE', 'availability_status' => 'AVAILABLE',
-        ])->orderBy('vehicle_code')->get()->map(fn (object $vehicle): array => $this->vehicleResource($vehicle))->all();
-    }
-
-    /** @return array<string, mixed> */
-    private function pickupReceptionOption(object $node): array
-    {
-        return [
-            'context_key' => 'PICKUP_RECEPTION',
-            'operational_context_type' => 'PICKUP_RECEPTION',
-            'manifest_status' => 'IR',
-            'label' => ['fa' => 'دریافت از جمع‌آوری در '.$node->node_title, 'en' => 'Pickup reception at '.$node->node_title],
-            'selection' => [
-                'manifest_status' => 'IR', 'origin_node_id' => null,
-                'destination_node_id' => (string) $node->node_id,
-                'route_plan_id' => null, 'route_plan_leg_id' => null, 'transport_run_id' => null,
-                'assigned_driver_id' => null, 'assigned_vehicle_id' => null,
-            ],
-        ];
-    }
-
-    /** @return array<string, mixed> */
-    private function deliveryAssignmentOption(object $node): array
-    {
-        return [
-            'context_key' => 'DELIVERY_ASSIGNMENT',
-            'operational_context_type' => 'DELIVERY_ASSIGNMENT',
-            'manifest_status' => 'OD',
-            'label' => ['fa' => 'تخصیص تحویل از '.$node->node_title, 'en' => 'Delivery assignment from '.$node->node_title],
-            'selection' => [
-                'manifest_status' => 'OD', 'origin_node_id' => (string) $node->node_id,
-                'destination_node_id' => null, 'route_plan_id' => null,
-                'route_plan_leg_id' => null, 'transport_run_id' => null,
-                'assigned_driver_id' => null, 'assigned_vehicle_id' => null,
-            ],
-        ];
-    }
-
-    private function activeNode(string $hqId, string $nodeId): void
-    {
-        if (! DB::table('nodes')->where(['hq_id' => $hqId, 'node_id' => $nodeId, 'status' => 'ACTIVE'])->exists()) {
-            throw $this->contextError('node_id', 'The operational node is not active in this HQ.');
-        }
-    }
-
-    private function deliveryDriverExists(string $hqId, string $nodeId, string $driverId): bool
-    {
-        return DB::table('drivers as d')->where([
-            'd.hq_id' => $hqId, 'd.driver_id' => $driverId, 'd.home_node_id' => $nodeId,
-            'd.status' => 'ACTIVE', 'd.availability_status' => 'AVAILABLE',
-        ])->whereExists(fn (Builder $capability) => $capability->selectRaw('1')->from('driver_capabilities as dc')
-            ->whereColumn('dc.driver_id', 'd.driver_id')->whereColumn('dc.hq_id', 'd.hq_id')->where('dc.capability', 'DELIVERY'))
-            ->exists();
-    }
-
-    /** @param array<string, mixed> $input @param list<string> $fields */
-    private function assertNull(array $input, array $fields): void
-    {
-        foreach ($fields as $field) {
-            if (($input[$field] ?? null) !== null) {
-                throw $this->contextError($field, 'This field is not applicable to the selected operational context.');
-            }
-        }
-    }
-
-    /** @param array<string, mixed> $input */
-    private function assertMatches(array $input, string $field, string $authoritative): void
-    {
-        if (array_key_exists($field, $input) && $input[$field] !== null && (string) $input[$field] !== $authoritative) {
-            throw $this->contextError($field, 'The selected value does not match the authoritative operational context.');
-        }
-    }
-
-    private function contextError(string $field, string $message): ApiException
-    {
-        return new ApiException(ApiErrorCode::ValidationError, 422, $message, [$field => [$message]]);
-    }
-
-    /** @return array<string, mixed> */
-    private function nodeResource(object $node): array
-    {
-        return [
-            'node_id' => (string) $node->node_id,
-            'node_code' => (string) $node->node_code,
-            'node_title' => (string) $node->node_title,
-            'node_type' => (string) $node->node_type,
-            'status' => (string) $node->status,
-        ];
-    }
-
-    /** @return array<string, mixed> */
-    private function driverResource(object $driver): array
-    {
-        return [
-            'driver_id' => (string) $driver->driver_id,
-            'driver_code' => (string) $driver->driver_code,
-            'display_name' => (string) $driver->display_name,
-            'home_node_id' => (string) $driver->home_node_id,
-            'status' => (string) $driver->status,
-            'availability_status' => (string) $driver->availability_status,
-        ];
-    }
-
-    /** @return array<string, mixed> */
-    private function vehicleResource(object $vehicle): array
-    {
-        return [
-            'vehicle_id' => (string) $vehicle->vehicle_id,
-            'vehicle_code' => (string) $vehicle->vehicle_code,
-            'registration_number' => (string) $vehicle->registration_number,
-            'vehicle_type' => (string) $vehicle->vehicle_type,
-            'home_node_id' => (string) $vehicle->home_node_id,
-            'status' => (string) $vehicle->status,
-            'availability_status' => (string) $vehicle->availability_status,
-        ];
-    }
+    /** @return list<array<string,mixed>> */
+    private function transitionContracts():array{$sources=['PD'=>['CFM'],'PU'=>['PD'],'NPU'=>['PD'],'IR'=>['PU','OS'],'ROU'=>['IR'],'OF'=>['ROU'],'OS'=>['OF'],'OD'=>['IR'],'OK'=>['OD'],'NOK'=>['OD']];$types=['PD'=>['PICKUP_ASSIGNMENT'],'PU'=>['PICKUP_COMPLETION'],'NPU'=>['PICKUP_EXCEPTION'],'IR'=>['PICKUP_RECEPTION','MOVEMENT_RECEPTION'],'ROU'=>['ROUTE_REGISTRATION'],'OF'=>['OUTBOUND_CONFIRMATION'],'OS'=>['LINEHAUL_DEPARTURE'],'OD'=>['DELIVERY_ASSIGNMENT'],'OK'=>['DELIVERY_COMPLETION'],'NOK'=>['DELIVERY_EXCEPTION']];return collect(array_keys($sources))->map(fn(string $t):array=>['target_status'=>$t,'allowed_source_statuses'=>$sources[$t],'operational_context_types'=>$types[$t],'current_node_requirement'=>'SERVER_VALIDATED','origin_node_derivation'=>'SERVER_CONTEXT','destination_node_derivation'=>'SERVER_CONTEXT','route_plan_requirement'=>in_array($t,['ROU','OF','OS','OD'],true)?'REQUIRED_OR_RESOLVED':'SOURCE_DEPENDENT','route_leg_requirement'=>in_array($t,['ROU','OF','OS'],true)?'REQUIRED':'SOURCE_DEPENDENT','required_driver_capability'=>match($t){'PD'=>'PICKUP','OS'=>'LINEHAUL','OD'=>'DELIVERY',default=>null},'driver_requirement'=>in_array($t,['PD','OS','OD'],true)?'REQUIRED':'DERIVED','vehicle_requirement'=>$t==='OS'?'REQUIRED_ACTIVE_AVAILABLE':'FORBIDDEN','expected_custody_types'=>match($t){'PU','NPU'=>['PICKUP_DRIVER'],'IR'=>['PICKUP_DRIVER','LINEHAUL_DRIVER'],'OK','NOK'=>['DELIVERY_DRIVER'],default=>['NODE']},'exception_review_required'=>in_array($t,['NPU','NOK'],true),'immutable_evidence'=>['AUTHENTICATED_ACTOR','SERVER_TIMESTAMP','MANIFEST','MANIFEST_PARCELS','STATUS_HISTORY','CUSTODY_HISTORY','AUDIT','OUTBOX']])->all();}
 }

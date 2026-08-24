@@ -16,6 +16,6 @@ final class OperationsServiceProvider extends ServiceProvider
         $this->loadRoutesFrom($routes.'/network.php');
         $this->loadRoutesFrom($routes.'/fleet.php');
         $this->loadRoutesFrom($routes.'/runtime-pickup-routing.php');
-        $this->loadRoutesFrom($routes.'/runtime-transport-delivery.php');
+        $this->loadRoutesFrom($routes.'/runtime-delivery.php');
     }
 }

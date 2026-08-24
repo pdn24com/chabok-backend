@@ -43,6 +43,7 @@ final class ModuleRouteRegistrationTest extends TestCase
             'GET /api/v1/manifests',
             'GET /api/v1/manifests/context-options',
             'GET /api/v1/manifests/{manifestId}',
+            'GET /api/v1/manifests/{manifestId}/exception',
             'GET /api/v1/manifests/{manifestId}/eligible-parcels',
             'GET /api/v1/iam/module-entitlements',
             'GET /api/v1/iam/permissions',
@@ -79,9 +80,6 @@ final class ModuleRouteRegistrationTest extends TestCase
             'GET /api/v1/route-plans',
             'GET /api/v1/route-plans/{id}',
             'GET /api/v1/services/pickup-windows',
-            'GET /api/v1/transport-runs',
-            'GET /api/v1/transport-runs/candidates',
-            'GET /api/v1/transport-runs/{id}',
             'GET /api/v1/vehicles',
             'PATCH /api/v1/admin/pricing/tariff-versions/{versionId}',
             'PATCH /api/v1/admin/pricing/zone-set-versions/{versionId}',
@@ -151,6 +149,9 @@ final class ModuleRouteRegistrationTest extends TestCase
             'POST /api/v1/fleet/vehicles',
             'POST /api/v1/manifests',
             'POST /api/v1/manifests/{manifestId}/confirm',
+            'POST /api/v1/manifests/{manifestId}/exception/approve',
+            'POST /api/v1/manifests/{manifestId}/exception/reject',
+            'POST /api/v1/manifests/{manifestId}/exception/resubmit',
             'POST /api/v1/manifests/{manifestId}/parcels',
             'POST /api/v1/manifests/{manifestId}/validate',
             'POST /api/v1/pickup-tasks',
@@ -163,11 +164,6 @@ final class ModuleRouteRegistrationTest extends TestCase
             'POST /api/v1/services/resolve',
             'POST /api/v1/services/{offeringId}/commitments',
             'POST /api/v1/services/{offeringId}/validate',
-            'POST /api/v1/transport-runs',
-            'POST /api/v1/transport-runs/{id}/arrive',
-            'POST /api/v1/transport-runs/{id}/close',
-            'POST /api/v1/transport-runs/{id}/depart',
-            'POST /api/v1/transport-runs/{id}/load',
             'PUT /api/v1/iam/roles/{roleId}/permissions',
         ];
         sort($expected);
@@ -180,8 +176,7 @@ final class ModuleRouteRegistrationTest extends TestCase
         $wave2Names = [
             'route-plans.index',
             'manifests.context-options.index',
-            'transport-runs.candidates',
-            'transport-runs.index',
+            'manifests.exception.show',
             'delivery-tasks.retry',
         ];
 

@@ -33,7 +33,6 @@ final readonly class ParcelLifecycleService
         ?string $safeNote = null,
         ?string $routePlanId = null,
         ?string $routePlanLegId = null,
-        ?string $transportRunId = null,
     ): array {
         $parcels = DB::table('parcels')->where(['hq_id' => $actor->hqId, 'consignment_id' => $consignmentId])->lockForUpdate()->get();
         if ($parcels->isEmpty() || $parcels->contains(fn ($parcel): bool => (string) $parcel->current_status !== $from)) {
@@ -65,7 +64,7 @@ final readonly class ParcelLifecycleService
                 'to_custodian_id' => $custodianId, 'command_name' => $command,
                 'initiator_id' => $actor->userId, 'manifest_id' => $manifestId,
                 'route_plan_id' => $routePlanId, 'route_plan_leg_id' => $routePlanLegId,
-                'transport_run_id' => $transportRunId, 'created_at' => now(),
+                'created_at' => now(),
             ]);
             $ids[] = (string) $parcel->parcel_id;
         }

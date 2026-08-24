@@ -91,22 +91,11 @@ final readonly class PickupTaskService
     public function fail(AuthenticatedPrincipal $actor, string $nodeId, string $id, int $expected, string $reasonCode, string $reason, string $correlationId): array
     {
         $this->accessExecution($actor, $nodeId, $id);
-        $this->transactions->run(function () use ($actor, $nodeId, $id, $expected, $reasonCode, $reason, $correlationId): void {
-            $task = $this->locked($actor, $nodeId, $id); $this->version($task, $expected);
-            if (! in_array($task->status, ['ASSIGNED', 'IN_PROGRESS'], true)) throw new ApiException(ApiErrorCode::ValidationError, 422, 'The Pickup Task cannot fail in its current state.');
-            $this->lifecycle->transition($actor, (string) $task->consignment_id, 'PD', 'NPU', 'PICKUP_FAILED', null, 'PICKUP_DRIVER', (string) $task->assigned_driver_id, $correlationId, (string) $task->assigned_driver_id, reasonCode: $reasonCode, safeNote: $reason);
-            DB::table('pickup_tasks')->where('pickup_task_id', $id)->update(['status' => 'FAILED', 'failure_reason_code' => $reasonCode, 'failure_reason' => $reason, 'version' => $expected + 1, 'failed_at' => now(), 'updated_at' => now()]);
-            $this->exception($actor, (string) $task->consignment_id, $id, (string) $task->assigned_driver_id, 'NPU', $reasonCode, $reason);
-            $this->record($actor, 'PICKUP_TASK_FAILED', $id, (string) $task->consignment_id, 'FAILED', $correlationId);
-        });
-        return $this->get($actor, $nodeId, $id);
-    }
-
-    private function exception(AuthenticatedPrincipal $actor, string $consignmentId, string $taskId, string $driverId, string $type, string $code, string $reason): void
-    {
-        $caseId = (string) Str::uuid();
-        DB::table('operational_exception_cases')->insert(['exception_case_id' => $caseId, 'hq_id' => $actor->hqId, 'exception_type' => $type, 'consignment_id' => $consignmentId, 'pickup_task_id' => $taskId, 'driver_id' => $driverId, 'submitted_by' => $actor->userId, 'reason_code' => $code, 'description' => $reason, 'case_status' => 'APPROVED', 'reviewed_by' => $actor->userId, 'reviewed_at' => now(), 'decision_note' => 'Operational failure command accepted.', 'resolution_action' => 'ESCALATE', 'version' => 1, 'created_at' => now(), 'updated_at' => now()]);
-        DB::table('operational_exception_history')->insert(['exception_history_id' => (string) Str::uuid(), 'hq_id' => $actor->hqId, 'exception_case_id' => $caseId, 'action' => 'APPROVED_AND_APPLIED', 'actor_id' => $actor->userId, 'safe_note' => $reason, 'created_at' => now()]);
+        throw new ApiException(
+            ApiErrorCode::ExceptionReviewRequired,
+            422,
+            'Pickup failure must be submitted through an NPU Manifest Exception Review.',
+        );
     }
 
     private function locked(AuthenticatedPrincipal $actor, string $nodeId, string $id): object

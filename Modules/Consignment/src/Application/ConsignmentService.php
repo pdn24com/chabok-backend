@@ -505,7 +505,8 @@ final readonly class ConsignmentService
                     'current_custodian_id' => $parcel->current_custodian_id,
                     'active_route_plan_id' => $parcel->active_route_plan_id,
                     'active_route_plan_leg_id' => $parcel->active_route_plan_leg_id,
-                    'active_transport_run_id' => $parcel->active_transport_run_id,
+                    // Temporary Task E response-shape compatibility only.
+                    'active_transport_run_id' => null,
                     'version' => (int) $parcel->version,
                     'created_at' => $this->time($parcel->created_at),
                 ])->all()
@@ -583,16 +584,111 @@ final readonly class ConsignmentService
                 'from_custodian_id' => $event->from_custodian_id, 'to_custodian_id' => $event->to_custodian_id,
                 'command_name' => (string) $event->command_name, 'manifest_id' => $event->manifest_id,
                 'route_plan_id' => $event->route_plan_id, 'route_plan_leg_id' => $event->route_plan_leg_id,
-                'transport_run_id' => $event->transport_run_id, 'created_at' => $this->time($event->created_at),
+                // Temporary Task E response-shape compatibility only.
+                'transport_run_id' => null, 'created_at' => $this->time($event->created_at),
             ])->all();
         $routePlan = DB::table('route_plans')->where(['hq_id' => $hqId, 'consignment_id' => $id])->orderByDesc('created_at')->first();
         $routeLegs = $routePlan === null ? [] : DB::table('route_plan_legs as l')
             ->join('nodes as o', 'o.node_id', '=', 'l.origin_node_id')->join('nodes as d', 'd.node_id', '=', 'l.destination_node_id')
             ->where('l.route_plan_id', $routePlan->route_plan_id)->orderBy('l.leg_order')->get(['l.*', 'o.node_code as origin_code', 'o.node_title as origin_title', 'd.node_code as destination_code', 'd.node_title as destination_title'])
-            ->map(fn ($leg): array => ['route_plan_leg_id' => (string) $leg->route_plan_leg_id, 'leg_order' => (int) $leg->leg_order, 'status' => (string) $leg->status, 'origin_node' => ['node_id' => (string) $leg->origin_node_id, 'node_code' => (string) $leg->origin_code, 'node_title' => (string) $leg->origin_title], 'destination_node' => ['node_id' => (string) $leg->destination_node_id, 'node_code' => (string) $leg->destination_code, 'node_title' => (string) $leg->destination_title]])->all();
-        $runs = $routePlan === null ? [] : DB::table('transport_runs as tr')->join('route_plan_legs as l', 'l.route_plan_leg_id', '=', 'tr.route_plan_leg_id')->where('l.route_plan_id', $routePlan->route_plan_id)->orderBy('l.leg_order')->get(['tr.*', 'l.leg_order'])->map(fn ($run): array => ['transport_run_id' => (string) $run->transport_run_id, 'transport_run_number' => (string) $run->transport_run_number, 'route_plan_leg_id' => (string) $run->route_plan_leg_id, 'leg_order' => (int) $run->leg_order, 'driver_id' => (string) $run->driver_id, 'vehicle_id' => (string) $run->vehicle_id, 'status' => (string) $run->status, 'departed_at' => $run->departed_at, 'arrived_at' => $run->arrived_at, 'closed_at' => $run->closed_at])->all();
+            ->map(fn ($leg): array => [
+                'route_plan_leg_id' => (string) $leg->route_plan_leg_id,
+                'source_route_definition_leg_id' => (string) $leg->source_route_definition_leg_id,
+                'source_route_definition_version_leg_id' => (string) $leg->source_route_definition_version_leg_id,
+                'leg_order' => (int) $leg->leg_order,
+                'status' => (string) $leg->status,
+                'origin_node' => ['node_id' => (string) $leg->origin_node_id, 'node_code' => (string) $leg->origin_code, 'node_title' => (string) $leg->origin_title],
+                'destination_node' => ['node_id' => (string) $leg->destination_node_id, 'node_code' => (string) $leg->destination_code, 'node_title' => (string) $leg->destination_title],
+                'routed_at' => $leg->routed_at === null ? null : $this->time($leg->routed_at),
+                'received_at' => $leg->received_at === null ? null : $this->time($leg->received_at),
+            ])->all();
         $location = $this->aggregateLocation($hqId, $id);
-        $relatedManifests = DB::table('manifests as m')->join('manifest_parcels as mp', 'mp.manifest_id', '=', 'm.manifest_id')->join('parcels as p', 'p.parcel_id', '=', 'mp.parcel_id')->where(['m.hq_id' => $hqId, 'p.consignment_id' => $id])->distinct()->orderBy('m.created_at')->get(['m.manifest_id', 'm.manifest_number', 'm.manifest_status', 'm.manifest_type', 'm.node_id', 'm.route_plan_leg_id', 'm.transport_run_id', 'm.assigned_driver_id', 'm.state', 'm.closed_at', 'm.created_at'])->map(fn ($manifest): array => (array) $manifest)->all();
+        $manifestRows = DB::table('manifests as m')
+            ->join('manifest_parcels as mp', 'mp.manifest_id', '=', 'm.manifest_id')
+            ->join('parcels as p', 'p.parcel_id', '=', 'mp.parcel_id')
+            ->where(['m.hq_id' => $hqId, 'p.consignment_id' => $id])
+            ->distinct()->orderBy('m.created_at')
+            ->get([
+                'm.manifest_id', 'm.manifest_number', 'm.manifest_status', 'm.manifest_type',
+                'm.operational_context_type', 'm.context_key', 'm.node_id',
+                'm.origin_node_id', 'm.destination_node_id', 'm.route_plan_id',
+                'm.route_plan_leg_id', 'm.route_definition_version_id',
+                'm.route_definition_version_leg_id', 'm.assigned_driver_id',
+                'm.assigned_vehicle_id', 'm.state', 'm.operation_recorded_at',
+                'm.closed_at', 'm.created_at',
+            ]);
+        $outcomesByManifest = $manifestRows->isEmpty()
+            ? collect()
+            : DB::table('manifest_parcels as mp')
+                ->join('parcels as p', 'p.parcel_id', '=', 'mp.parcel_id')
+                ->where('mp.hq_id', $hqId)
+                ->where('p.consignment_id', $id)
+                ->whereIn('mp.manifest_id', $manifestRows->pluck('manifest_id'))
+                ->orderBy('mp.created_at')->get([
+                    'mp.manifest_id', 'mp.manifest_parcel_id', 'mp.parcel_id',
+                    'mp.manifest_parcel_status', 'mp.failure_code', 'mp.source_status',
+                    'mp.route_plan_id', 'mp.route_plan_leg_id',
+                    'mp.route_definition_version_id', 'mp.route_definition_version_leg_id',
+                    'mp.assigned_driver_id', 'mp.assigned_vehicle_id',
+                    'mp.evidence_recorded_at',
+                ])->groupBy('manifest_id');
+        $relatedManifests = $manifestRows->map(function ($manifest) use ($outcomesByManifest): array {
+                $outcomes = $outcomesByManifest->get($manifest->manifest_id, collect())
+                    ->map(fn ($outcome): array => (array) $outcome)->all();
+
+                return [
+                    ...(array) $manifest,
+                    // Temporary Task E response-shape compatibility only.
+                    'transport_run_id' => null,
+                    'parcel_outcomes' => $outcomes,
+                ];
+            })->all();
+        $movementManifests = array_values(array_map(
+            static function (array $manifest): array {
+                $succeeded = collect($manifest['parcel_outcomes'])->first(
+                    static fn (array $outcome): bool => $outcome['manifest_parcel_status'] === 'SUCCEEDED',
+                );
+
+                return [
+                    ...$manifest,
+                    'route_plan_id' => $manifest['route_plan_id'] ?? $succeeded['route_plan_id'],
+                    'route_plan_leg_id' => $manifest['route_plan_leg_id'] ?? $succeeded['route_plan_leg_id'],
+                    'route_definition_version_id' => $manifest['route_definition_version_id'] ?? $succeeded['route_definition_version_id'],
+                    'route_definition_version_leg_id' => $manifest['route_definition_version_leg_id'] ?? $succeeded['route_definition_version_leg_id'],
+                    'event_type' => $manifest['manifest_status'] === 'OS' ? 'DEPARTED' : 'ARRIVED',
+                    'recorded_at' => $manifest['operation_recorded_at'] ?? $manifest['closed_at'],
+                ];
+            },
+            array_filter($relatedManifests, static function (array $manifest): bool {
+                $isMovement = $manifest['manifest_status'] === 'OS'
+                    || ($manifest['manifest_status'] === 'IR'
+                        && $manifest['operational_context_type'] === 'MOVEMENT_RECEPTION');
+                $hasSucceededParcel = collect($manifest['parcel_outcomes'])->contains(
+                    static fn (array $outcome): bool => $outcome['manifest_parcel_status'] === 'SUCCEEDED',
+                );
+
+                return $isMovement && $manifest['state'] === 'CLOSED' && $hasSucceededParcel;
+            }),
+        ));
+        $routeLegOrder = collect($routeLegs)->mapWithKeys(
+            static fn (array $leg): array => [$leg['route_plan_leg_id'] => $leg['leg_order']],
+        );
+        usort($movementManifests, static function (array $left, array $right) use ($routeLegOrder): int {
+            $leftKey = [
+                (int) $routeLegOrder->get($left['route_plan_leg_id'], PHP_INT_MAX),
+                $left['event_type'] === 'DEPARTED' ? 0 : 1,
+                (string) $left['recorded_at'],
+                (string) $left['manifest_id'],
+            ];
+            $rightKey = [
+                (int) $routeLegOrder->get($right['route_plan_leg_id'], PHP_INT_MAX),
+                $right['event_type'] === 'DEPARTED' ? 0 : 1,
+                (string) $right['recorded_at'],
+                (string) $right['manifest_id'],
+            ];
+
+            return $leftKey <=> $rightKey;
+        });
         $base = $this->listItem($row);
         $editable = in_array('consignment.edit', $context['permissions'], true)
             && in_array($row['current_status'], (array) config('chabok.consignment.editable_statuses'), true);
@@ -635,7 +731,20 @@ final readonly class ConsignmentService
             'status_timeline' => $statusTimeline,
             'audit_timeline' => $auditTimeline,
             'current_location' => $location,
-            'journey' => ['route_plan' => $routePlan === null ? null : ['route_plan_id' => (string) $routePlan->route_plan_id, 'status' => (string) $routePlan->status, 'version' => (int) $routePlan->version], 'route_legs' => $routeLegs, 'transport_runs' => $runs, 'custody_timeline' => $custodyTimeline],
+            'journey' => [
+                'route_plan' => $routePlan === null ? null : [
+                    'route_plan_id' => (string) $routePlan->route_plan_id,
+                    'route_definition_id' => (string) $routePlan->route_definition_id,
+                    'route_definition_version_id' => (string) $routePlan->route_definition_version_id,
+                    'status' => (string) $routePlan->status,
+                    'version' => (int) $routePlan->version,
+                ],
+                'route_legs' => $routeLegs,
+                'movement_manifests' => $movementManifests,
+                // Temporary Task E response-shape compatibility only.
+                'transport_runs' => [],
+                'custody_timeline' => $custodyTimeline,
+            ],
             'related_manifests' => $relatedManifests,
             'permitted_actions' => $editable ? ['EDIT'] : [],
         ];

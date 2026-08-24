@@ -24,7 +24,7 @@ final readonly class ManifestController
             'page_size' => ['sometimes', 'integer', 'min:1', 'max:100'],
             'search' => ['sometimes', 'nullable', 'string', 'max:160'],
             'state' => ['sometimes', 'nullable', 'in:DRAFT,OPEN,CLOSED'],
-            'manifest_status' => ['sometimes', 'nullable', 'in:IR,OF,OD'],
+            'manifest_status' => ['sometimes', 'nullable', 'in:PD,PU,NPU,IR,ROU,OF,OS,OD,OK,NOK'],
         ]);
 
         return ApiResponder::paginated(
@@ -36,14 +36,11 @@ final readonly class ManifestController
 
     public function store(Request $request): JsonResponse
     {
-        StrictPayload::assertOnly($request, ['manifest_status', 'origin_node_id', 'destination_node_id', 'route_plan_id', 'route_plan_leg_id', 'transport_run_id', 'assigned_driver_id', 'assigned_vehicle_id']);
+        StrictPayload::assertOnly($request, ['expected_version', 'manifest_status', 'context_key', 'assigned_driver_id', 'assigned_vehicle_id']);
         $input = $request->validate([
-            'manifest_status' => ['required', 'in:IR,OF,OD'],
-            'origin_node_id' => ['sometimes', 'nullable', 'uuid'],
-            'destination_node_id' => ['sometimes', 'nullable', 'uuid'],
-            'route_plan_id' => ['sometimes', 'nullable', 'uuid'],
-            'route_plan_leg_id' => ['sometimes', 'nullable', 'uuid'],
-            'transport_run_id' => ['sometimes', 'nullable', 'uuid'],
+            'expected_version' => ['required', 'integer', 'in:0'],
+            'manifest_status' => ['required', 'in:PD,PU,NPU,IR,ROU,OF,OS,OD,OK,NOK'],
+            'context_key' => ['required', 'string', 'min:1', 'max:200'],
             'assigned_driver_id' => ['sometimes', 'nullable', 'uuid'],
             'assigned_vehicle_id' => ['sometimes', 'nullable', 'uuid'],
         ]);
@@ -78,15 +75,11 @@ final readonly class ManifestController
 
     public function update(Request $request, string $manifestId): JsonResponse
     {
-        StrictPayload::assertOnly($request, ['expected_version', 'manifest_status', 'origin_node_id', 'destination_node_id', 'route_plan_id', 'route_plan_leg_id', 'transport_run_id', 'assigned_driver_id', 'assigned_vehicle_id']);
+        StrictPayload::assertOnly($request, ['expected_version', 'manifest_status', 'context_key', 'assigned_driver_id', 'assigned_vehicle_id']);
         $input = $request->validate([
             'expected_version' => ['required', 'integer', 'min:1'],
-            'manifest_status' => ['sometimes', 'in:IR,OF,OD'],
-            'origin_node_id' => ['sometimes', 'nullable', 'uuid'],
-            'destination_node_id' => ['sometimes', 'nullable', 'uuid'],
-            'route_plan_id' => ['sometimes', 'nullable', 'uuid'],
-            'route_plan_leg_id' => ['sometimes', 'nullable', 'uuid'],
-            'transport_run_id' => ['sometimes', 'nullable', 'uuid'],
+            'manifest_status' => ['sometimes', 'in:PD,PU,NPU,IR,ROU,OF,OS,OD,OK,NOK'],
+            'context_key' => ['sometimes', 'string', 'min:1', 'max:200'],
             'assigned_driver_id' => ['sometimes', 'nullable', 'uuid'],
             'assigned_vehicle_id' => ['sometimes', 'nullable', 'uuid'],
         ]);
@@ -160,20 +153,30 @@ final readonly class ManifestController
 
     public function confirm(Request $request, string $manifestId): JsonResponse
     {
-        StrictPayload::assertOnly($request, ['expected_version', 'acknowledge_partial_success']);
+        StrictPayload::assertOnly($request, ['expected_version', 'acknowledge_partial_success', 'exception_reason_code', 'exception_description']);
         $input = $request->validate([
             'expected_version' => ['required', 'integer', 'min:1'],
             'acknowledge_partial_success' => ['required', 'accepted'],
+            'exception_reason_code' => ['sometimes', 'nullable', 'string', 'max:80'],
+            'exception_description' => ['sometimes', 'nullable', 'string', 'max:500'],
         ]);
 
         try {
-            return ApiResponder::success($request, $this->manifests->confirm(
+            $detail = $this->manifests->confirm(
                 $this->actor($request),
                 $this->node($request),
                 $manifestId,
                 (int) $input['expected_version'],
                 $this->correlation($request),
-            ));
+                $input['exception_reason_code'] ?? null,
+                $input['exception_description'] ?? null,
+            );
+
+            return ApiResponder::success(
+                $request,
+                $detail,
+                status: in_array($detail['manifest_status'], ['NPU', 'NOK'], true) ? 202 : 200,
+            );
         } catch (ApiException $exception) {
             if ($exception->errorCode !== ApiErrorCode::ManifestNoSuccessfulParcels) {
                 throw $exception;
@@ -188,6 +191,63 @@ final readonly class ManifestController
                 $exception->details,
             );
         }
+    }
+
+    public function exception(Request $request, string $manifestId): JsonResponse
+    {
+        return ApiResponder::success($request, $this->manifests->exception(
+            $this->actor($request), $this->node($request), $manifestId,
+        ));
+    }
+
+    public function approveException(Request $request, string $manifestId): JsonResponse
+    {
+        StrictPayload::assertOnly($request, ['expected_version', 'expected_exception_version', 'decision_reason']);
+        $input = $request->validate([
+            'expected_version' => ['required', 'integer', 'min:1'],
+            'expected_exception_version' => ['required', 'integer', 'min:1'],
+            'decision_reason' => ['sometimes', 'nullable', 'string', 'max:500'],
+        ]);
+
+        return ApiResponder::success($request, $this->manifests->approveException(
+            $this->actor($request), $this->node($request), $manifestId,
+            (int) $input['expected_version'], (int) $input['expected_exception_version'],
+            $input['decision_reason'] ?? null, $this->correlation($request),
+        ));
+    }
+
+    public function rejectException(Request $request, string $manifestId): JsonResponse
+    {
+        StrictPayload::assertOnly($request, ['expected_version', 'expected_exception_version', 'rejection_reason']);
+        $input = $request->validate([
+            'expected_version' => ['required', 'integer', 'min:1'],
+            'expected_exception_version' => ['required', 'integer', 'min:1'],
+            'rejection_reason' => ['required', 'string', 'min:1', 'max:500'],
+        ]);
+
+        return ApiResponder::success($request, $this->manifests->rejectException(
+            $this->actor($request), $this->node($request), $manifestId,
+            (int) $input['expected_version'], (int) $input['expected_exception_version'],
+            (string) $input['rejection_reason'], $this->correlation($request),
+        ));
+    }
+
+    public function resubmitException(Request $request, string $manifestId): JsonResponse
+    {
+        StrictPayload::assertOnly($request, ['expected_version', 'expected_exception_version', 'reason_code', 'description']);
+        $input = $request->validate([
+            'expected_version' => ['required', 'integer', 'min:1'],
+            'expected_exception_version' => ['required', 'integer', 'min:1'],
+            'reason_code' => ['required', 'string', 'min:1', 'max:80'],
+            'description' => ['required', 'string', 'min:1', 'max:500'],
+        ]);
+
+        return ApiResponder::success($request, $this->manifests->resubmitException(
+            $this->actor($request), $this->node($request), $manifestId,
+            (int) $input['expected_version'], (int) $input['expected_exception_version'],
+            (string) $input['reason_code'], (string) $input['description'],
+            $this->correlation($request),
+        ), status: 202);
     }
 
     private function expected(Request $request): int

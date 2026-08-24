@@ -11,9 +11,16 @@ final class ManifestPolicy
 {
     /** @var array<string, list<string>> */
     private const TRANSITIONS = [
+        'PD' => ['CFM'],
+        'PU' => ['PD'],
+        'NPU' => ['PD'],
         'IR' => ['PU', 'OS'],
+        'ROU' => ['IR'],
         'OF' => ['ROU'],
+        'OS' => ['OF'],
         'OD' => ['IR'],
+        'OK' => ['OD'],
+        'NOK' => ['OD'],
     ];
 
     public function assertEditable(string $state): void
@@ -31,12 +38,12 @@ final class ManifestPolicy
     {
         if (! isset(self::TRANSITIONS[$targetStatus])) {
             throw new ApiException(
-                ApiErrorCode::ValidationError,
+                ApiErrorCode::UnsupportedManifestTransition,
                 422,
                 'The Manifest target status is not available.',
             );
         }
-        if ($targetStatus === 'OD' && $driverId === null) {
+        if (in_array($targetStatus, ['PD', 'OD', 'OS'], true) && $driverId === null) {
             throw new ApiException(
                 ApiErrorCode::ValidationError,
                 422,

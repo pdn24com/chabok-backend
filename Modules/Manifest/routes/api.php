@@ -28,4 +28,15 @@ Route::prefix('api/v1/manifests')
         Route::post('/{manifestId}/confirm', [ManifestController::class, 'confirm'])
             ->middleware('idempotent:manifests.confirm')
             ->whereUuid('manifestId')->name('manifests.confirm');
+        Route::get('/{manifestId}/exception', [ManifestController::class, 'exception'])
+            ->whereUuid('manifestId')->name('manifests.exception.show');
+        Route::post('/{manifestId}/exception/approve', [ManifestController::class, 'approveException'])
+            ->middleware('idempotent:manifests.exception.approve')
+            ->whereUuid('manifestId')->name('manifests.exception.approve');
+        Route::post('/{manifestId}/exception/reject', [ManifestController::class, 'rejectException'])
+            ->middleware('idempotent:manifests.exception.reject')
+            ->whereUuid('manifestId')->name('manifests.exception.reject');
+        Route::post('/{manifestId}/exception/resubmit', [ManifestController::class, 'resubmitException'])
+            ->middleware('idempotent:manifests.exception.resubmit')
+            ->whereUuid('manifestId')->name('manifests.exception.resubmit');
     });

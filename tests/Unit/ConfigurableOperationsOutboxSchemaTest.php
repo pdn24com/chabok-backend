@@ -63,7 +63,7 @@ final class ConfigurableOperationsOutboxSchemaTest extends TestCase
 
         try {
             $registry->assertValid('operations.command.executed', 1, [
-                'command' => 'TRANSPORT_RUN_DEPARTED',
+                'command' => 'MANIFEST_OS_CONFIRMED',
                 'resource_id' => '00000000-0000-4000-8000-000000000201',
                 'consignment_id' => '00000000-0000-4000-8000-000000000202',
             ]);
@@ -74,10 +74,10 @@ final class ConfigurableOperationsOutboxSchemaTest extends TestCase
 
         $this->expectException(\InvalidArgumentException::class);
         $registry->assertValid('operations.command.executed', 2, [
-            'command' => 'TRANSPORT_RUN_DEPARTED',
+            'command' => 'MANIFEST_OS_CONFIRMED',
             'resource_id' => '00000000-0000-4000-8000-000000000201',
             'consignment_id' => '00000000-0000-4000-8000-000000000202',
-            'status' => 'DEPARTED',
+            'status' => 'OS',
         ]);
     }
 }

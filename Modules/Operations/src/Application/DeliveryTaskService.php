@@ -72,7 +72,7 @@ final readonly class DeliveryTaskService
         $task = DB::table('delivery_tasks')->where(['hq_id' => $actor->hqId, 'consignment_id' => $consignmentId, 'node_id' => $nodeId])->lockForUpdate()->first();
         if ($task === null) throw new ApiException(ApiErrorCode::ValidationError, 422, 'A pending Delivery Task is required before delivery activation.');
         if (! in_array((string) $task->status, ['PENDING', 'ASSIGNED'], true) || ($task->assigned_driver_id !== null && (string) $task->assigned_driver_id !== $driverId)) throw new ApiException(ApiErrorCode::ValidationError, 422, 'The Delivery Task conflicts with the Manifest assignment.');
-        $this->eligibleDriver($actor, $nodeId, $driverId, (string) $task->delivery_task_id);
+        $this->eligibleDriverForManifest($actor, $nodeId, $driverId, $manifestId, (string) $task->delivery_task_id);
         $version = (int) $task->version + 1;
         DB::table('delivery_tasks')->where('delivery_task_id', $task->delivery_task_id)->update(['assigned_driver_id' => $driverId, 'manifest_id' => $manifestId, 'status' => 'IN_PROGRESS', 'version' => $version, 'updated_at' => now()]);
         DB::table('drivers')->where(['hq_id' => $actor->hqId, 'driver_id' => $driverId, 'availability_status' => 'AVAILABLE'])->update(['availability_status' => 'ON_MISSION', 'updated_at' => now()]);
@@ -121,19 +121,11 @@ final readonly class DeliveryTaskService
     public function fail(AuthenticatedPrincipal $actor, string $nodeId, string $id, int $expected, string $reasonCode, string $reason, string $correlationId): array
     {
         $this->executionAccess($actor, $nodeId, $id);
-        $this->transactions->run(function () use ($actor, $nodeId, $id, $expected, $reasonCode, $reason, $correlationId): void {
-            $task = $this->locked($actor, $nodeId, $id); $this->version($task, $expected);
-            if ((string) $task->status !== 'IN_PROGRESS') throw new ApiException(ApiErrorCode::ValidationError, 422, 'Only an active Delivery Task can fail.');
-            $this->lifecycle->transition($actor, (string) $task->consignment_id, 'OD', 'NOK', 'DELIVERY_FAILED', null, 'DELIVERY_DRIVER', (string) $task->assigned_driver_id, $correlationId, (string) $task->assigned_driver_id, (string) $task->manifest_id, $reasonCode, $reason);
-            DB::table('delivery_tasks')->where(['delivery_task_id' => $id, 'version' => $expected])->update(['status' => 'FAILED', 'failure_reason_code' => $reasonCode, 'failure_reason' => $reason, 'version' => $expected + 1, 'updated_at' => now()]);
-            DB::table('drivers')->where(['hq_id' => $actor->hqId, 'driver_id' => $task->assigned_driver_id, 'availability_status' => 'ON_MISSION'])->update(['availability_status' => 'AVAILABLE', 'updated_at' => now()]);
-            $caseId = (string) Str::uuid();
-            DB::table('operational_exception_cases')->insert(['exception_case_id' => $caseId, 'hq_id' => $actor->hqId, 'exception_type' => 'NOK', 'consignment_id' => $task->consignment_id, 'delivery_task_id' => $id, 'driver_id' => $task->assigned_driver_id, 'submitted_by' => $actor->userId, 'reason_code' => $reasonCode, 'description' => $reason, 'case_status' => 'APPROVED', 'reviewed_by' => $actor->userId, 'reviewed_at' => now(), 'decision_note' => 'Operational failure command accepted.', 'resolution_action' => 'ESCALATE', 'version' => 1, 'created_at' => now(), 'updated_at' => now()]);
-            DB::table('operational_exception_history')->insert(['exception_history_id' => (string) Str::uuid(), 'hq_id' => $actor->hqId, 'exception_case_id' => $caseId, 'action' => 'APPROVED_AND_APPLIED', 'actor_id' => $actor->userId, 'safe_note' => $reason, 'created_at' => now()]);
-            $this->history($actor, $id, (string) $task->consignment_id, 'FAILED', 'IN_PROGRESS', 'FAILED', (int) $task->attempt_number, (string) $task->assigned_driver_id, $reasonCode, $reason, ['exception_case_id' => $caseId]);
-            $this->record($actor, 'DELIVERY_TASK_FAILED', $id, (string) $task->consignment_id, 'FAILED', $correlationId);
-        });
-        return $this->get($actor, $nodeId, $id);
+        throw new ApiException(
+            ApiErrorCode::ExceptionReviewRequired,
+            422,
+            'Delivery failure must be submitted through a NOK Manifest Exception Review.',
+        );
     }
 
     /** @return array<string,mixed> */
@@ -204,6 +196,48 @@ final readonly class DeliveryTaskService
         $assigned = DB::table('delivery_tasks')->where(['hq_id' => $actor->hqId, 'assigned_driver_id' => $driverId])->whereIn('status', ['ASSIGNED', 'IN_PROGRESS']);
         if ($currentTaskId !== null) $assigned->where('delivery_task_id', '!=', $currentTaskId);
         if ($assigned->exists()) throw new ApiException(ApiErrorCode::ValidationError, 422, 'The Driver is already assigned to an active Delivery Task.');
+    }
+
+    private function eligibleDriverForManifest(
+        AuthenticatedPrincipal $actor,
+        string $nodeId,
+        string $driverId,
+        string $manifestId,
+        string $currentTaskId,
+    ): void {
+        $driver = DB::table('drivers')->where([
+            'hq_id' => $actor->hqId,
+            'driver_id' => $driverId,
+        ])->lockForUpdate()->first();
+        $capable = $driver !== null && DB::table('driver_capabilities')->where([
+            'hq_id' => $actor->hqId,
+            'driver_id' => $driverId,
+            'capability' => 'DELIVERY',
+        ])->exists();
+        $sameManifestMission = $driver !== null
+            && (string) $driver->availability_status === 'ON_MISSION'
+            && DB::table('delivery_tasks')->where([
+                'hq_id' => $actor->hqId,
+                'assigned_driver_id' => $driverId,
+                'manifest_id' => $manifestId,
+                'status' => 'IN_PROGRESS',
+            ])->exists();
+        if ($driver === null || (string) $driver->home_node_id !== $nodeId
+            || (string) $driver->status !== 'ACTIVE'
+            || (! $sameManifestMission && (string) $driver->availability_status !== 'AVAILABLE')
+            || ! $capable) {
+            throw new ApiException(ApiErrorCode::DriverUnavailable, 422, 'The Delivery Driver is unavailable for this Manifest.');
+        }
+        $conflict = DB::table('delivery_tasks')->where([
+            'hq_id' => $actor->hqId,
+            'assigned_driver_id' => $driverId,
+        ])->whereIn('status', ['ASSIGNED', 'IN_PROGRESS'])
+            ->where('delivery_task_id', '!=', $currentTaskId)
+            ->where(fn ($query) => $query->whereNull('manifest_id')->orWhere('manifest_id', '!=', $manifestId))
+            ->exists();
+        if ($conflict) {
+            throw new ApiException(ApiErrorCode::DriverUnavailable, 422, 'The Delivery Driver has another active assignment.');
+        }
     }
 
     private function nodeHasCapability(string $hqId, string $nodeId, string $capability): bool
