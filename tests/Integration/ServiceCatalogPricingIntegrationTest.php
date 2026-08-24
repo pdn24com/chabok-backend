@@ -206,6 +206,48 @@ final class ServiceCatalogPricingIntegrationTest extends MySqlRedisTestCase
         $this->assertSame('CITY', $internalQuote['resolution_evidence']['origin']['member_type']);
         $this->assertSame(1.5, (float) $internalQuote['resolution_evidence']['weight']['billable_weight_kg']);
         $this->assertSame($schedule['commitment_schedule_version_id'], $internalQuote['resolution_evidence']['service']['commitment']['schedule_version_id']);
+
+        $successor = $pricing->cloneDraft($maker, 'zone-sets', $zoneSet['pricing_zone_set_id'], (string) Str::uuid());
+        $additionalCityId = (string) DB::table('cities')
+            ->where('province_id', GeographyIds::province('8'))
+            ->where('city_id', '!=', GeographyIds::city('10866'))
+            ->where('is_active', true)
+            ->orderBy('legacy_city_code')
+            ->value('city_id');
+        $successorZones = collect($successor['zones'])->map(function (array $zone) use ($additionalCityId): array {
+            $members = collect($zone['members'])->map(fn (array $member): array => [
+                'member_type' => $member['member_type'],
+                'reference_value' => $member['reference_value'],
+                'city_id' => $member['city_id'],
+                'province_id' => $member['province_id'],
+                'range_end' => $member['range_end'],
+            ])->all();
+            if ($zone['code'] === 'TEHRAN') {
+                $members[] = ['member_type' => 'CITY', 'city_id' => $additionalCityId];
+            }
+
+            return ['code' => $zone['code'], 'title' => $zone['title'], 'remote_area' => $zone['remote_area'], 'members' => $members];
+        })->all();
+        $successor = $pricing->updateZoneVersion($maker, $successor['zone_set_version_id'], [
+            'expected_version' => 1,
+            'valid_from' => $validFrom,
+            'valid_to' => null,
+            'zones' => $successorZones,
+        ]);
+        $pricing->transition($maker, 'zone-sets', $zoneSet['zone_set_version_id'], 'supersede', (string) Str::uuid());
+        $pricing->transition($maker, 'zone-sets', $successor['zone_set_version_id'], 'approve', (string) Str::uuid());
+        $pricing->transition($maker, 'zone-sets', $successor['zone_set_version_id'], 'publish', (string) Str::uuid());
+
+        $successorDraft = $draft;
+        $successorDraft['sender']['city_id'] = $additionalCityId;
+        $successorDraft['receiver']['city_id'] = $additionalCityId;
+        $successorQuote = $pricing->calculateQuote($maker, $successorDraft, 'published-zone-successor');
+        $this->assertSame(23900, $successorQuote['total_amount']);
+        $this->assertSame($tariff['tariff_version_id'], $successorQuote['tariff_version_id']);
+        $this->assertSame($successor['zone_set_version_id'], $successorQuote['zone_set_version_id']);
+        $this->assertSame($zoneSet['zone_set_version_id'], $successorQuote['resolution_evidence']['zone_set']['configured_version_id']);
+        $this->assertSame($successor['zone_set_version_id'], $successorQuote['resolution_evidence']['zone_set']['resolved_version_id']);
+
         $created = $this->app->make(ConsignmentService::class)->create($maker, $nodeId, [...$draft, 'accepted_quote' => [
             'quote_id' => $quote['quote_id'], 'quote_version' => 1, 'option_id' => $quote['options'][0]['option_id'],
         ]], (string) Str::uuid());

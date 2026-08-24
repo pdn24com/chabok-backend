@@ -272,24 +272,27 @@ final readonly class PricingService
             ->where('v.status', 'PUBLISHED')->where('v.valid_from', '<=', $asOf)->where(fn ($q) => $q->whereNull('v.valid_to')->orWhere('v.valid_to', '>', $asOf))
             ->orderBy('f.priority')->orderByRaw("FIELD(f.scope_type, 'CONTRACT', 'CUSTOMER', 'SEGMENT', 'TENANT', 'PLATFORM')")->orderBy('f.code')->orderByDesc('v.version_number')->select(['v.*', 'f.currency', 'f.code as tariff_code'])->first();
         if ($tariff === null) throw new ApiException(ApiErrorCode::PricingTariffNotFound, 422, 'No eligible tariff was found.', details: ['reason_code' => 'PRICING_TARIFF_NOT_FOUND']);
-        [$origin, $originEvidence] = $this->resolveZone((string) $tariff->zone_set_version_id, (array) $input['sender']);
-        [$destination, $destinationEvidence] = $this->resolveZone((string) $tariff->zone_set_version_id, (array) $input['receiver']);
+        $resolvedZoneSetVersionId = $this->resolveEffectiveZoneSetVersion((string) $tariff->zone_set_version_id, $asOf);
+        [$origin, $originEvidence] = $this->resolveZone($resolvedZoneSetVersionId, (array) $input['sender']);
+        [$destination, $destinationEvidence] = $this->resolveZone($resolvedZoneSetVersionId, (array) $input['receiver']);
         $facts = $this->facts($input, (array) $tariff, $destination);
         $rules = DB::table('tariff_rate_rules as r')->join('pricing_charge_types as c', 'c.charge_type_id', '=', 'r.charge_type_id')
+            ->leftJoin('pricing_zones as origin_rule_zone', 'origin_rule_zone.pricing_zone_id', '=', 'r.origin_zone_id')
+            ->leftJoin('pricing_zones as destination_rule_zone', 'destination_rule_zone.pricing_zone_id', '=', 'r.destination_zone_id')
             ->where('r.tariff_version_id', $tariff->tariff_version_id)->where('r.service_offering_version_id', $offering['service_offering_version_id'])
             ->where(fn ($q) => $q->whereNull('r.service_option_version_id')->orWhereIn('r.service_option_version_id', (array) $input['selected_option_version_ids']))
-            ->where(fn ($q) => $q->whereNull('r.origin_zone_id')->orWhere('r.origin_zone_id', $origin['pricing_zone_id']))
-            ->where(fn ($q) => $q->whereNull('r.destination_zone_id')->orWhere('r.destination_zone_id', $destination['pricing_zone_id']))
+            ->where(fn ($q) => $q->whereNull('r.origin_zone_id')->orWhere('origin_rule_zone.code', $origin['code']))
+            ->where(fn ($q) => $q->whereNull('r.destination_zone_id')->orWhere('destination_rule_zone.code', $destination['code']))
             ->select(['r.*', 'c.code as charge_type_code', 'c.category', 'c.accounting_mapping_key', 'c.code as title'])->get()->map(fn ($r) => (array) $r)->all();
         if ($rules === []) throw new ApiException(ApiErrorCode::PricingRuleNotFound, 422, 'No pricing rule matches the selected service and lane.', details: ['reason_code' => 'PRICING_RULE_NOT_FOUND']);
         $calculation = $this->calculator->calculate($rules, $facts);
         if ($calculation['lines'] === [] || $calculation['total_amount'] <= 0 || ! collect($calculation['lines'])->contains(fn ($line) => $line['charge_code'] === 'BASE_FREIGHT')) throw new ApiException(ApiErrorCode::PricingRejected, 422, 'Pricing did not produce a complete nonzero base price.', details: ['reason_code' => 'PRICING_INCOMPLETE_RESULT']);
         if (($input['insurance_enabled'] ?? false) === true && ! collect($calculation['lines'])->contains(fn ($line) => $line['charge_code'] === 'INSURANCE')) throw new ApiException(ApiErrorCode::PricingRejected, 422, 'Mandatory insurance pricing is unavailable.', details: ['reason_code' => 'INSURANCE_PRICING_REQUIRED']);
         $quoteId = (string) Str::uuid(); $now = CarbonImmutable::now('UTC'); $ttl = (int) config('chabok.pricing.quote_ttl_seconds', 900);
-        $evidence = ['tariff_code' => $tariff->tariff_code, 'origin' => $originEvidence, 'destination' => $destinationEvidence, 'weight' => $facts, 'service' => ['outcome' => $offering['outcome'], 'reason_codes' => $offering['reason_codes'], 'labels' => $offering['labels'] ?? [], 'service_type_id' => $offering['service_type_id'], 'shipping_method_id' => $offering['shipping_method_id'], 'selected_option_version_ids' => $input['selected_option_version_ids'], 'commitment' => $offering['commitment'] ?? null]];
+        $evidence = ['tariff_code' => $tariff->tariff_code, 'zone_set' => ['configured_version_id' => (string) $tariff->zone_set_version_id, 'resolved_version_id' => $resolvedZoneSetVersionId], 'origin' => $originEvidence, 'destination' => $destinationEvidence, 'weight' => $facts, 'service' => ['outcome' => $offering['outcome'], 'reason_codes' => $offering['reason_codes'], 'labels' => $offering['labels'] ?? [], 'service_type_id' => $offering['service_type_id'], 'shipping_method_id' => $offering['shipping_method_id'], 'selected_option_version_ids' => $input['selected_option_version_ids'], 'commitment' => $offering['commitment'] ?? null]];
         $warnings = $facts['weight_evidence'] === 'AGGREGATE_FALLBACK' ? ['PRICING_AGGREGATE_WEIGHT_FALLBACK'] : [];
-        $this->transactions->run(function () use ($actor, $input, $idempotencyKey, $inputFingerprint, $offering, $tariff, $origin, $destination, $calculation, $quoteId, $now, $ttl, $evidence, $warnings): void {
-            DB::table('pricing_quotes')->insert(['quote_id' => $quoteId, 'hq_id' => $actor->hqId, 'requested_by' => $actor->userId, 'purpose' => 'SALES', 'tariff_version_id' => $tariff->tariff_version_id, 'zone_set_version_id' => $tariff->zone_set_version_id, 'service_offering_id' => $offering['service_offering_id'], 'service_offering_version_id' => $offering['service_offering_version_id'], 'origin_zone_id' => $origin['pricing_zone_id'], 'destination_zone_id' => $destination['pricing_zone_id'], 'currency' => 'IRR', 'subtotal_amount' => $calculation['subtotal_amount'], 'discount_amount' => $calculation['discount_amount'], 'tax_amount' => $calculation['tax_amount'], 'total_amount' => $calculation['total_amount'], 'normalized_input' => json_encode($input, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE), 'resolution_evidence' => json_encode($evidence, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE), 'warnings' => json_encode($warnings, JSON_THROW_ON_ERROR), 'input_fingerprint' => $inputFingerprint, 'result_fingerprint' => $calculation['result_fingerprint'], 'idempotency_key' => $idempotencyKey, 'status' => 'OFFERED', 'calculated_at' => $now, 'expires_at' => $now->addSeconds($ttl), 'created_at' => $now, 'updated_at' => $now]);
+        $this->transactions->run(function () use ($actor, $input, $idempotencyKey, $inputFingerprint, $offering, $tariff, $resolvedZoneSetVersionId, $origin, $destination, $calculation, $quoteId, $now, $ttl, $evidence, $warnings): void {
+            DB::table('pricing_quotes')->insert(['quote_id' => $quoteId, 'hq_id' => $actor->hqId, 'requested_by' => $actor->userId, 'purpose' => 'SALES', 'tariff_version_id' => $tariff->tariff_version_id, 'zone_set_version_id' => $resolvedZoneSetVersionId, 'service_offering_id' => $offering['service_offering_id'], 'service_offering_version_id' => $offering['service_offering_version_id'], 'origin_zone_id' => $origin['pricing_zone_id'], 'destination_zone_id' => $destination['pricing_zone_id'], 'currency' => 'IRR', 'subtotal_amount' => $calculation['subtotal_amount'], 'discount_amount' => $calculation['discount_amount'], 'tax_amount' => $calculation['tax_amount'], 'total_amount' => $calculation['total_amount'], 'normalized_input' => json_encode($input, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE), 'resolution_evidence' => json_encode($evidence, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE), 'warnings' => json_encode($warnings, JSON_THROW_ON_ERROR), 'input_fingerprint' => $inputFingerprint, 'result_fingerprint' => $calculation['result_fingerprint'], 'idempotency_key' => $idempotencyKey, 'status' => 'OFFERED', 'calculated_at' => $now, 'expires_at' => $now->addSeconds($ttl), 'created_at' => $now, 'updated_at' => $now]);
             $this->insertLines('pricing_quote_lines', 'quote_line_id', 'quote_id', $quoteId, $calculation['lines']);
         });
         return $this->quoteDetail($actor, $quoteId);
@@ -419,6 +422,32 @@ final readonly class PricingService
         usort($matches, fn ($left, $right) => $right->effective_precedence <=> $left->effective_precedence); $top = $matches[0]->effective_precedence; $winners = array_values(array_filter($matches, fn ($m) => $m->effective_precedence === $top));
         if (count(array_unique(array_map(fn ($m) => $m->pricing_zone_id, $winners))) > 1) throw new ApiException(ApiErrorCode::PricingZoneAmbiguous, 422, 'Pricing zone is ambiguous.', details: ['reason_code' => 'PRICING_ZONE_AMBIGUOUS']);
         $winner = $winners[0]; return [['pricing_zone_id' => $winner->pricing_zone_id, 'code' => $winner->code, 'remote_area' => (bool) $winner->remote_area], ['member_id' => $winner->zone_member_id, 'member_type' => $winner->member_type, 'precedence' => $winner->effective_precedence]];
+    }
+
+    private function resolveEffectiveZoneSetVersion(string $configuredVersionId, CarbonImmutable $asOf): string
+    {
+        $identityId = DB::table('pricing_zone_set_versions')
+            ->where('zone_set_version_id', $configuredVersionId)
+            ->value('pricing_zone_set_id');
+        if ($identityId === null) {
+            throw new ApiException(ApiErrorCode::PricingZoneUnresolved, 422, 'Pricing Zone Set version could not be resolved.', details: ['reason_code' => 'PRICING_ZONE_VERSION_UNAVAILABLE']);
+        }
+
+        $versions = DB::table('pricing_zone_set_versions')
+            ->where('pricing_zone_set_id', $identityId)
+            ->where('status', 'PUBLISHED')
+            ->where('valid_from', '<=', $asOf)
+            ->where(fn ($query) => $query->whereNull('valid_to')->orWhere('valid_to', '>', $asOf))
+            ->orderByDesc('version_number')
+            ->pluck('zone_set_version_id');
+        if ($versions->isEmpty()) {
+            throw new ApiException(ApiErrorCode::PricingZoneUnresolved, 422, 'No effective published Pricing Zone Set version was found.', details: ['reason_code' => 'PRICING_ZONE_VERSION_UNAVAILABLE']);
+        }
+        if ($versions->count() > 1) {
+            throw new ApiException(ApiErrorCode::PricingZoneAmbiguous, 422, 'More than one effective Pricing Zone Set version was found.', details: ['reason_code' => 'PRICING_ZONE_VERSION_AMBIGUOUS']);
+        }
+
+        return (string) $versions->first();
     }
 
     /** @param array<string,mixed> $input @param array<string,mixed> $tariff @param array<string,mixed> $destination @return array<string,float|int|bool|string> */
