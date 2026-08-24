@@ -709,13 +709,13 @@ final class ManifestIntegrationTest extends MySqlRedisTestCase
         $detail = $this->app->make(ConsignmentService::class)->get($principal, $destination, $first['consignment']);
         $this->assertNotEmpty($detail['journey']['route_legs']);
         $this->assertSame(['OS', 'IR'], array_column($detail['journey']['movement_manifests'], 'manifest_status'));
-        $this->assertSame(['DEPARTED', 'ARRIVED'], array_column($detail['journey']['movement_manifests'], 'event_type'));
+        $this->assertSame(['DEPARTED', 'RECEIVED'], array_column($detail['journey']['movement_manifests'], 'event_type'));
         $this->assertSame([$driver, $driver], array_column($detail['journey']['movement_manifests'], 'assigned_driver_id'));
         $this->assertSame([$vehicle, $vehicle], array_column($detail['journey']['movement_manifests'], 'assigned_vehicle_id'));
         $this->assertSame(['CLOSED', 'CLOSED'], array_column($detail['journey']['movement_manifests'], 'state'));
-        $this->assertSame([null, null], array_column($detail['journey']['movement_manifests'], 'transport_run_id'));
-        $this->assertSame([], $detail['journey']['transport_runs']);
-        $this->assertNull($detail['parcels'][0]['active_transport_run_id']);
+        $this->assertArrayNotHasKey('transport_run_id', $detail['journey']['movement_manifests'][0]);
+        $this->assertArrayNotHasKey('transport_runs', $detail['journey']);
+        $this->assertArrayNotHasKey('active_transport_run_id', $detail['parcels'][0]);
         $this->assertNotEmpty($detail['status_timeline']);
         $this->assertNotEmpty($detail['journey']['custody_timeline']);
         $this->assertFalse(Schema::hasTable('transport_runs'));

@@ -505,8 +505,6 @@ final readonly class ConsignmentService
                     'current_custodian_id' => $parcel->current_custodian_id,
                     'active_route_plan_id' => $parcel->active_route_plan_id,
                     'active_route_plan_leg_id' => $parcel->active_route_plan_leg_id,
-                    // Temporary Task E response-shape compatibility only.
-                    'active_transport_run_id' => null,
                     'version' => (int) $parcel->version,
                     'created_at' => $this->time($parcel->created_at),
                 ])->all()
@@ -584,8 +582,7 @@ final readonly class ConsignmentService
                 'from_custodian_id' => $event->from_custodian_id, 'to_custodian_id' => $event->to_custodian_id,
                 'command_name' => (string) $event->command_name, 'manifest_id' => $event->manifest_id,
                 'route_plan_id' => $event->route_plan_id, 'route_plan_leg_id' => $event->route_plan_leg_id,
-                // Temporary Task E response-shape compatibility only.
-                'transport_run_id' => null, 'created_at' => $this->time($event->created_at),
+                'created_at' => $this->time($event->created_at),
             ])->all();
         $routePlan = DB::table('route_plans')->where(['hq_id' => $hqId, 'consignment_id' => $id])->orderByDesc('created_at')->first();
         $routeLegs = $routePlan === null ? [] : DB::table('route_plan_legs as l')
@@ -638,8 +635,6 @@ final readonly class ConsignmentService
 
                 return [
                     ...(array) $manifest,
-                    // Temporary Task E response-shape compatibility only.
-                    'transport_run_id' => null,
                     'parcel_outcomes' => $outcomes,
                 ];
             })->all();
@@ -655,7 +650,7 @@ final readonly class ConsignmentService
                     'route_plan_leg_id' => $manifest['route_plan_leg_id'] ?? $succeeded['route_plan_leg_id'],
                     'route_definition_version_id' => $manifest['route_definition_version_id'] ?? $succeeded['route_definition_version_id'],
                     'route_definition_version_leg_id' => $manifest['route_definition_version_leg_id'] ?? $succeeded['route_definition_version_leg_id'],
-                    'event_type' => $manifest['manifest_status'] === 'OS' ? 'DEPARTED' : 'ARRIVED',
+                    'event_type' => $manifest['manifest_status'] === 'OS' ? 'DEPARTED' : 'RECEIVED',
                     'recorded_at' => $manifest['operation_recorded_at'] ?? $manifest['closed_at'],
                 ];
             },
@@ -741,8 +736,6 @@ final readonly class ConsignmentService
                 ],
                 'route_legs' => $routeLegs,
                 'movement_manifests' => $movementManifests,
-                // Temporary Task E response-shape compatibility only.
-                'transport_runs' => [],
                 'custody_timeline' => $custodyTimeline,
             ],
             'related_manifests' => $relatedManifests,
@@ -754,7 +747,7 @@ final readonly class ConsignmentService
     {
         $query->where('c.pickup_node_id', $nodeId)->orWhere('c.delivery_node_id', $nodeId)
             ->orWhereExists(fn ($q) => $q->selectRaw('1')->from('parcels as pv')->whereColumn('pv.consignment_id', 'c.consignment_id')->whereColumn('pv.hq_id', 'c.hq_id')->where('pv.current_node_id', $nodeId))
-            ->orWhereExists(fn ($q) => $q->selectRaw('1')->from('parcels as pt')->join('route_plan_legs as rpl', 'rpl.route_plan_leg_id', '=', 'pt.active_route_plan_leg_id')->whereColumn('pt.consignment_id', 'c.consignment_id')->whereColumn('pt.hq_id', 'c.hq_id')->where('rpl.destination_node_id', $nodeId)->whereIn('rpl.status', ['IN_TRANSIT', 'ARRIVED']))
+            ->orWhereExists(fn ($q) => $q->selectRaw('1')->from('parcels as pt')->join('route_plan_legs as rpl', 'rpl.route_plan_leg_id', '=', 'pt.active_route_plan_leg_id')->whereColumn('pt.consignment_id', 'c.consignment_id')->whereColumn('pt.hq_id', 'c.hq_id')->where('rpl.destination_node_id', $nodeId)->where('rpl.status', 'IN_TRANSIT'))
             ->orWhereExists(fn ($q) => $q->selectRaw('1')->from('pickup_tasks as ptask')->whereColumn('ptask.consignment_id', 'c.consignment_id')->whereColumn('ptask.hq_id', 'c.hq_id')->where('ptask.node_id', $nodeId)->whereIn('ptask.status', ['PENDING', 'ASSIGNED', 'IN_PROGRESS']))
             ->orWhereExists(fn ($q) => $q->selectRaw('1')->from('delivery_tasks as dtask')->whereColumn('dtask.consignment_id', 'c.consignment_id')->whereColumn('dtask.hq_id', 'c.hq_id')->where('dtask.node_id', $nodeId)->whereIn('dtask.status', ['PENDING', 'ASSIGNED', 'IN_PROGRESS']));
     }

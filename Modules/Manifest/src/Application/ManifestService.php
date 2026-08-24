@@ -487,7 +487,7 @@ final readonly class ManifestService
     private function visibleParcelAtNode($query, string $nodeId): void
     {
         $query->where('p.current_node_id', $nodeId)
-            ->orWhereExists(fn ($q) => $q->selectRaw('1')->from('route_plan_legs as rpl')->whereColumn('rpl.route_plan_leg_id', 'p.active_route_plan_leg_id')->where('rpl.destination_node_id', $nodeId)->whereIn('rpl.status', ['IN_TRANSIT', 'ARRIVED']))
+            ->orWhereExists(fn ($q) => $q->selectRaw('1')->from('route_plan_legs as rpl')->whereColumn('rpl.route_plan_leg_id', 'p.active_route_plan_leg_id')->where('rpl.destination_node_id', $nodeId)->where('rpl.status', 'IN_TRANSIT'))
             ->orWhereExists(fn ($q) => $q->selectRaw('1')->from('pickup_tasks as pt')->whereColumn('pt.consignment_id', 'p.consignment_id')->where('pt.node_id', $nodeId)->whereIn('pt.status', ['PENDING', 'ASSIGNED', 'IN_PROGRESS']))
             ->orWhereExists(fn ($q) => $q->selectRaw('1')->from('delivery_tasks as dt')->whereColumn('dt.consignment_id', 'p.consignment_id')->where('dt.node_id', $nodeId)->whereIn('dt.status', ['PENDING', 'ASSIGNED', 'IN_PROGRESS']))
             ->orWhere('c.pickup_node_id', $nodeId)->orWhere('c.delivery_node_id', $nodeId);
