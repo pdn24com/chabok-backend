@@ -11,10 +11,15 @@ use Modules\Foundation\Application\Contracts\OutboxWriter;
 use Modules\Foundation\Domain\ApiErrorCode;
 use Modules\Foundation\Domain\ApiException;
 use Modules\Foundation\Domain\AuthenticatedPrincipal;
+use Modules\Consignment\Application\ConsignmentAggregateProjector;
 
 final readonly class ParcelLifecycleService
 {
-    public function __construct(private AuditWriter $audit, private OutboxWriter $outbox) {}
+    public function __construct(
+        private AuditWriter $audit,
+        private OutboxWriter $outbox,
+        private ConsignmentAggregateProjector $aggregates,
+    ) {}
 
     /** @return list<string> parcel IDs */
     public function transition(
@@ -68,20 +73,15 @@ final readonly class ParcelLifecycleService
             ]);
             $ids[] = (string) $parcel->parcel_id;
         }
-        $consignment = DB::table('consignments')->where(['hq_id' => $actor->hqId, 'consignment_id' => $consignmentId])->lockForUpdate()->first();
-        if ($consignment === null) throw new ApiException(ApiErrorCode::ResourceNotFound, 404, 'Resource not found.');
-        DB::table('consignments')->where('consignment_id', $consignmentId)->update(['current_status' => $to, 'updated_at' => now()]);
-        if ((string) $consignment->current_status !== $to) {
-            DB::table('consignment_status_events')->insert([
-                'status_event_id' => (string) Str::uuid(), 'hq_id' => $actor->hqId,
-                'event_sequence' => $this->nextSequence('consignment_status_events', $consignmentId),
-                'consignment_id' => $consignmentId, 'parcel_id' => null,
-                'previous_status' => $consignment->current_status, 'new_status' => $to,
-                'initiator_id' => $actor->userId, 'node_id' => $nodeId, 'driver_id' => $driverId,
-                'manifest_id' => $manifestId, 'reason_code' => $reasonCode ?? $command,
-                'note' => $safeNote, 'created_at' => now(),
-            ]);
-        }
+        $this->aggregates->project(
+            $actor,
+            $consignmentId,
+            $to,
+            $nodeId,
+            $manifestId,
+            $reasonCode ?? $command,
+            $driverId,
+        );
         $this->audit->write($actor->hqId, $actor->userId, $command, 'CONSIGNMENT', $consignmentId, $correlationId, ['status' => $from], ['status' => $to, 'custody_type' => $custodyType]);
         $this->outbox->write($actor->hqId, 'CONSIGNMENT', $consignmentId, 'operations.command.executed', $correlationId, [
             'command' => $command, 'resource_id' => $consignmentId, 'consignment_id' => $consignmentId, 'status' => $to,

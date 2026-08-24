@@ -57,6 +57,7 @@ final readonly class ConsignmentService
                 'c.pickup_node_id', 'pickup_node.node_title as pickup_node_title',
                 'c.delivery_node_id', 'delivery_node.node_title as delivery_node_title',
                 'c.pickup_man_id', 'c.delivery_man_id', 'c.current_status',
+                'c.aggregate_mode', 'c.parcel_status_counts',
                 'c.version', 'c.created_at', 'c.updated_at',
             ])->selectSub(
                 DB::table('parcels as p')->selectRaw('COUNT(*)')
@@ -96,7 +97,7 @@ final readonly class ConsignmentService
             SUM(CASE WHEN c.current_status IN ('CFM','PD') THEN 1 ELSE 0 END) AS new_routed,
             SUM(CASE WHEN c.pickup_man_id IS NULL AND c.delivery_man_id IS NULL THEN 1 ELSE 0 END) AS unassigned,
             SUM(CASE WHEN c.pickup_man_id IS NOT NULL OR c.delivery_man_id IS NOT NULL THEN 1 ELSE 0 END) AS assigned,
-            SUM(CASE WHEN c.current_status IN ('PU','IR','ROU','OF','OS','OD') THEN 1 ELSE 0 END) AS in_operation,
+            SUM(CASE WHEN c.current_status IN ('PU','IR','ROU','OF','OS','CI','OD') THEN 1 ELSE 0 END) AS in_operation,
             SUM(CASE WHEN c.current_status IN ('NPU','NOK','RH','RCH') THEN 1 ELSE 0 END) AS exception,
             SUM(CASE WHEN c.current_status = 'OK' THEN 1 ELSE 0 END) AS completed,
             SUM(CASE WHEN c.current_status IN ('RO','AA') THEN 1 ELSE 0 END) AS cancelled",
@@ -171,6 +172,7 @@ final readonly class ConsignmentService
             $id = (string) Str::uuid();
             $number = $this->numbers->next();
             $now = now();
+            $parcels = (array) $input['parcels'];
             DB::table('consignments')->insert([
                 'consignment_id' => $id,
                 'hq_id' => $actor->hqId,
@@ -182,11 +184,12 @@ final readonly class ConsignmentService
                 ...$this->contactColumns('receiver', (array) $input['receiver']),
                 ...$this->commercialColumns($input),
                 'current_status' => 'CFM',
+                'aggregate_mode' => 'FULL',
+                'parcel_status_counts' => json_encode(['CFM' => count($parcels)], JSON_THROW_ON_ERROR),
                 'version' => 1,
                 'created_at' => $now,
                 'updated_at' => $now,
             ]);
-            $parcels = (array) $input['parcels'];
             foreach (array_values($parcels) as $index => $parcelInput) {
                 $parcelId = (string) Str::uuid();
                 DB::table('parcels')->insert([
@@ -416,6 +419,7 @@ final readonly class ConsignmentService
             'pickup_man_id' => $row['pickup_man_id'] ? (string) $row['pickup_man_id'] : null,
             'delivery_man_id' => $row['delivery_man_id'] ? (string) $row['delivery_man_id'] : null,
             'current_status' => (string) $row['current_status'],
+            'aggregate' => $this->aggregateResource($row),
             'parcel_count' => (int) $row['parcel_count'],
             'version' => (int) $row['version'],
             'created_at' => $this->time($row['created_at']),
@@ -553,6 +557,10 @@ final readonly class ConsignmentService
                 'parcel_id' => $event->parcel_id,
                 'previous_status' => $event->previous_status,
                 'new_status' => (string) $event->new_status,
+                'aggregate_mode' => $event->aggregate_mode,
+                'parcel_status_counts' => $event->parcel_status_counts === null
+                    ? null
+                    : json_decode((string) $event->parcel_status_counts, true),
                 'initiator_id' => (string) $event->initiator_id,
                 'node_id' => $event->node_id,
                 'reason_code' => $event->reason_code,
@@ -655,7 +663,7 @@ final readonly class ConsignmentService
                 ];
             },
             array_filter($relatedManifests, static function (array $manifest): bool {
-                $isMovement = $manifest['manifest_status'] === 'OS'
+                $isMovement = in_array($manifest['manifest_status'], ['OS', 'CI'], true)
                     || ($manifest['manifest_status'] === 'IR'
                         && $manifest['operational_context_type'] === 'MOVEMENT_RECEPTION');
                 $hasSucceededParcel = collect($manifest['parcel_outcomes'])->contains(
@@ -1145,6 +1153,23 @@ final readonly class ConsignmentService
     private function time(mixed $value): string
     {
         return CarbonImmutable::parse((string) $value, 'UTC')->utc()->toISOString();
+    }
+
+    /** @param array<string,mixed> $row @return array{status:string,mode:string,parcel_counts:array<string,int>,parcel_total:int,target_count:int} */
+    private function aggregateResource(array $row): array
+    {
+        $counts = json_decode((string) ($row['parcel_status_counts'] ?? '{}'), true) ?: [];
+        $counts = array_map(static fn ($count): int => (int) $count, $counts);
+        ksort($counts);
+        $status = (string) $row['current_status'];
+
+        return [
+            'status' => $status,
+            'mode' => (string) ($row['aggregate_mode'] ?? 'FULL'),
+            'parcel_counts' => $counts,
+            'parcel_total' => array_sum($counts),
+            'target_count' => $counts[$status] ?? 0,
+        ];
     }
 
     private function databaseTime(mixed $value): ?CarbonImmutable
