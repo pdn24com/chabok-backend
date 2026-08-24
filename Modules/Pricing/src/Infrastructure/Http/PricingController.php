@@ -36,6 +36,23 @@ final readonly class PricingController
         $filters = $request->validate(['page' => ['integer', 'min:1'], 'page_size' => ['integer', 'min:1', 'max:100'], 'search' => ['nullable', 'string', 'max:120']]); $page = $this->pricing->listZoneSets($this->principal($request), $filters);
         return ApiResponder::success($request, $page->items(), ['pagination' => ['page' => $page->currentPage(), 'page_size' => $page->perPage(), 'total' => $page->total(), 'total_pages' => $page->lastPage()]]);
     }
+    public function zoneSetVersionReferences(Request $request): JsonResponse
+    {
+        $filters = $request->validate([
+            'page' => ['integer', 'min:1'],
+            'page_size' => ['integer', 'min:1', 'max:100'],
+            'search' => ['nullable', 'string', 'max:120'],
+            'include_version_id' => ['nullable', 'uuid'],
+        ]);
+        $page = $this->pricing->listZoneSetVersionReferences($this->principal($request), $filters);
+
+        return ApiResponder::success($request, $page->items(), ['pagination' => [
+            'page' => $page->currentPage(),
+            'page_size' => $page->perPage(),
+            'total' => $page->total(),
+            'total_pages' => $page->lastPage(),
+        ]]);
+    }
     public function chargeTypes(Request $request): JsonResponse { return ApiResponder::success($request, $this->pricing->listChargeTypes($this->principal($request))); }
     public function audit(Request $request): JsonResponse { $filters = $request->validate(['page' => ['integer', 'min:1'], 'page_size' => ['integer', 'min:1', 'max:100'], 'target_id' => ['nullable', 'uuid']]); $page = $this->pricing->auditEvents($this->principal($request), $filters); return ApiResponder::success($request, $page->items(), ['pagination' => ['page' => $page->currentPage(), 'page_size' => $page->perPage(), 'total' => $page->total(), 'total_pages' => $page->lastPage()]]); }
     public function history(Request $request, string $kind, string $identityId): JsonResponse { return ApiResponder::success($request, $this->pricing->history($this->principal($request), $kind, $identityId)); }

@@ -27,7 +27,10 @@ final readonly class ServiceCatalogController
 
     public function publishedVersions(Request $request, string $resource): JsonResponse
     {
-        $filters = $request->validate(['page' => ['integer', 'min:1'], 'page_size' => ['integer', 'min:1', 'max:100'], 'search' => ['nullable', 'string', 'max:120']]);
+        $filters = $request->validate([
+            'page' => ['integer', 'min:1'], 'page_size' => ['integer', 'min:1', 'max:100'], 'search' => ['nullable', 'string', 'max:120'],
+            'include_version_ids' => ['nullable', 'array', 'max:100'], 'include_version_ids.*' => ['uuid'],
+        ]);
         $page = $this->catalog->listPublishedVersions($this->principal($request), $resource, $filters);
 
         return ApiResponder::success($request, $page->items(), ['pagination' => ['page' => $page->currentPage(), 'page_size' => $page->perPage(), 'total' => $page->total(), 'total_pages' => $page->lastPage()]]);
@@ -105,7 +108,8 @@ final readonly class ServiceCatalogController
 
     public function publishedSchedules(Request $request): JsonResponse
     {
-        return ApiResponder::success($request, $this->schedules->published($this->principal($request)));
+        $filters = $request->validate(['include_version_ids' => ['nullable', 'array', 'max:100'], 'include_version_ids.*' => ['uuid']]);
+        return ApiResponder::success($request, $this->schedules->published($this->principal($request), (array) ($filters['include_version_ids'] ?? [])));
     }
 
     public function createSchedule(Request $request): JsonResponse

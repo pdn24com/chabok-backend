@@ -55,6 +55,41 @@ final readonly class PricingService
         return $query->orderBy('s.code')->paginate(min(100, max(1, (int) ($filters['page_size'] ?? 25))), page: max(1, (int) ($filters['page'] ?? 1)));
     }
 
+    /** @param array<string,mixed> $filters */
+    public function listZoneSetVersionReferences(AuthenticatedPrincipal $actor, array $filters): LengthAwarePaginator
+    {
+        $this->assertAccess($actor, 'pricing.tariff.view');
+        $includeVersionId = (string) ($filters['include_version_id'] ?? '');
+        $query = DB::table('pricing_zone_set_versions as v')
+            ->join('pricing_zone_sets as s', 's.pricing_zone_set_id', '=', 'v.pricing_zone_set_id')
+            ->where(fn ($q) => $q->whereNull('s.hq_id')->orWhere('s.hq_id', $actor->hqId));
+        $search = ($filters['search'] ?? '') === '' ? null : '%'.addcslashes((string) $filters['search'], '%_\\').'%';
+        $query->where(function ($q) use ($includeVersionId, $search): void {
+            $q->where(function ($published) use ($search): void {
+                $published->where('v.status', 'PUBLISHED');
+                if ($search !== null) $published->where(fn ($match) => $match->where('s.code', 'like', $search)->orWhere('s.title', 'like', $search));
+            });
+            if ($includeVersionId !== '') $q->orWhere('v.zone_set_version_id', $includeVersionId);
+        });
+        $page = $query->select([
+            'v.zone_set_version_id', 'v.pricing_zone_set_id', 'v.version_number', 'v.status',
+            'v.valid_from', 'v.valid_to', 's.code', 's.title', 's.purpose',
+        ])->orderByRaw('v.zone_set_version_id = ? DESC', [$includeVersionId ?: '00000000-0000-0000-0000-000000000000'])
+            ->orderBy('s.title')->orderByDesc('v.version_number')
+            ->paginate(min(100, max(1, (int) ($filters['page_size'] ?? 50))), page: max(1, (int) ($filters['page'] ?? 1)));
+        $page->setCollection($page->getCollection()->map(function ($row): array {
+            $reference = (array) $row;
+            $reference['zones'] = DB::table('pricing_zones')
+                ->where('zone_set_version_id', $row->zone_set_version_id)
+                ->orderBy('title')->get(['pricing_zone_id', 'code', 'title', 'remote_area'])
+                ->map(fn ($zone) => [...(array) $zone, 'remote_area' => (bool) $zone->remote_area])->all();
+
+            return $reference;
+        }));
+
+        return $page;
+    }
+
     /** @return list<array<string,mixed>> */
     public function listChargeTypes(AuthenticatedPrincipal $actor): array
     {
@@ -147,9 +182,17 @@ final readonly class PricingService
     {
         $this->assertAccess($actor, 'pricing.tariff.manage_draft');
         if ($input['currency'] !== 'IRR') throw new ApiException(ApiErrorCode::ValidationError, 422, 'Milestone 1 supports IRR only.');
+        if (! in_array((string) ($input['scope_type'] ?? 'TENANT'), ['TENANT', 'PLATFORM'], true)) throw new ApiException(ApiErrorCode::ValidationError, 422, 'The selected tariff scope has no authoritative reference directory.');
+        $this->assertTariffReferences($actor, $input);
         return $this->transactions->run(function () use ($actor, $input, $correlationId): array {
             $familyId = (string) Str::uuid(); $versionId = (string) Str::uuid(); $now = now();
-            DB::table('tariff_families')->insert(['tariff_family_id' => $familyId, 'hq_id' => $actor->hqId, 'owner_key' => $actor->hqId, 'code' => Str::upper($input['code']), 'purpose' => $input['purpose'], 'scope_type' => $input['scope_type'] ?? 'TENANT', 'scope_value' => $input['scope_value'] ?? null, 'currency' => 'IRR', 'priority' => $input['priority'] ?? 100, 'created_by' => $actor->userId, 'created_at' => $now, 'updated_at' => $now]);
+            $scopeType = (string) ($input['scope_type'] ?? 'TENANT');
+            $scopeValue = match ($scopeType) {
+                'TENANT' => $actor->hqId,
+                'PLATFORM' => null,
+                default => $input['scope_value'] ?? null,
+            };
+            DB::table('tariff_families')->insert(['tariff_family_id' => $familyId, 'hq_id' => $actor->hqId, 'owner_key' => $actor->hqId, 'code' => Str::upper($input['code']), 'purpose' => $input['purpose'], 'scope_type' => $scopeType, 'scope_value' => $scopeValue, 'currency' => 'IRR', 'priority' => $input['priority'] ?? 100, 'created_by' => $actor->userId, 'created_at' => $now, 'updated_at' => $now]);
             DB::table('tariff_versions')->insert(['tariff_version_id' => $versionId, 'tariff_family_id' => $familyId, 'hq_id' => $actor->hqId, 'zone_set_version_id' => $input['zone_set_version_id'], 'version_number' => 1, 'status' => 'DRAFT', 'valid_from' => $this->databaseTimestamp($input['valid_from'] ?? null), 'valid_to' => $this->databaseTimestamp($input['valid_to'] ?? null), 'lock_version' => 1, 'volumetric_divisor' => $input['volumetric_divisor'] ?? 5000, 'weight_rounding_step_kg' => $input['weight_rounding_step_kg'] ?? 0.5, 'rounding_mode' => $input['rounding_mode'] ?? 'STEP_UP', 'created_by' => $actor->userId, 'created_at' => $now, 'updated_at' => $now]);
             $this->replaceRules($versionId, (array) $input['rules']);
             $this->record($actor, 'TARIFF_FAMILY_CREATED', 'TARIFF_FAMILY', $familyId, $correlationId, ['version_id' => $versionId]);
@@ -161,6 +204,7 @@ final readonly class PricingService
     public function updateTariffVersion(AuthenticatedPrincipal $actor, string $versionId, array $input): array
     {
         $this->assertAccess($actor, 'pricing.tariff.manage_draft');
+        $this->assertTariffReferences($actor, $input);
         return $this->transactions->run(function () use ($actor, $versionId, $input): array {
             $row = DB::table('tariff_versions')->where('tariff_version_id', $versionId)->where('hq_id', $actor->hqId)->lockForUpdate()->first();
             $this->assertDraft($row, (int) $input['expected_version']);
@@ -564,6 +608,26 @@ final readonly class PricingService
             'zone-sets' => ['pricing_zone_sets', 'pricing_zone_set_versions', 'pricing_zone_set_id', 'zone_set_version_id'],
             default => throw new ApiException(ApiErrorCode::ResourceNotFound, 404, 'Resource not found.'),
         };
+    }
+
+    /** @param array<string,mixed> $input */
+    private function assertTariffReferences(AuthenticatedPrincipal $actor, array $input): void
+    {
+        $zoneSetVersionId = (string) ($input['zone_set_version_id'] ?? '');
+        $visible = DB::table('pricing_zone_set_versions as v')
+            ->join('pricing_zone_sets as s', 's.pricing_zone_set_id', '=', 'v.pricing_zone_set_id')
+            ->where('v.zone_set_version_id', $zoneSetVersionId)
+            ->where(fn ($q) => $q->whereNull('s.hq_id')->orWhere('s.hq_id', $actor->hqId))->exists();
+        if (! $visible) throw new ApiException(ApiErrorCode::ResourceNotFound, 404, 'Resource not found.');
+        $zoneIds = DB::table('pricing_zones')->where('zone_set_version_id', $zoneSetVersionId)->pluck('pricing_zone_id')->map(fn ($id) => (string) $id)->all();
+        foreach ((array) ($input['rules'] ?? []) as $rule) {
+            foreach (['origin_zone_id', 'destination_zone_id'] as $field) {
+                $zoneId = $rule[$field] ?? null;
+                if ($zoneId !== null && $zoneId !== '' && ! in_array((string) $zoneId, $zoneIds, true)) {
+                    throw new ApiException(ApiErrorCode::ValidationError, 422, 'A tariff rule references a zone outside the selected Zone Set version.', details: ['field' => "rules.{$field}"]);
+                }
+            }
+        }
     }
 
     private function assertDraft(?object $row, int $expected): void { if ($row === null) throw new ApiException(ApiErrorCode::ResourceNotFound, 404, 'Resource not found.'); if ($row->status !== 'DRAFT') throw new ApiException(ApiErrorCode::ValidationError, 422, 'Only drafts are editable.'); if ((int) $row->lock_version !== $expected) throw new ApiException(ApiErrorCode::VersionConflict, 409, 'The draft changed since it was loaded.', details: ['current_version' => (int) $row->lock_version]); }

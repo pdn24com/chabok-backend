@@ -46,12 +46,14 @@ final readonly class CommitmentScheduleService
     }
 
     /** @return list<array<string,mixed>> */
-    public function published(AuthenticatedPrincipal $actor): array
+    public function published(AuthenticatedPrincipal $actor, array $includeVersionIds = []): array
     {
         $this->assertAccess($actor, 'service_catalog.view');
+        $includeVersionIds = array_values(array_unique(array_map('strval', $includeVersionIds)));
         return DB::table('commitment_schedule_versions as v')
             ->join('commitment_schedules as s', 's.commitment_schedule_id', '=', 'v.commitment_schedule_id')
-            ->where(['s.hq_id' => $actor->hqId, 'v.status' => 'PUBLISHED'])
+            ->where('s.hq_id', $actor->hqId)
+            ->where(fn ($available) => $available->where('v.status', 'PUBLISHED')->when($includeVersionIds !== [], fn ($query) => $query->orWhereIn('v.commitment_schedule_version_id', $includeVersionIds)))
             ->orderBy('s.code')->get(['v.*', 's.code', 's.title'])
             ->map(fn ($row) => $this->versionDetail($actor, (string) $row->commitment_schedule_version_id))->all();
     }

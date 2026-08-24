@@ -5,10 +5,11 @@ declare(strict_types=1);
 namespace Modules\Geography\Application;
 
 use Illuminate\Support\Facades\DB;
+use Modules\Foundation\Application\Contracts\CanonicalGeographyResolver;
 use Modules\Foundation\Domain\ApiErrorCode;
 use Modules\Foundation\Domain\ApiException;
 
-final class GeographyResolver
+final class GeographyResolver implements CanonicalGeographyResolver
 {
     /**
      * Canonical identity always wins over client-supplied province/city snapshots.

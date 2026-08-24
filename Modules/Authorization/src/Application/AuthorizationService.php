@@ -92,9 +92,16 @@ final readonly class AuthorizationService implements AuthorizationContextResolve
             'includes_descendants' => (bool) $row->includes_descendants,
         ])->unique(fn (array $scope): string => json_encode($scope, JSON_THROW_ON_ERROR))->values()->all();
         $nodes = $principal->hqId === null ? [] : $this->accessibleNodeIds($principal->hqId, $assignments);
+        $tenant = $principal->hqId === null ? null : DB::table('hq_tenants')->where('hq_id', $principal->hqId)
+            ->first(['hq_id', 'hq_code', 'hq_title']);
 
         $context = [
             'hq_id' => $principal->hqId,
+            'tenant' => $tenant === null ? null : [
+                'hq_id' => (string) $tenant->hq_id,
+                'code' => (string) $tenant->hq_code,
+                'title' => (string) $tenant->hq_title,
+            ],
             'is_platform_admin' => $isPlatform,
             'role_codes' => $assignments->pluck('role_code')->map(fn ($value) => (string) $value)
                 ->unique()->sort()->values()->all(),

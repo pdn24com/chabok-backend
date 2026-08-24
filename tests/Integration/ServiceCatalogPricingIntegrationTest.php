@@ -488,6 +488,104 @@ final class ServiceCatalogPricingIntegrationTest extends MySqlRedisTestCase
         }
     }
 
+    public function test_selector_references_are_tenant_scoped_and_server_derived(): void
+    {
+        $this->app->make(AuthorizationCatalogSeeder::class)->run();
+        [$tenantA, $actorA] = $this->administratorContext('SELECTOR-A');
+        [$tenantB, $actorB] = $this->administratorContext('SELECTOR-B');
+        $pricing = $this->app->make(PricingService::class);
+        $catalog = $this->app->make(ServiceCatalogService::class);
+
+        $makeZoneSet = function (AuthenticatedPrincipal $actor, string $code) use ($pricing): array {
+            $created = $pricing->createZoneSet($actor, [
+                'code' => $code, 'purpose' => 'SALES', 'title' => "Zone set {$code}", 'valid_from' => now()->subDay()->utc()->toISOString(), 'valid_to' => null,
+                'zones' => [['code' => 'CENTER', 'title' => 'Center', 'members' => [['member_type' => 'CITY', 'city_id' => GeographyIds::city('10866')]]]],
+            ], (string) Str::uuid());
+            $pricing->transition($actor, 'zone-sets', $created['zone_set_version_id'], 'approve', (string) Str::uuid());
+            $pricing->transition($actor, 'zone-sets', $created['zone_set_version_id'], 'publish', (string) Str::uuid());
+
+            return $created;
+        };
+        $zoneSetA = $makeZoneSet($actorA, 'SELECTOR_A');
+        $zoneSetB = $makeZoneSet($actorB, 'SELECTOR_B');
+
+        $references = $pricing->listZoneSetVersionReferences($actorA, ['page_size' => 50]);
+        $this->assertSame([$zoneSetA['zone_set_version_id']], array_column($references->items(), 'zone_set_version_id'));
+        $this->assertSame($zoneSetA['zones'][0]['pricing_zone_id'], $references->items()[0]['zones'][0]['pricing_zone_id']);
+
+        $unprivileged = $this->user($tenantA['hq_id'], 'selector-no-role');
+        try {
+            $pricing->listZoneSetVersionReferences(new AuthenticatedPrincipal($unprivileged['user_id'], (string) Str::uuid(), $tenantA['hq_id'], false), []);
+            $this->fail('The reference endpoint service must require pricing.tariff.view.');
+        } catch (ApiException $exception) {
+            $this->assertSame(ApiErrorCode::PermissionDenied, $exception->errorCode);
+        }
+
+        $tariffInput = [
+            'code' => 'SELECTOR_TARIFF', 'purpose' => 'SALES', 'currency' => 'IRR', 'scope_type' => 'TENANT', 'scope_value' => $tenantB['hq_id'], 'priority' => 100,
+            'zone_set_version_id' => $zoneSetA['zone_set_version_id'], 'valid_from' => null, 'valid_to' => null,
+            'volumetric_divisor' => 5000, 'weight_rounding_step_kg' => 0.5, 'rounding_mode' => 'STEP_UP', 'rules' => [],
+        ];
+        $tariff = $pricing->createTariff($actorA, $tariffInput, (string) Str::uuid());
+        $this->assertDatabaseHas('tariff_families', [
+            'tariff_family_id' => $tariff['tariff_family_id'], 'hq_id' => $tenantA['hq_id'], 'scope_type' => 'TENANT', 'scope_value' => $tenantA['hq_id'],
+        ]);
+        try {
+            $pricing->createTariff($actorA, [...$tariffInput, 'code' => 'FOREIGN_ZONE', 'zone_set_version_id' => $zoneSetB['zone_set_version_id']], (string) Str::uuid());
+            $this->fail('A foreign Zone Set version must not be accepted.');
+        } catch (ApiException $exception) {
+            $this->assertSame(ApiErrorCode::ResourceNotFound, $exception->errorCode);
+        }
+
+        $type = $catalog->createIdentity($actorA, 'service-types', [
+            'code' => 'SELECTOR_TYPE', 'labels' => ['fa' => 'نوع انتخابی'], 'description' => null, 'definition' => [], 'valid_from' => null, 'valid_to' => null,
+        ], (string) Str::uuid());
+        $includedCurrent = $catalog->listPublishedVersions($actorA, 'service-types', ['include_version_ids' => [$type['service_type_version_id']]]);
+        $this->assertSame($type['service_type_version_id'], $includedCurrent->items()[0]['service_type_version_id']);
+        $this->assertSame('DRAFT', $includedCurrent->items()[0]['status']);
+        $this->assertSame(0, $catalog->listPublishedVersions($actorB, 'service-types', ['include_version_ids' => [$type['service_type_version_id']]])->total());
+        $method = $catalog->createIdentity($actorA, 'shipping-methods', [
+            'code' => 'SELECTOR_METHOD', 'labels' => ['fa' => 'روش انتخابی'], 'description' => null, 'definition' => [], 'valid_from' => null, 'valid_to' => null,
+        ], (string) Str::uuid());
+        $areaA = (string) DB::table('nodes')->where('node_id', $this->nodeIdForTenant($tenantA['hq_id']))->value('area_id');
+        $areaB = (string) DB::table('nodes')->where('node_id', $this->nodeIdForTenant($tenantB['hq_id']))->value('area_id');
+        $offeringInput = [
+            'code' => 'SELECTOR_OFFERING', 'labels' => ['fa' => 'خدمت انتخابی'], 'description' => null,
+            'service_type_version_id' => $type['service_type_version_id'], 'shipping_method_version_id' => $method['shipping_method_version_id'],
+            'sla_policy' => ['commitment_type' => 'DURATION', 'duration_value' => 1, 'duration_unit' => 'DAY'],
+            'availability_bindings' => [['scope_type' => 'TENANT', 'scope_value' => $tenantB['hq_id'], 'enabled' => true]],
+            'option_rules' => [], 'eligibility_rules' => [],
+            'coverage_references' => [
+                ['direction' => 'BOTH', 'reference_type' => 'COUNTRY', 'reference_value' => 'IR'],
+                ['direction' => 'ORIGIN', 'reference_type' => 'PROVINCE', 'reference_value' => GeographyIds::province('8')],
+                ['direction' => 'DESTINATION', 'reference_type' => 'CITY', 'reference_value' => GeographyIds::city('10866')],
+                ['direction' => 'BOTH', 'reference_type' => 'OPERATIONAL_AREA', 'reference_value' => $areaA],
+                ['direction' => 'LANE', 'reference_type' => 'PRICING_ZONE_SET', 'reference_value' => $zoneSetA['zone_set_version_id']],
+                ['direction' => 'BOTH', 'reference_type' => 'POSTAL_RANGE', 'reference_value' => '1000000000', 'secondary_reference_value' => '1999999999'],
+            ],
+            'valid_from' => null, 'valid_to' => null,
+        ];
+        $offering = $catalog->createIdentity($actorA, 'offerings', $offeringInput, (string) Str::uuid());
+        $this->assertDatabaseHas('service_availability_bindings', [
+            'service_offering_version_id' => $offering['service_offering_version_id'], 'scope_type' => 'TENANT', 'scope_value' => $tenantA['hq_id'],
+        ]);
+        $this->assertDatabaseHas('service_coverage_references', [
+            'service_offering_version_id' => $offering['service_offering_version_id'], 'reference_type' => 'OPERATIONAL_AREA', 'reference_value' => $areaA,
+        ]);
+
+        foreach ([
+            [...$offeringInput, 'code' => 'FOREIGN_AREA', 'coverage_references' => [['direction' => 'BOTH', 'reference_type' => 'OPERATIONAL_AREA', 'reference_value' => $areaB]], 'availability_bindings' => [['scope_type' => 'TENANT', 'enabled' => true]]],
+            [...$offeringInput, 'code' => 'UNSUPPORTED_SCOPE', 'coverage_references' => [], 'availability_bindings' => [['scope_type' => 'CUSTOMER', 'scope_value' => (string) Str::uuid(), 'enabled' => true]]],
+        ] as $invalidInput) {
+            try {
+                $catalog->createIdentity($actorA, 'offerings', $invalidInput, (string) Str::uuid());
+                $this->fail('Forged or unsupported references must be rejected.');
+            } catch (ApiException $exception) {
+                $this->assertSame(ApiErrorCode::ValidationError, $exception->errorCode);
+            }
+        }
+    }
+
     public function test_admin_http_boundaries_reject_malformed_nested_configuration(): void
     {
         $this->app->make(AuthorizationCatalogSeeder::class)->run();
@@ -547,6 +645,11 @@ final class ServiceCatalogPricingIntegrationTest extends MySqlRedisTestCase
         $areaId = (string) Str::uuid(); DB::table('areas')->insert(['area_id' => $areaId, 'hq_id' => $tenant['hq_id'], 'area_title' => 'Pricing area', 'status' => 'ACTIVE', 'created_at' => now(), 'updated_at' => now()]);
         $nodeId = (string) Str::uuid(); DB::table('nodes')->insert(['node_id' => $nodeId, 'hq_id' => $tenant['hq_id'], 'area_id' => $areaId, 'node_code' => $code, 'node_title' => 'Pricing branch', 'node_type' => 'BRANCH', 'status' => 'ACTIVE', 'created_at' => now(), 'updated_at' => now()]);
         return [$tenant, new AuthenticatedPrincipal($makerUser['user_id'], (string) Str::uuid(), $tenant['hq_id'], false), new AuthenticatedPrincipal($checkerUser['user_id'], (string) Str::uuid(), $tenant['hq_id'], false), $nodeId];
+    }
+
+    private function nodeIdForTenant(string $hqId): string
+    {
+        return (string) DB::table('nodes')->where('hq_id', $hqId)->orderBy('created_at')->value('node_id');
     }
 
     /** @param array<string,mixed> $type @param array<string,mixed> $method @param array<string,mixed> $offering @return array<string,mixed> */

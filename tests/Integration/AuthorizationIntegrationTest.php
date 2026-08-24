@@ -95,6 +95,11 @@ final class AuthorizationIntegrationTest extends MySqlRedisTestCase
         $service = $this->app->make(AuthorizationService::class);
 
         $context = $service->resolve($principal);
+        $this->assertSame([
+            'hq_id' => $tenant['hq_id'],
+            'code' => $tenant['hq_code'],
+            'title' => $tenant['hq_title'],
+        ], $context['tenant']);
         $this->assertContains('branch_manager', $context['role_codes']);
         $this->assertContains('node_context.view', $context['permissions']);
         $this->assertEqualsCanonicalizing(

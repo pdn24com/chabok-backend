@@ -24,6 +24,7 @@ final class ModuleRouteRegistrationTest extends TestCase
             'GET /api/v1/admin/pricing/audit',
             'GET /api/v1/admin/pricing/charge-types',
             'GET /api/v1/admin/pricing/tariff-families',
+            'GET /api/v1/admin/pricing/zone-set-versions/references',
             'GET /api/v1/admin/pricing/zone-sets',
             'GET /api/v1/admin/pricing/{kind}/identities/{identityId}/versions',
             'GET /api/v1/admin/service-catalog/audit',

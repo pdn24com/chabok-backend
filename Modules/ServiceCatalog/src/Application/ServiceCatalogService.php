@@ -10,6 +10,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Modules\Foundation\Application\Contracts\AuditWriter;
 use Modules\Foundation\Application\Contracts\AuthorizationContextResolver;
+use Modules\Foundation\Application\Contracts\CanonicalGeographyResolver;
 use Modules\Foundation\Application\Contracts\OutboxWriter;
 use Modules\Foundation\Application\Contracts\TransactionManager;
 use Modules\Foundation\Domain\ApiErrorCode;
@@ -32,6 +33,7 @@ final readonly class ServiceCatalogService implements ServiceEligibilityResolver
         private AuditWriter $audit,
         private OutboxWriter $outbox,
         private CommitmentScheduleService $commitments,
+        private CanonicalGeographyResolver $geography,
     ) {}
 
     /** @param array<string, mixed> $filters */
@@ -76,14 +78,18 @@ final readonly class ServiceCatalogService implements ServiceEligibilityResolver
     {
         $this->assertAccess($actor, 'service_catalog.view');
         [$identity, $versions, $identityId, $versionId] = $this->map($resource);
+        $includeVersionIds = array_values(array_unique(array_map('strval', (array) ($filters['include_version_ids'] ?? []))));
         $query = DB::table("{$versions} as v")
             ->join("{$identity} as i", "i.{$identityId}", '=', "v.{$identityId}")
-            ->where('v.status', 'PUBLISHED')
             ->where(fn ($q) => $q->whereNull('i.hq_id')->orWhere('i.hq_id', $actor->hqId));
-        if (($filters['search'] ?? '') !== '') {
-            $search = '%'.addcslashes((string) $filters['search'], '%_\\').'%';
-            $query->where(fn ($q) => $q->where('i.code', 'like', $search)->orWhere('v.labels', 'like', $search));
-        }
+        $search = ($filters['search'] ?? '') === '' ? null : '%'.addcslashes((string) $filters['search'], '%_\\').'%';
+        $query->where(function ($available) use ($includeVersionIds, $search, $versionId): void {
+            $available->where(function ($published) use ($search): void {
+                $published->where('v.status', 'PUBLISHED');
+                if ($search !== null) $published->where(fn ($match) => $match->where('i.code', 'like', $search)->orWhere('v.labels', 'like', $search));
+            });
+            if ($includeVersionIds !== []) $available->orWhereIn("v.{$versionId}", $includeVersionIds);
+        });
         $page = $query->select(['v.*', 'i.code'])
             ->orderBy('i.code')
             ->orderByDesc('v.version_number')
@@ -313,6 +319,7 @@ final readonly class ServiceCatalogService implements ServiceEligibilityResolver
     public function resolve(AuthenticatedPrincipal $actor, array $context): array
     {
         $this->assertAccess($actor, 'service_catalog.resolve', runtime: true);
+        $context = $this->canonicalizeCoverageContext($context);
         $asOf = CarbonImmutable::parse((string) ($context['as_of_timestamp'] ?? now()->toISOString()))->utc();
         $channel = (string) ($context['channel'] ?? 'BRANCH');
         $rows = DB::table('service_offering_versions as v')
@@ -344,6 +351,7 @@ final readonly class ServiceCatalogService implements ServiceEligibilityResolver
     public function validateSelection(AuthenticatedPrincipal $actor, string $offeringId, ?string $versionId, array $context): array
     {
         $this->assertAccess($actor, 'service_catalog.resolve', runtime: true);
+        $context = $this->canonicalizeCoverageContext($context);
         $query = DB::table('service_offering_versions as v')->join('service_offerings as i', 'i.service_offering_id', '=', 'v.service_offering_id')
             ->join('service_type_versions as stv', 'stv.service_type_version_id', '=', 'v.service_type_version_id')
             ->join('shipping_method_versions as smv', 'smv.shipping_method_version_id', '=', 'v.shipping_method_version_id')
@@ -418,6 +426,7 @@ final readonly class ServiceCatalogService implements ServiceEligibilityResolver
     /** @param array<string, mixed> $input */
     private function replaceOfferingChildren(string $versionId, array $input, ?string $hqId): void
     {
+        $this->assertOfferingReferences($input, $hqId);
         foreach (['service_offering_option_rules', 'service_eligibility_rules', 'service_coverage_references', 'service_availability_bindings', 'service_offering_commitment_bindings'] as $table) {
             DB::table($table)->where('service_offering_version_id', $versionId)->delete();
         }
@@ -440,14 +449,20 @@ final readonly class ServiceCatalogService implements ServiceEligibilityResolver
             DB::table('service_coverage_references')->insert([
                 'coverage_reference_id' => (string) Str::uuid(), 'service_offering_version_id' => $versionId,
                 'direction' => $reference['direction'], 'reference_type' => $reference['reference_type'],
-                'reference_value' => $reference['reference_value'], 'secondary_reference_value' => $reference['secondary_reference_value'] ?? null,
+                'reference_value' => $reference['reference_value'],
+                'secondary_reference_value' => $reference['reference_type'] === 'POSTAL_RANGE' ? ($reference['secondary_reference_value'] ?? null) : null,
                 'priority' => $reference['priority'] ?? 100,
             ]);
         }
         foreach ((array) ($input['availability_bindings'] ?? []) as $binding) {
+            $scopeValue = match ($binding['scope_type']) {
+                'TENANT' => $hqId,
+                'PLATFORM' => null,
+                default => $binding['scope_value'] ?? null,
+            };
             DB::table('service_availability_bindings')->insert([
                 'availability_binding_id' => (string) Str::uuid(), 'service_offering_version_id' => $versionId,
-                'scope_type' => $binding['scope_type'], 'scope_value' => $binding['scope_type'] === 'TENANT' && empty($binding['scope_value']) ? $hqId : ($binding['scope_value'] ?? null),
+                'scope_type' => $binding['scope_type'], 'scope_value' => $scopeValue,
                 'enabled' => $binding['enabled'] ?? true,
             ]);
         }
@@ -462,6 +477,34 @@ final readonly class ServiceCatalogService implements ServiceEligibilityResolver
                 'duration_unit' => $binding['delivery_mode'] === 'COMPUTED' ? ($binding['duration_unit'] ?? null) : null,
                 'duration_anchor' => $binding['delivery_mode'] === 'COMPUTED' ? ($binding['duration_anchor'] ?? null) : null,
             ]);
+        }
+    }
+
+    /** @param array<string,mixed> $input */
+    private function assertOfferingReferences(array $input, ?string $hqId): void
+    {
+        foreach ((array) ($input['availability_bindings'] ?? []) as $binding) {
+            $scopeType = (string) ($binding['scope_type'] ?? '');
+            if (! in_array($scopeType, ['PLATFORM', 'TENANT', 'CHANNEL'], true)) {
+                throw new ApiException(ApiErrorCode::ValidationError, 422, 'The selected availability scope has no authoritative reference directory.');
+            }
+            if ($scopeType === 'CHANNEL' && ! in_array((string) ($binding['scope_value'] ?? ''), ['BRANCH', 'VENDOR', 'DRIVER', 'HQ', 'API', 'TRACKING', 'LEGACY'], true)) {
+                throw new ApiException(ApiErrorCode::ValidationError, 422, 'The availability channel is invalid.');
+            }
+        }
+        foreach ((array) ($input['coverage_references'] ?? []) as $reference) {
+            $type = (string) ($reference['reference_type'] ?? '');
+            $value = (string) ($reference['reference_value'] ?? '');
+            $valid = match ($type) {
+                'COUNTRY' => $value === 'IR',
+                'PROVINCE' => DB::table('provinces')->where(['province_id' => $value, 'is_active' => true])->exists(),
+                'CITY' => DB::table('cities')->where(['city_id' => $value, 'is_active' => true])->exists(),
+                'OPERATIONAL_AREA' => $hqId !== null && DB::table('areas')->where(['area_id' => $value, 'hq_id' => $hqId])->exists(),
+                'PRICING_ZONE_SET' => DB::table('pricing_zone_set_versions as v')->join('pricing_zone_sets as s', 's.pricing_zone_set_id', '=', 'v.pricing_zone_set_id')->where('v.zone_set_version_id', $value)->where(fn ($q) => $q->whereNull('s.hq_id')->orWhere('s.hq_id', $hqId))->exists(),
+                'POSTAL_RANGE' => preg_match('/^\d{10}$/', $value) === 1 && preg_match('/^\d{10}$/', (string) ($reference['secondary_reference_value'] ?? '')) === 1 && strcmp($value, (string) $reference['secondary_reference_value']) <= 0,
+                default => false,
+            };
+            if (! $valid) throw new ApiException(ApiErrorCode::ValidationError, 422, 'The coverage reference is invalid or outside the current tenant.');
         }
     }
 
@@ -599,12 +642,24 @@ final readonly class ServiceCatalogService implements ServiceEligibilityResolver
     private function coverageMatches(array $reference, array $party): bool
     {
         return match ($reference['reference_type']) {
-            'CITY' => isset($party['city']) && mb_strtolower((string) $party['city']) === mb_strtolower((string) $reference['reference_value']),
-            'PROVINCE' => isset($party['state']) && mb_strtolower((string) $party['state']) === mb_strtolower((string) $reference['reference_value']),
+            'CITY' => ($party['city_id'] ?? null) === $reference['reference_value'] || (isset($party['city']) && mb_strtolower((string) $party['city']) === mb_strtolower((string) $reference['reference_value'])),
+            'PROVINCE' => ($party['province_id'] ?? null) === $reference['reference_value'] || (isset($party['state']) && mb_strtolower((string) $party['state']) === mb_strtolower((string) $reference['reference_value'])),
             'COUNTRY' => isset($party['country']) && mb_strtolower((string) $party['country']) === mb_strtolower((string) $reference['reference_value']),
             'POSTAL_RANGE' => isset($party['postal_code']) && strcmp((string) $party['postal_code'], (string) $reference['reference_value']) >= 0 && strcmp((string) $party['postal_code'], (string) $reference['secondary_reference_value']) <= 0,
             default => false,
         };
+    }
+
+    /** @param array<string,mixed> $context @return array<string,mixed> */
+    private function canonicalizeCoverageContext(array $context): array
+    {
+        foreach (['sender', 'receiver'] as $party) {
+            $contact = $this->geography->canonicalizeContact((array) ($context[$party] ?? []), false);
+            $contact['country'] ??= 'IR';
+            $context[$party] = $contact;
+        }
+
+        return $context;
     }
 
     /** @param array<string,mixed> $condition @param array<string,mixed> $context */

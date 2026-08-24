@@ -16,6 +16,7 @@ Route::prefix('api/v1')->middleware(['api', 'access.auth', 'password.changed'])-
         Route::get('/charge-types', [PricingController::class, 'chargeTypes']);
         Route::post('/charge-types', [PricingController::class, 'chargeType']);
         Route::get('/zone-sets', [PricingController::class, 'zoneSets']);
+        Route::get('/zone-set-versions/references', [PricingController::class, 'zoneSetVersionReferences']);
         Route::post('/zone-sets', [PricingController::class, 'zoneSet']);
         Route::get('/{kind}/identities/{identityId}/versions', [PricingController::class, 'history'])->whereIn('kind', ['tariffs', 'zone-sets'])->whereUuid('identityId');
         Route::post('/{kind}/identities/{identityId}/versions', [PricingController::class, 'clone'])->whereIn('kind', ['tariffs', 'zone-sets'])->whereUuid('identityId');
