@@ -7,6 +7,7 @@ namespace Tests\Integration;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
+use Modules\Foundation\Application\Contracts\AuditWriter;
 use Modules\Foundation\Application\Contracts\OutboxWriter;
 use Modules\Authorization\Application\AuthorizationService;
 use Modules\Authorization\Infrastructure\Database\Seeders\AuthorizationCatalogSeeder;
@@ -361,6 +362,63 @@ final class ManifestIntegrationTest extends MySqlRedisTestCase
         $this->assertSame('PU', DB::table('parcels')->where('parcel_id', $eligible)->value('current_status'));
         $this->assertDatabaseMissing('audit_events', [
             'target_id' => $rollbackManifest['manifest_id'], 'action_key' => 'MANIFEST_CONFIRMED',
+        ]);
+    }
+
+    public function test_audit_failure_rolls_back_status_custody_manifest_and_outbox(): void
+    {
+        [$tenant, $actor, $node, $principal] = $this->context('MAN-AUDIT-TX', 'manifest-audit-rollback');
+        [, $eligible] = $this->consignment($tenant['hq_id'], $actor['user_id'], $node);
+        $number = (string) DB::table('parcels')->where('parcel_id', $eligible)->value('parcel_number');
+        $service = $this->app->make(ManifestService::class);
+        $manifest = $service->create($principal, $node, [
+            'expected_version' => 0, 'manifest_status' => 'IR', 'context_key' => 'IR:PICKUP:'.$node,
+        ], (string) Str::uuid());
+        $added = $service->add($principal, $node, $manifest['manifest_id'], [
+            'expected_version' => 1, 'input_source' => 'SCAN', 'identifiers' => [$number],
+        ], (string) Str::uuid());
+        $open = $service->validate(
+            $principal, $node, $manifest['manifest_id'], $added['detail']['version'], (string) Str::uuid(),
+        );
+        $this->app->instance(AuditWriter::class, new class implements AuditWriter {
+            public function write(
+                ?string $hqId,
+                ?string $initiatorId,
+                string $action,
+                string $targetType,
+                ?string $targetId,
+                string $correlationId,
+                ?array $before = null,
+                ?array $after = null,
+                ?string $safeNote = null,
+                ?string $ipAddress = null,
+                ?string $userAgent = null,
+                ?string $sourceClient = null,
+            ): void {
+                throw new \RuntimeException('Injected audit failure.');
+            }
+        });
+
+        try {
+            $this->app->make(ManifestService::class)->confirm(
+                $principal, $node, $manifest['manifest_id'], $open['version'], (string) Str::uuid(),
+            );
+            $this->fail('Audit failure must roll back the whole confirmation.');
+        } catch (\RuntimeException $exception) {
+            $this->assertSame('Injected audit failure.', $exception->getMessage());
+        }
+
+        $this->assertDatabaseHas('manifests', [
+            'manifest_id' => $manifest['manifest_id'], 'state' => 'OPEN', 'version' => $open['version'],
+        ]);
+        $this->assertDatabaseHas('manifest_parcels', [
+            'manifest_id' => $manifest['manifest_id'], 'parcel_id' => $eligible,
+            'manifest_parcel_status' => 'VALIDATED',
+        ]);
+        $this->assertSame('PU', DB::table('parcels')->where('parcel_id', $eligible)->value('current_status'));
+        $this->assertDatabaseMissing('parcel_custody_events', ['manifest_id' => $manifest['manifest_id']]);
+        $this->assertDatabaseMissing('outbox_events', [
+            'aggregate_id' => $manifest['manifest_id'], 'event_type' => 'manifest.closed',
         ]);
     }
 
