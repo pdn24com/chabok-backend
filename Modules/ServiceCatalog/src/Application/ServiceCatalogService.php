@@ -339,7 +339,16 @@ final readonly class ServiceCatalogService implements ServiceEligibilityResolver
             }
             $decision = $this->evaluate((array) $row, $context);
             if ($decision['outcome'] !== 'INELIGIBLE') {
-                $commitment = $this->commitments->resolveForOffering((string) $row->service_offering_version_id, $context);
+                try {
+                    $commitment = $this->commitments->resolveForOffering((string) $row->service_offering_version_id, $context);
+                } catch (ApiException $exception) {
+                    $reasonCode = $exception->details['reason_code'] ?? null;
+                    if (in_array($reasonCode, ['PICKUP_WINDOW_INVALID', 'DELIVERY_WINDOW_INVALID'], true)) {
+                        continue;
+                    }
+
+                    throw $exception;
+                }
                 if ($commitment !== null && $commitment['eligible'] !== true) continue;
                 $results[] = [...$this->decode((array) $row), ...$decision, 'options' => $this->resolvedOptions((string) $row->service_offering_version_id, $context), 'commitment' => $commitment ?? $this->commitment((array) $row, $context)];
             }

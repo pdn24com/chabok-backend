@@ -145,7 +145,32 @@ final class ServiceCatalogPricingIntegrationTest extends MySqlRedisTestCase
         $catalog->transition($checker, 'offerings', $offering['service_offering_version_id'], 'approve', (string) Str::uuid());
         $catalog->transition($maker, 'offerings', $offering['service_offering_version_id'], 'publish', (string) Str::uuid());
 
-        $selectionContext = [...$this->consignmentDraft($type, $method, $offering), 'selected_option_version_ids' => []];
+        $otherSchedule = $scheduleService->create($maker, [
+            'code' => 'OTHER_WINDOWS', 'title' => 'پنجره‌های خدمت دیگر', 'timezone' => 'Asia/Tehran', 'calendar_code' => 'IR_STANDARD',
+            'valid_from' => $validFrom, 'valid_to' => null,
+            'windows' => [['window_code' => 'AFTERNOON', 'window_type' => 'PICKUP', 'label_fa' => 'بعدازظهر', 'start_time' => '14:00', 'end_time' => '18:00', 'booking_cutoff_time' => '23:59', 'applicable_weekdays' => [1, 2, 3, 4, 5, 6, 7], 'day_offset' => 0, 'active' => true]],
+            'scopes' => [['scope_type' => 'NODE', 'node_id' => $nodeId]],
+        ], (string) Str::uuid());
+        $scheduleService->transition($checker, $otherSchedule['commitment_schedule_version_id'], 'approve', (string) Str::uuid());
+        $otherSchedule = $scheduleService->transition($maker, $otherSchedule['commitment_schedule_version_id'], 'publish', (string) Str::uuid());
+
+        $otherOffering = $catalog->createIdentity($maker, 'offerings', [
+            'code' => 'OTHER_GROUND', 'labels' => ['en' => 'Other Ground'], 'description' => null,
+            'service_type_version_id' => $type['service_type_version_id'],
+            'shipping_method_version_id' => $method['shipping_method_version_id'],
+            'sla_policy' => ['commitment_type' => 'DURATION', 'duration_value' => 24, 'duration_unit' => 'HOUR'],
+            'availability_summary' => [], 'option_rules' => [], 'eligibility_rules' => [], 'coverage_references' => [],
+            'commitment_binding' => ['commitment_schedule_version_id' => $otherSchedule['commitment_schedule_version_id'], 'pickup_mode' => 'SELECTABLE_WINDOW', 'delivery_mode' => 'COMPUTED', 'duration_value' => 24, 'duration_unit' => 'HOUR', 'duration_anchor' => 'PICKUP_COMMITMENT_END'],
+            'availability_bindings' => [['scope_type' => 'TENANT', 'scope_value' => $tenant['hq_id'], 'enabled' => true]],
+            'valid_from' => $validFrom, 'valid_to' => null,
+        ], (string) Str::uuid());
+        $catalog->transition($checker, 'offerings', $otherOffering['service_offering_version_id'], 'approve', (string) Str::uuid());
+        $catalog->transition($maker, 'offerings', $otherOffering['service_offering_version_id'], 'publish', (string) Str::uuid());
+
+        $selectionContext = [...$this->consignmentDraft($type, $method, $offering), 'selected_option_version_ids' => [$options['SIGNATURE']['service_option_version_id']]];
+        $resolvedOfferings = $catalog->resolve($maker, $selectionContext);
+        $this->assertContains('EXPRESS_GROUND', array_column($resolvedOfferings, 'offering_code'));
+        $this->assertNotContains('OTHER_GROUND', array_column($resolvedOfferings, 'offering_code'));
         foreach ([
             'SERVICE_OPTION_REQUIRED' => [[], true],
             'SERVICE_OPTION_FORBIDDEN' => [[$options['SIGNATURE']['service_option_version_id'], $options['DANGEROUS']['service_option_version_id']], true],
