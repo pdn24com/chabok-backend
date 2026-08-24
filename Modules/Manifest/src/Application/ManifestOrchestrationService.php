@@ -6,6 +6,7 @@ namespace Modules\Manifest\Application;
 
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
+use Modules\Consignment\Application\ConsignmentAggregateProjector;
 use Modules\Foundation\Application\Contracts\AuditWriter;
 use Modules\Foundation\Application\Contracts\AuthorizationContextResolver;
 use Modules\Foundation\Application\Contracts\OutboxWriter;
@@ -20,7 +21,7 @@ use Modules\Operations\Application\RouteDefinitionService;
 
 final readonly class ManifestOrchestrationService
 {
-    public function __construct(private AuthorizationContextResolver $authorization,private TransactionManager $transactions,private AuditWriter $audit,private OutboxWriter $outbox,private ManifestEligibilityEvaluator $eligibility,private DeliveryTaskService $deliveryTasks,private CoveragePolicyService $coverage,private RouteDefinitionService $routes){}
+    public function __construct(private AuthorizationContextResolver $authorization,private TransactionManager $transactions,private AuditWriter $audit,private OutboxWriter $outbox,private ManifestEligibilityEvaluator $eligibility,private DeliveryTaskService $deliveryTasks,private CoveragePolicyService $coverage,private RouteDefinitionService $routes,private ConsignmentAggregateProjector $aggregates){}
 
     public function confirm(AuthenticatedPrincipal $actor,string $node,string $id,int $expected,string $correlationId,?string $reasonCode=null,?string $description=null):void
     {
@@ -75,7 +76,7 @@ final readonly class ManifestOrchestrationService
     /** @return list<array<string,mixed>> */
     public function custodyEvents(string $hq,string $manifest):array{return DB::table('parcel_custody_events')->where(['hq_id'=>$hq,'manifest_id'=>$manifest])->orderBy('event_sequence')->get()->map(fn(object $e):array=>['custody_event_id'=>(string)$e->custody_event_id,'consignment_id'=>(string)$e->consignment_id,'parcel_id'=>(string)$e->parcel_id,'from_node_id'=>$e->from_node_id,'to_node_id'=>$e->to_node_id,'from_custody_type'=>$e->from_custody_type,'to_custody_type'=>(string)$e->to_custody_type,'initiator_id'=>(string)$e->initiator_id,'created_at'=>(string)$e->created_at])->all();}
     /** @return array<string,mixed>|null */
-    public function movementEvidence(object $m):?array{if(!in_array((string)$m->manifest_status,['ROU','OF','OS','IR'],true))return null;return['target_status'=>(string)$m->manifest_status,'context_key'=>(string)$m->context_key,'operational_context_type'=>(string)$m->operational_context_type,'origin_node_id'=>$m->origin_node_id,'destination_node_id'=>$m->destination_node_id,'route_plan_id'=>$m->route_plan_id,'route_plan_leg_id'=>$m->route_plan_leg_id,'route_definition_version_id'=>$m->route_definition_version_id,'route_definition_version_leg_id'=>$m->route_definition_version_leg_id,'driver_id'=>$m->assigned_driver_id,'vehicle_id'=>$m->assigned_vehicle_id,'source_manifest_id'=>$m->source_manifest_id,'recorded_at'=>$m->operation_recorded_at??$m->closed_at];}
+    public function movementEvidence(object $m):?array{if(!in_array((string)$m->manifest_status,['ROU','OF','OS','CI','IR'],true))return null;return['target_status'=>(string)$m->manifest_status,'context_key'=>(string)$m->context_key,'operational_context_type'=>(string)$m->operational_context_type,'origin_node_id'=>$m->origin_node_id,'destination_node_id'=>$m->destination_node_id,'route_plan_id'=>$m->route_plan_id,'route_plan_leg_id'=>$m->route_plan_leg_id,'route_definition_version_id'=>$m->route_definition_version_id,'route_definition_version_leg_id'=>$m->route_definition_version_leg_id,'driver_id'=>$m->assigned_driver_id,'vehicle_id'=>$m->assigned_vehicle_id,'source_manifest_id'=>$m->source_manifest_id,'recorded_at'=>$m->operation_recorded_at??$m->closed_at];}
 
     private function submitException(AuthenticatedPrincipal $actor,string $node,object $m,string $code,string $description,string $correlationId):int
     {
@@ -93,9 +94,9 @@ final readonly class ManifestOrchestrationService
         foreach($rows as $row){$p=DB::table('parcels')->where(['hq_id'=>$actor->hqId,'parcel_id'=>$row->parcel_id])->lockForUpdate()->first();$e=$p? $this->eligibility->evaluate($p,$m,$node):Reason::metadata(Reason::ParcelNotFound);if(!$e['eligible']){$this->failRow($row,$e);continue;}$eligible[]=['row'=>$row,'parcel'=>$p];}
         if(in_array((string)$m->manifest_status,['NPU','NOK'],true)&&!$exceptionApproval)return count($eligible);
         foreach($eligible as $item){$row=$item['row'];$p=$item['parcel'];$evidence=$this->applyTarget($actor,$node,$m,$p,$correlationId);$this->recordTransition($actor,$node,$m,$p,$evidence);DB::table('manifest_parcels')->where('manifest_parcel_id',$row->manifest_parcel_id)->update(['manifest_parcel_status'=>'SUCCEEDED','failure_code'=>null,'failure_reason'=>null,'active_slot'=>null,'source_status'=>$p->current_status,'origin_node_id'=>$evidence['origin_node_id'],'destination_node_id'=>$evidence['destination_node_id'],'route_plan_id'=>$evidence['route_plan_id'],'route_definition_version_id'=>$evidence['route_definition_version_id'],'route_plan_leg_id'=>$evidence['route_plan_leg_id'],'route_definition_version_leg_id'=>$evidence['route_definition_version_leg_id'],'assigned_driver_id'=>$evidence['assigned_driver_id'],'assigned_vehicle_id'=>$evidence['assigned_vehicle_id'],'processed_at'=>now(),'evidence_recorded_at'=>now(),'updated_at'=>now()]);$success++;$consignments[]=(string)$p->consignment_id;}
-        foreach(array_unique($consignments) as $consignment)$this->aggregate($actor,$node,$m,$consignment);
+        foreach(array_unique($consignments) as $consignment)$this->aggregates->project($actor,$consignment,(string)$m->manifest_status,$node,(string)$m->manifest_id,'MANIFEST_AGGREGATE_PROJECTED',$m->assigned_driver_id);
         if($success>0&&$m->manifest_status==='OS'){DB::table('drivers')->where(['hq_id'=>$actor->hqId,'driver_id'=>$m->assigned_driver_id,'availability_status'=>'AVAILABLE'])->update(['availability_status'=>'ON_MISSION','updated_at'=>now()]);DB::table('vehicles')->where(['hq_id'=>$actor->hqId,'vehicle_id'=>$m->assigned_vehicle_id,'availability_status'=>'AVAILABLE'])->update(['availability_status'=>'ON_MISSION','updated_at'=>now()]);}
-        if($success>0&&$m->manifest_status==='IR'&&$m->operational_context_type==='MOVEMENT_RECEPTION'){DB::table('drivers')->where(['hq_id'=>$actor->hqId,'driver_id'=>$m->assigned_driver_id,'availability_status'=>'ON_MISSION'])->update(['availability_status'=>'AVAILABLE','updated_at'=>now()]);DB::table('vehicles')->where(['hq_id'=>$actor->hqId,'vehicle_id'=>$m->assigned_vehicle_id,'availability_status'=>'ON_MISSION'])->update(['availability_status'=>'AVAILABLE','updated_at'=>now()]);}
+        if($success>0&&in_array((string)$m->manifest_status,['CI','IR'],true)&&$m->operational_context_type!=='PICKUP_RECEPTION'){DB::table('drivers')->where(['hq_id'=>$actor->hqId,'driver_id'=>$m->assigned_driver_id,'availability_status'=>'ON_MISSION'])->update(['availability_status'=>'AVAILABLE','updated_at'=>now()]);DB::table('vehicles')->where(['hq_id'=>$actor->hqId,'vehicle_id'=>$m->assigned_vehicle_id,'availability_status'=>'ON_MISSION'])->update(['availability_status'=>'AVAILABLE','updated_at'=>now()]);}
         return$success;
     }
 
@@ -107,14 +108,162 @@ final readonly class ManifestOrchestrationService
     /** @return array<string,mixed> */
     private function applyTarget(AuthenticatedPrincipal $actor,string $node,object $m,object $p,string $correlationId):array
     {
-        $target=(string)$m->manifest_status;$route=['route_plan_id'=>$m->route_plan_id,'route_definition_version_id'=>$m->route_definition_version_id,'route_plan_leg_id'=>$m->route_plan_leg_id,'route_definition_version_leg_id'=>$m->route_definition_version_leg_id];
-        if($target==='ROU')$route=$this->ensureRoute($actor,$node,$p,$correlationId);
-        if($target==='OS'){$leg=DB::table('route_plan_legs as l')->join('route_plans as plan','plan.route_plan_id','=','l.route_plan_id')->where(['l.hq_id'=>$actor->hqId,'l.route_plan_leg_id'=>$p->active_route_plan_leg_id])->whereIn('l.status',['OUTBOUND_CONFIRMED','IN_TRANSIT'])->lockForUpdate()->first(['l.*','plan.route_definition_version_id']);if($leg===null)throw new ApiException(ApiErrorCode::RouteLegNotReady,422,'The Route Leg is not ready for departure.');$route=['route_plan_id'=>(string)$leg->route_plan_id,'route_definition_version_id'=>(string)$leg->route_definition_version_id,'route_plan_leg_id'=>(string)$leg->route_plan_leg_id,'route_definition_version_leg_id'=>(string)$leg->source_route_definition_version_leg_id];if((string)$leg->status==='OUTBOUND_CONFIRMED')DB::table('route_plan_legs')->where('route_plan_leg_id',$leg->route_plan_leg_id)->update(['status'=>'IN_TRANSIT','updated_at'=>now()]);}
-        if($target==='IR'&&$p->current_status==='OS'){$source=DB::table('manifest_parcels')->where(['manifest_id'=>$m->source_manifest_id,'parcel_id'=>$p->parcel_id])->first();$route=['route_plan_id'=>$source->route_plan_id,'route_definition_version_id'=>$source->route_definition_version_id,'route_plan_leg_id'=>$source->route_plan_leg_id,'route_definition_version_leg_id'=>$source->route_definition_version_leg_id];DB::table('route_plan_legs')->where('route_plan_leg_id',$source->route_plan_leg_id)->update(['status'=>'RECEIVED','received_at'=>now(),'updated_at'=>now()]);if(!DB::table('route_plan_legs')->where('route_plan_id',$source->route_plan_id)->whereNot('status','RECEIVED')->exists())DB::table('route_plans')->where('route_plan_id',$source->route_plan_id)->update(['status'=>'COMPLETED','active_slot'=>null,'updated_at'=>now()]);}
-        if($target==='OF')DB::table('route_plan_legs')->where(['route_plan_leg_id'=>$m->route_plan_leg_id,'status'=>'ROUTED'])->update(['status'=>'OUTBOUND_CONFIRMED','updated_at'=>now()]);
-        $custody=match($target){'PD','PU','NPU'=>'PICKUP_DRIVER','OS'=>'LINEHAUL_DRIVER','OD','NOK'=>'DELIVERY_DRIVER','OK'=>'RECIPIENT',default=>'NODE'};$custodian=match($custody){'PICKUP_DRIVER','LINEHAUL_DRIVER','DELIVERY_DRIVER'=>$m->assigned_driver_id,'NODE'=>$node,default=>null};$nextNode=in_array($custody,['PICKUP_DRIVER','LINEHAUL_DRIVER','DELIVERY_DRIVER','RECIPIENT'],true)?null:$node;
-        DB::table('parcels')->where('parcel_id',$p->parcel_id)->update(['current_status'=>$target,'current_node_id'=>$nextNode,'current_custody_type'=>$custody,'current_custodian_id'=>$custodian,'active_route_plan_id'=>$route['route_plan_id']??$p->active_route_plan_id,'active_route_plan_leg_id'=>$target==='IR'&&$p->current_status==='OS'?null:($route['route_plan_leg_id']??$p->active_route_plan_leg_id),'version'=>(int)$p->version+1,'updated_at'=>now()]);
-        if($target==='PD')$this->pickupAssigned($actor,$node,$p,$m);if($target==='PU')$this->pickupCompleted($p);if($target==='NPU')$this->pickupFailed($p);if($target==='IR'&&$p->current_status==='PU'){$this->pickupReceived($p);if(DB::table('consignments')->where(['consignment_id'=>$p->consignment_id,'delivery_node_id'=>$node])->exists())$this->deliveryTasks->ensurePending($actor,$node,(string)$p->consignment_id);}if($target==='OD'){$this->deliveryTasks->ensurePending($actor,$node,(string)$p->consignment_id);$this->deliveryTasks->activateFromManifest($actor,$node,(string)$p->consignment_id,(string)$m->assigned_driver_id,(string)$m->manifest_id);}if($target==='OK')$this->deliveryCompleted($actor,$p);if($target==='NOK')$this->deliveryFailed($actor,$p);
+        $target = (string) $m->manifest_status;
+        $route = [
+            'route_plan_id' => $m->route_plan_id,
+            'route_definition_version_id' => $m->route_definition_version_id,
+            'route_plan_leg_id' => $m->route_plan_leg_id,
+            'route_definition_version_leg_id' => $m->route_definition_version_leg_id,
+        ];
+        $activeRoutePlanId = $route['route_plan_id'] ?? $p->active_route_plan_id;
+        $activeRouteLegId = $route['route_plan_leg_id'] ?? $p->active_route_plan_leg_id;
+
+        if ($target === 'ROU') {
+            $route = $this->ensureRoute($actor, $node, $p, $correlationId);
+            $activeRoutePlanId = $route['route_plan_id'];
+            $activeRouteLegId = $route['route_plan_leg_id'];
+        }
+        if ($target === 'OS') {
+            $leg = DB::table('route_plan_legs as l')
+                ->join('route_plans as plan', function ($join): void {
+                    $join->on('plan.route_plan_id', '=', 'l.route_plan_id')
+                        ->on('plan.hq_id', '=', 'l.hq_id');
+                })
+                ->where(['l.hq_id' => $actor->hqId, 'l.route_plan_leg_id' => $p->active_route_plan_leg_id])
+                ->whereIn('l.status', ['OUTBOUND_CONFIRMED', 'IN_TRANSIT'])
+                ->lockForUpdate()
+                ->first(['l.*', 'plan.route_definition_version_id']);
+            if ($leg === null) {
+                throw new ApiException(ApiErrorCode::RouteLegNotReady, 422, 'The Route Leg is not ready for departure.');
+            }
+            $route = [
+                'route_plan_id' => (string) $leg->route_plan_id,
+                'route_definition_version_id' => (string) $leg->route_definition_version_id,
+                'route_plan_leg_id' => (string) $leg->route_plan_leg_id,
+                'route_definition_version_leg_id' => (string) $leg->source_route_definition_version_leg_id,
+            ];
+            $activeRoutePlanId = $route['route_plan_id'];
+            $activeRouteLegId = $route['route_plan_leg_id'];
+            if ((string) $leg->status === 'OUTBOUND_CONFIRMED') {
+                DB::table('route_plan_legs')->where([
+                    'hq_id' => $actor->hqId,
+                    'route_plan_leg_id' => $leg->route_plan_leg_id,
+                ])->update(['status' => 'IN_TRANSIT', 'updated_at' => now()]);
+            }
+        }
+        if (in_array($target, ['IR', 'CI'], true) && $p->current_status === 'OS') {
+            $source = DB::table('manifest_parcels')->where([
+                'hq_id' => $actor->hqId,
+                'manifest_id' => $m->source_manifest_id,
+                'parcel_id' => $p->parcel_id,
+                'manifest_parcel_status' => 'SUCCEEDED',
+            ])->first();
+            if ($source === null) {
+                throw new ApiException(ApiErrorCode::RouteLegUnavailable, 422, 'The source movement evidence is unavailable.');
+            }
+            $route = [
+                'route_plan_id' => $source->route_plan_id,
+                'route_definition_version_id' => $source->route_definition_version_id,
+                'route_plan_leg_id' => $source->route_plan_leg_id,
+                'route_definition_version_leg_id' => $source->route_definition_version_leg_id,
+            ];
+            $currentLeg = DB::table('route_plan_legs')->where([
+                'hq_id' => $actor->hqId,
+                'route_plan_leg_id' => $source->route_plan_leg_id,
+                'route_plan_id' => $source->route_plan_id,
+            ])->lockForUpdate()->first();
+            if ($currentLeg === null) {
+                throw new ApiException(ApiErrorCode::RouteLegNotReady, 422, 'The source Route Leg is unavailable.');
+            }
+            DB::table('route_plan_legs')->where([
+                'hq_id' => $actor->hqId,
+                'route_plan_leg_id' => $source->route_plan_leg_id,
+            ])->update(['status' => 'RECEIVED', 'received_at' => now(), 'updated_at' => now()]);
+            $next = DB::table('route_plan_legs')->where([
+                'hq_id' => $actor->hqId,
+                'route_plan_id' => $source->route_plan_id,
+                'leg_order' => (int) $currentLeg->leg_order + 1,
+                'origin_node_id' => $node,
+            ])->first();
+            if ($target === 'CI') {
+                if ($next === null) {
+                    throw new ApiException(ApiErrorCode::RouteLegUnavailable, 422, 'No following published Route Leg is available.');
+                }
+                $activeRoutePlanId = $source->route_plan_id;
+                $activeRouteLegId = $next->route_plan_leg_id;
+            } else {
+                $activeRoutePlanId = $source->route_plan_id;
+                $activeRouteLegId = null;
+                $hasUnreceivedLeg = DB::table('route_plan_legs')->where([
+                    'hq_id' => $actor->hqId,
+                    'route_plan_id' => $source->route_plan_id,
+                ])->whereNot('status', 'RECEIVED')->exists();
+                if (! $hasUnreceivedLeg) {
+                    DB::table('route_plans')->where([
+                        'hq_id' => $actor->hqId,
+                        'route_plan_id' => $source->route_plan_id,
+                    ])->update(['status' => 'COMPLETED', 'active_slot' => null, 'updated_at' => now()]);
+                }
+            }
+        }
+        if ($target === 'OF') {
+            DB::table('route_plan_legs')->where([
+                'hq_id' => $actor->hqId,
+                'route_plan_leg_id' => $m->route_plan_leg_id,
+            ])->whereIn('status', ['PENDING', 'ROUTED'])->update([
+                'status' => 'OUTBOUND_CONFIRMED',
+                'routed_at' => DB::raw('COALESCE(routed_at, CURRENT_TIMESTAMP(6))'),
+                'updated_at' => now(),
+            ]);
+            $activeRoutePlanId = $m->route_plan_id;
+            $activeRouteLegId = $m->route_plan_leg_id;
+        }
+
+        $custody = match ($target) {
+            'PD', 'PU', 'NPU' => 'PICKUP_DRIVER',
+            'OS' => 'LINEHAUL_DRIVER',
+            'OD', 'NOK' => 'DELIVERY_DRIVER',
+            'OK' => 'RECIPIENT',
+            default => 'NODE',
+        };
+        $custodian = match ($custody) {
+            'PICKUP_DRIVER', 'LINEHAUL_DRIVER', 'DELIVERY_DRIVER' => $m->assigned_driver_id,
+            'NODE' => $node,
+            default => null,
+        };
+        $nextNode = in_array($custody, ['PICKUP_DRIVER', 'LINEHAUL_DRIVER', 'DELIVERY_DRIVER', 'RECIPIENT'], true) ? null : $node;
+        DB::table('parcels')->where([
+            'hq_id' => $actor->hqId,
+            'parcel_id' => $p->parcel_id,
+        ])->update([
+            'current_status' => $target,
+            'current_node_id' => $nextNode,
+            'current_custody_type' => $custody,
+            'current_custodian_id' => $custodian,
+            'active_route_plan_id' => $activeRoutePlanId,
+            'active_route_plan_leg_id' => $activeRouteLegId,
+            'version' => (int) $p->version + 1,
+            'updated_at' => now(),
+        ]);
+        if ($target === 'PD') $this->pickupAssigned($actor, $node, $p, $m);
+        if ($target === 'PU') $this->pickupCompleted($p);
+        if ($target === 'NPU') $this->pickupFailed($p);
+        if ($target === 'IR' && $p->current_status === 'PU') {
+            $this->pickupReceived($p);
+            if (DB::table('consignments')->where([
+                'hq_id' => $actor->hqId,
+                'consignment_id' => $p->consignment_id,
+                'delivery_node_id' => $node,
+            ])->exists()) {
+                $this->deliveryTasks->ensurePending($actor, $node, (string) $p->consignment_id);
+            }
+        }
+        if ($target === 'OD') {
+            $this->deliveryTasks->ensurePending($actor, $node, (string) $p->consignment_id);
+            $this->deliveryTasks->activateFromManifest($actor, $node, (string) $p->consignment_id, (string) $m->assigned_driver_id, (string) $m->manifest_id);
+        }
+        if ($target === 'OK') $this->deliveryCompleted($actor, $p);
+        if ($target === 'NOK') $this->deliveryFailed($actor, $p);
         return['origin_node_id'=>$m->origin_node_id??$p->current_node_id,'destination_node_id'=>$m->destination_node_id??$nextNode,...$route,'assigned_driver_id'=>$m->assigned_driver_id,'assigned_vehicle_id'=>$m->assigned_vehicle_id];
     }
 
@@ -132,7 +281,6 @@ final readonly class ManifestOrchestrationService
 
     /** @param array<string,mixed> $e */
     private function recordTransition(AuthenticatedPrincipal $actor,string $node,object $m,object $p,array $e):void{$this->statusEvent($actor,$node,(string)$p->consignment_id,(string)$p->parcel_id,(string)$p->current_status,(string)$m->manifest_status,(string)$m->manifest_id);$toCustody=match((string)$m->manifest_status){'PD','PU','NPU'=>'PICKUP_DRIVER','OS'=>'LINEHAUL_DRIVER','OD','NOK'=>'DELIVERY_DRIVER','OK'=>'RECIPIENT',default=>'NODE'};$toCustodian=match($toCustody){'PICKUP_DRIVER','LINEHAUL_DRIVER','DELIVERY_DRIVER'=>$m->assigned_driver_id,'NODE'=>$node,default=>null};$toNode=$toCustody==='NODE'?$node:null;DB::table('parcel_custody_events')->insert(['custody_event_id'=>(string)Str::uuid(),'hq_id'=>$actor->hqId,'event_sequence'=>$this->nextSequence('parcel_custody_events',(string)$p->consignment_id),'consignment_id'=>$p->consignment_id,'parcel_id'=>$p->parcel_id,'from_node_id'=>$p->current_node_id,'to_node_id'=>$toNode,'from_custody_type'=>$p->current_custody_type,'to_custody_type'=>$toCustody,'from_custodian_id'=>$p->current_custodian_id,'to_custodian_id'=>$toCustodian,'command_name'=>'MANIFEST_'.(string)$m->manifest_status,'initiator_id'=>$actor->userId,'manifest_id'=>$m->manifest_id,'route_plan_id'=>$e['route_plan_id'],'route_plan_leg_id'=>$e['route_plan_leg_id'],'created_at'=>now()]);}
-    private function aggregate(AuthenticatedPrincipal $actor,string $node,object $m,string $consignment):void{$statuses=DB::table('parcels')->where(['hq_id'=>$actor->hqId,'consignment_id'=>$consignment])->distinct()->pluck('current_status');if($statuses->count()!==1)return;$old=DB::table('consignments')->where('consignment_id',$consignment)->value('current_status');if((string)$old===(string)$m->manifest_status)return;DB::table('consignments')->where('consignment_id',$consignment)->update(['current_status'=>$m->manifest_status,'updated_at'=>now()]);$this->statusEvent($actor,$node,$consignment,null,(string)$old,(string)$m->manifest_status,(string)$m->manifest_id);}
     private function pickupAssigned(AuthenticatedPrincipal $actor,string $node,object $p,object $m):void{$task=DB::table('pickup_tasks')->where(['hq_id'=>$actor->hqId,'consignment_id'=>$p->consignment_id])->lockForUpdate()->first();if($task===null){DB::table('pickup_tasks')->insert(['pickup_task_id'=>(string)Str::uuid(),'hq_id'=>$actor->hqId,'consignment_id'=>$p->consignment_id,'node_id'=>$node,'assigned_driver_id'=>$m->assigned_driver_id,'status'=>'ASSIGNED','version'=>1,'assigned_at'=>now(),'created_at'=>now(),'updated_at'=>now()]);}else DB::table('pickup_tasks')->where('pickup_task_id',$task->pickup_task_id)->update(['assigned_driver_id'=>$m->assigned_driver_id,'status'=>'ASSIGNED','version'=>(int)$task->version+1,'assigned_at'=>now(),'updated_at'=>now()]);DB::table('consignments')->where('consignment_id',$p->consignment_id)->update(['pickup_man_id'=>$m->assigned_driver_id]);DB::table('drivers')->where(['driver_id'=>$m->assigned_driver_id,'availability_status'=>'AVAILABLE'])->update(['availability_status'=>'ON_MISSION','updated_at'=>now()]);}
     private function pickupCompleted(object $p):void{DB::table('pickup_tasks')->where('consignment_id',$p->consignment_id)->whereIn('status',['ASSIGNED','IN_PROGRESS'])->update(['status'=>'COMPLETED','completed_at'=>now(),'version'=>DB::raw('version + 1'),'updated_at'=>now()]);}
     private function pickupFailed(object $p):void{DB::table('pickup_tasks')->where('consignment_id',$p->consignment_id)->update(['status'=>'FAILED','failed_at'=>now(),'version'=>DB::raw('version + 1'),'updated_at'=>now()]);}

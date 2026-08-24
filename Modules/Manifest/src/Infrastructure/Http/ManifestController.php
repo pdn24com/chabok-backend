@@ -24,7 +24,7 @@ final readonly class ManifestController
             'page_size' => ['sometimes', 'integer', 'min:1', 'max:100'],
             'search' => ['sometimes', 'nullable', 'string', 'max:160'],
             'state' => ['sometimes', 'nullable', 'in:DRAFT,OPEN,CLOSED'],
-            'manifest_status' => ['sometimes', 'nullable', 'in:PD,PU,NPU,IR,ROU,OF,OS,OD,OK,NOK'],
+            'manifest_status' => ['sometimes', 'nullable', 'in:PD,PU,NPU,IR,ROU,OF,OS,CI,OD,OK,NOK'],
         ]);
 
         return ApiResponder::paginated(
@@ -39,7 +39,7 @@ final readonly class ManifestController
         StrictPayload::assertOnly($request, ['expected_version', 'manifest_status', 'context_key', 'assigned_driver_id', 'assigned_vehicle_id']);
         $input = $request->validate([
             'expected_version' => ['required', 'integer', 'in:0'],
-            'manifest_status' => ['required', 'in:PD,PU,NPU,IR,ROU,OF,OS,OD,OK,NOK'],
+            'manifest_status' => ['required', 'in:PD,PU,NPU,IR,ROU,OF,OS,CI,OD,OK,NOK'],
             'context_key' => ['required', 'string', 'min:1', 'max:200'],
             'assigned_driver_id' => ['sometimes', 'nullable', 'uuid'],
             'assigned_vehicle_id' => ['sometimes', 'nullable', 'uuid'],
@@ -78,7 +78,7 @@ final readonly class ManifestController
         StrictPayload::assertOnly($request, ['expected_version', 'manifest_status', 'context_key', 'assigned_driver_id', 'assigned_vehicle_id']);
         $input = $request->validate([
             'expected_version' => ['required', 'integer', 'min:1'],
-            'manifest_status' => ['sometimes', 'in:PD,PU,NPU,IR,ROU,OF,OS,OD,OK,NOK'],
+            'manifest_status' => ['sometimes', 'in:PD,PU,NPU,IR,ROU,OF,OS,CI,OD,OK,NOK'],
             'context_key' => ['sometimes', 'string', 'min:1', 'max:200'],
             'assigned_driver_id' => ['sometimes', 'nullable', 'uuid'],
             'assigned_vehicle_id' => ['sometimes', 'nullable', 'uuid'],
