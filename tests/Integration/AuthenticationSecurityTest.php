@@ -36,11 +36,19 @@ final class AuthenticationSecurityTest extends MySqlRedisTestCase
         $login = $this->login('rotate-user');
 
         $login['response']->assertJsonMissing(['refresh_token'])
+            ->assertJsonPath('data.expires_in', 300)
             ->assertCookie((string) config('chabok.refresh_cookie.name'));
         $cookie = $login['response']->getCookie((string) config('chabok.refresh_cookie.name'), false);
         $this->assertTrue($cookie->isHttpOnly());
         $this->assertTrue($cookie->isSecure());
         $this->assertSame('lax', strtolower((string) $cookie->getSameSite()));
+        $this->assertSame('/api/v1/auth', $cookie->getPath());
+        $this->assertNull($cookie->getDomain());
+        $this->assertEqualsWithDelta(
+            time() + 2_592_000,
+            $cookie->getExpiresTime(),
+            5,
+        );
         $this->assertDatabaseHas('user_sessions', [
             'refresh_token_hash' => hash('sha256', $login['cookie']),
         ]);
@@ -68,6 +76,40 @@ final class AuthenticationSecurityTest extends MySqlRedisTestCase
         $this->assertStringNotContainsString($login['cookie'], (string) DB::table('audit_events')->value('safe_note'));
     }
 
+    public function test_three_refresh_rotations_keep_the_session_active_and_replace_access_tokens(): void
+    {
+        $tenant = $this->tenant();
+        $this->user($tenant['hq_id'], 'multi-cycle-user');
+        $login = $this->login('multi-cycle-user');
+        $cookieName = (string) config('chabok.refresh_cookie.name');
+        $cookie = $login['cookie'];
+        $accessToken = $login['token'];
+
+        for ($cycle = 1; $cycle <= 3; $cycle++) {
+            $response = $this->withCredentials()
+                ->withUnencryptedCookie($cookieName, $cookie)
+                ->withHeader('Origin', 'http://localhost:5173')
+                ->postJson('/api/v1/auth/refresh');
+
+            $response->assertOk()
+                ->assertJsonPath('data.expires_in', 300)
+                ->assertJsonMissing(['refresh_token']);
+            $nextAccessToken = (string) $response->json('data.access_token');
+            $nextCookie = (string) $response->getCookie($cookieName, false)->getValue();
+            $this->assertNotSame($accessToken, $nextAccessToken);
+            $this->assertNotSame($cookie, $nextCookie);
+            $accessToken = $nextAccessToken;
+            $cookie = $nextCookie;
+        }
+
+        $this->assertDatabaseHas('user_sessions', [
+            'session_id' => $login['response']->json('data.session_id'),
+            'rotation_counter' => 3,
+            'revoked_at' => null,
+        ]);
+        $this->withToken($accessToken)->getJson('/api/v1/me')->assertOk();
+    }
+
     public function test_logout_rejects_foreign_origin_and_valid_logout_clears_cookie_without_access_token(): void
     {
         $tenant = $this->tenant();
@@ -89,6 +131,16 @@ final class AuthenticationSecurityTest extends MySqlRedisTestCase
         $this->assertNotNull($cleared);
         $this->assertLessThan(time(), $cleared->getExpiresTime());
         $this->assertSame('/api/v1/auth', $cleared->getPath());
+
+        $this->withCredentials()->withUnencryptedCookie($name, $login['cookie'])
+            ->withHeader('Origin', 'http://localhost:5173')
+            ->postJson('/api/v1/auth/refresh')
+            ->assertStatus(401)
+            ->assertJsonPath('error_code', 'AUTHENTICATION_REQUIRED');
+        $this->assertDatabaseHas('user_sessions', [
+            'session_id' => $login['response']->json('data.session_id'),
+            'revoked_reason' => 'LOGOUT',
+        ]);
     }
 
     public function test_logout_all_accepts_valid_refresh_session_rejects_foreign_origin_and_clears_cookie(): void
