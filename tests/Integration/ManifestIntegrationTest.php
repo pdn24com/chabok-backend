@@ -422,13 +422,13 @@ final class ManifestIntegrationTest extends MySqlRedisTestCase
         ]);
     }
 
-    public function test_context_contract_exposes_all_ten_manifest_targets_without_raw_operational_ids(): void
+    public function test_context_contract_exposes_all_eleven_manifest_targets_with_related_nodes_and_without_raw_operational_ids(): void
     {
         [$tenant, $actor, $node, $principal] = $this->context('MAN-MATRIX', 'manifest-matrix');
         $options = $this->app->make(ManifestService::class)->contextOptions($principal, $node);
 
         $this->assertSame(
-            ['PD', 'PU', 'NPU', 'IR', 'ROU', 'OF', 'OS', 'OD', 'OK', 'NOK'],
+            ['PD', 'PU', 'NPU', 'IR', 'ROU', 'OF', 'OS', 'CI', 'OD', 'OK', 'NOK'],
             array_column($options['transition_contracts'], 'target_status'),
         );
         foreach ($options['contexts'] as $option) {
@@ -440,7 +440,78 @@ final class ManifestIntegrationTest extends MySqlRedisTestCase
                 ),
             );
             $this->assertSame(0, $option['selection']['expected_version']);
+            $this->assertNotEmpty($option['related_node']['node_title']);
+            $this->assertContains($option['related_node_role'], ['SOURCE', 'DESTINATION', 'COUNTERPARTY']);
         }
+    }
+
+    public function test_pickup_driver_is_reusable_across_partial_pd_manifests_and_aggregate_reaches_full(): void
+    {
+        [$tenant, $actor, $node, $principal] = $this->context('MAN-PD-REUSE', 'manifest-pd-reuse');
+        [$consignment, $firstParcel, $firstNumber] = $this->operationalConsignment(
+            $tenant['hq_id'], $actor['user_id'], $node, $node, 'CFM', $node,
+        );
+        $numbers = [$firstNumber];
+        foreach ([2, 3, 4] as $suffix) {
+            $parcelId = (string) Str::uuid();
+            $parcelNumber = substr($firstNumber, 0, -2).sprintf('%02d', $suffix);
+            DB::table('parcels')->insert([
+                'parcel_id' => $parcelId, 'hq_id' => $tenant['hq_id'],
+                'consignment_id' => $consignment, 'parcel_number' => $parcelNumber,
+                'current_status' => 'CFM', 'current_node_id' => $node,
+                'current_custody_type' => 'NODE', 'current_custodian_id' => $node,
+                'version' => 1, 'weight_kg' => 1, 'created_at' => now(), 'updated_at' => now(),
+            ]);
+            $numbers[] = $parcelNumber;
+        }
+        $driver = $this->driver($tenant['hq_id'], $node, 'PICKUP');
+        $service = $this->app->make(ManifestService::class);
+
+        $first = $service->create($principal, $node, [
+            'expected_version' => 0, 'manifest_status' => 'PD',
+            'context_key' => 'PD:'.$node, 'assigned_driver_id' => $driver,
+        ], (string) Str::uuid());
+        $added = $service->add($principal, $node, $first['manifest_id'], [
+            'expected_version' => 1, 'input_source' => 'SCAN',
+            'identifiers' => array_slice($numbers, 0, 3),
+        ], (string) Str::uuid());
+        $open = $service->validate($principal, $node, $first['manifest_id'], $added['detail']['version'], (string) Str::uuid());
+        $service->confirm($principal, $node, $first['manifest_id'], $open['version'], (string) Str::uuid());
+
+        $aggregate = DB::table('consignments')->where('consignment_id', $consignment)->first();
+        $this->assertSame('PD', $aggregate->current_status);
+        $this->assertSame('PARTIAL', $aggregate->aggregate_mode);
+        $partialCounts = json_decode((string) $aggregate->parcel_status_counts, true);
+        $this->assertSame(1, $partialCounts['CFM']);
+        $this->assertSame(3, $partialCounts['PD']);
+        $this->assertSame('ON_MISSION', DB::table('drivers')->where('driver_id', $driver)->value('availability_status'));
+
+        $pickupDrivers = collect($service->contextOptions($principal, $node)['drivers']);
+        $visibleDriver = $pickupDrivers->firstWhere('driver_id', $driver);
+        $this->assertNotNull($visibleDriver);
+        $this->assertSame('ON_MISSION', $visibleDriver['availability_status']);
+
+        $second = $this->closeSingleManifest($service, $principal, $node, [
+            'expected_version' => 0, 'manifest_status' => 'PD',
+            'context_key' => 'PD:'.$node, 'assigned_driver_id' => $driver,
+        ], $numbers[3]);
+        $this->assertSame('CLOSED', $second['state']);
+
+        $aggregate = DB::table('consignments')->where('consignment_id', $consignment)->first();
+        $this->assertSame('PD', $aggregate->current_status);
+        $this->assertSame('FULL', $aggregate->aggregate_mode);
+        $this->assertSame(['PD' => 4], json_decode((string) $aggregate->parcel_status_counts, true));
+        $this->assertSame('ON_MISSION', DB::table('drivers')->where('driver_id', $driver)->value('availability_status'));
+        $detail = $this->app->make(ConsignmentService::class)->get($principal, $node, $consignment);
+        $this->assertSame('FULL', $detail['aggregate']['mode']);
+        $this->assertSame(4, $detail['aggregate']['target_count']);
+        $this->assertDatabaseHas('consignment_status_events', [
+            'consignment_id' => $consignment,
+            'manifest_id' => $first['manifest_id'],
+            'new_status' => 'PD',
+            'aggregate_mode' => 'PARTIAL',
+        ]);
+        $this->assertNotNull($firstParcel);
     }
 
     public function test_transition_matrix_executes_all_ordinary_targets_and_reviewed_nok(): void
@@ -482,19 +553,17 @@ final class ManifestIntegrationTest extends MySqlRedisTestCase
         ], $number);
         $this->assertSame('ROU', DB::table('parcels')->where('parcel_id', $parcel)->value('current_status'));
 
-        $this->closeSingleManifest($service, $principal, $origin, [
+        $of = $this->closeSingleManifest($service, $principal, $origin, [
             'expected_version' => 0, 'manifest_status' => 'OF',
             'context_key' => 'OF:'.$leg,
         ], $number);
         $this->assertSame('OF', DB::table('parcels')->where('parcel_id', $parcel)->value('current_status'));
 
-        $versionLeg = (string) DB::table('route_plan_legs')->where('route_plan_leg_id', $leg)
-            ->value('source_route_definition_version_leg_id');
         $linehaulDriver = $this->driver($tenant['hq_id'], $origin, 'LINEHAUL');
         $vehicle = $this->vehicle($tenant['hq_id'], $origin);
         $os = $this->closeSingleManifest($service, $principal, $origin, [
             'expected_version' => 0, 'manifest_status' => 'OS',
-            'context_key' => 'OS:'.$versionLeg.'|'.$destination,
+            'context_key' => 'OS:OF:'.$of['manifest_id'],
             'assigned_driver_id' => $linehaulDriver, 'assigned_vehicle_id' => $vehicle,
         ], $number);
         $this->assertSame('OS', DB::table('parcels')->where('parcel_id', $parcel)->value('current_status'));
@@ -563,6 +632,75 @@ final class ManifestIntegrationTest extends MySqlRedisTestCase
             $pending['current_exception']['version'], null, (string) Str::uuid(),
         );
         $this->assertSame('NOK', DB::table('parcels')->where('parcel_id', $nokParcel)->value('current_status'));
+    }
+
+    public function test_intermediate_os_to_ci_to_of_and_final_os_to_ir_follow_ordered_route_evidence(): void
+    {
+        [$tenant, $actor, $origin, $principal] = $this->context('MAN-CI', 'manifest-ci');
+        $intermediate = $this->node($tenant['hq_id'], 'MAN-CI-MID');
+        $destination = $this->node($tenant['hq_id'], 'MAN-CI-FINAL');
+        [$consignment, $parcel, $number] = $this->operationalConsignment(
+            $tenant['hq_id'], $actor['user_id'], $origin, $destination, 'ROU', $origin,
+        );
+        [$plan, $firstLeg, $secondLeg] = $this->routedTwoLegPlan(
+            $tenant['hq_id'], $actor['user_id'], $consignment, $origin, $intermediate, $destination,
+        );
+        DB::table('parcels')->where('parcel_id', $parcel)->update([
+            'active_route_plan_id' => $plan,
+            'active_route_plan_leg_id' => $firstLeg,
+        ]);
+        $service = $this->app->make(ManifestService::class);
+
+        $firstOf = $this->closeSingleManifest($service, $principal, $origin, [
+            'expected_version' => 0, 'manifest_status' => 'OF',
+            'context_key' => 'OF:'.$firstLeg,
+        ], $number);
+        $firstDriver = $this->driver($tenant['hq_id'], $origin, 'LINEHAUL');
+        $firstVehicle = $this->vehicle($tenant['hq_id'], $origin);
+        $firstOs = $this->closeSingleManifest($service, $principal, $origin, [
+            'expected_version' => 0, 'manifest_status' => 'OS',
+            'context_key' => 'OS:OF:'.$firstOf['manifest_id'],
+            'assigned_driver_id' => $firstDriver,
+            'assigned_vehicle_id' => $firstVehicle,
+        ], $number);
+
+        $midOptions = $service->contextOptions($principal, $intermediate);
+        $ciOption = collect($midOptions['contexts'])->firstWhere('context_key', 'CI:OS:'.$firstOs['manifest_id']);
+        $this->assertNotNull($ciOption);
+        $this->assertSame($origin, $ciOption['related_node']['node_id']);
+        $this->assertSame('SOURCE', $ciOption['related_node_role']);
+        $this->assertNull(collect($midOptions['contexts'])->firstWhere('context_key', 'IR:OS:'.$firstOs['manifest_id']));
+        $ci = $this->closeSingleManifest($service, $principal, $intermediate, $ciOption['selection'], $number);
+        $this->assertSame('CI', DB::table('parcels')->where('parcel_id', $parcel)->value('current_status'));
+        $this->assertSame($intermediate, DB::table('parcels')->where('parcel_id', $parcel)->value('current_node_id'));
+        $this->assertSame($secondLeg, DB::table('parcels')->where('parcel_id', $parcel)->value('active_route_plan_leg_id'));
+        $this->assertSame('RECEIVED', DB::table('route_plan_legs')->where('route_plan_leg_id', $firstLeg)->value('status'));
+        $this->assertSame('TRANSIT_UNLOAD', $ci['manifest_type']);
+
+        $secondOfOptions = $service->contextOptions($principal, $intermediate);
+        $secondOfOption = collect($secondOfOptions['contexts'])->firstWhere('context_key', 'OF:'.$secondLeg);
+        $this->assertNotNull($secondOfOption);
+        $this->assertSame($destination, $secondOfOption['related_node']['node_id']);
+        $secondOf = $this->closeSingleManifest($service, $principal, $intermediate, $secondOfOption['selection'], $number);
+        $secondDriver = $this->driver($tenant['hq_id'], $intermediate, 'LINEHAUL');
+        $secondVehicle = $this->vehicle($tenant['hq_id'], $intermediate);
+        $secondOs = $this->closeSingleManifest($service, $principal, $intermediate, [
+            'expected_version' => 0, 'manifest_status' => 'OS',
+            'context_key' => 'OS:OF:'.$secondOf['manifest_id'],
+            'assigned_driver_id' => $secondDriver,
+            'assigned_vehicle_id' => $secondVehicle,
+        ], $number);
+
+        $finalOptions = $service->contextOptions($principal, $destination);
+        $irOption = collect($finalOptions['contexts'])->firstWhere('context_key', 'IR:OS:'.$secondOs['manifest_id']);
+        $this->assertNotNull($irOption);
+        $this->assertSame($intermediate, $irOption['related_node']['node_id']);
+        $this->assertNull(collect($finalOptions['contexts'])->firstWhere('context_key', 'CI:OS:'.$secondOs['manifest_id']));
+        $this->closeSingleManifest($service, $principal, $destination, $irOption['selection'], $number);
+        $this->assertSame('IR', DB::table('parcels')->where('parcel_id', $parcel)->value('current_status'));
+        $this->assertSame('COMPLETED', DB::table('route_plans')->where('route_plan_id', $plan)->value('status'));
+        $this->assertSame(['RECEIVED', 'RECEIVED'], DB::table('route_plan_legs')
+            ->whereIn('route_plan_leg_id', [$firstLeg, $secondLeg])->orderBy('leg_order')->pluck('status')->all());
     }
 
     public function test_npu_exception_submit_self_review_reject_resubmit_and_approve_is_fail_closed(): void
@@ -664,10 +802,13 @@ final class ManifestIntegrationTest extends MySqlRedisTestCase
         DB::table('parcels')->where('parcel_id', $incompatibleParcel)->update([
             'active_route_plan_id' => $incompatiblePlan, 'active_route_plan_leg_id' => $incompatibleLeg,
         ]);
+        $sourceOutboundManifest = $this->closedOutboundEvidence(
+            $tenant['hq_id'], $actor['user_id'], $origin, $destination, [$first, $second],
+        );
         $driver = $this->driver($tenant['hq_id'], $origin, 'LINEHAUL');
         $vehicle = $this->vehicle($tenant['hq_id'], $origin);
         $service = $this->app->make(ManifestService::class);
-        $key = "OS:{$physicalLeg}|{$destination}";
+        $key = 'OS:OF:'.$sourceOutboundManifest;
         $manifest = $service->create($principal, $origin, [
             'expected_version' => 0, 'manifest_status' => 'OS', 'context_key' => $key,
             'assigned_driver_id' => $driver, 'assigned_vehicle_id' => $vehicle,
@@ -683,7 +824,7 @@ final class ManifestIntegrationTest extends MySqlRedisTestCase
         $this->assertDatabaseHas('manifest_parcels', [
             'manifest_id' => $manifest['manifest_id'], 'parcel_id' => $incompatibleParcel,
             'manifest_parcel_status' => 'FAILED',
-            'failure_code' => ManifestEligibilityReason::RouteLegNotReady,
+            'failure_code' => ManifestEligibilityReason::PreviousMovementMismatch,
         ]);
         $this->assertSame(2, DB::table('manifest_parcels')->where('manifest_id', $manifest['manifest_id'])->distinct()->count('route_plan_leg_id'));
         $this->assertSame(['IN_TRANSIT'], DB::table('route_plan_legs')->whereIn('route_plan_leg_id', [$first['leg'], $second['leg']])->distinct()->pluck('status')->all());
@@ -824,6 +965,72 @@ final class ManifestIntegrationTest extends MySqlRedisTestCase
             ]);
         }
         $this->app->make(AuthorizationService::class)->invalidateUser($userId);
+    }
+
+    /** @param list<array<string,string>> $items */
+    private function closedOutboundEvidence(
+        string $hq,
+        string $actor,
+        string $origin,
+        string $destination,
+        array $items,
+    ): string {
+        $manifestId = (string) Str::uuid();
+        $firstLeg = DB::table('route_plan_legs as leg')
+            ->join('route_plans as plan', 'plan.route_plan_id', '=', 'leg.route_plan_id')
+            ->where('leg.route_plan_leg_id', $items[0]['leg'])
+            ->first(['leg.source_route_definition_version_leg_id', 'plan.route_definition_version_id']);
+        DB::table('manifests')->insert([
+            'manifest_id' => $manifestId,
+            'hq_id' => $hq,
+            'manifest_number' => 'MNF-TEST-'.Str::upper(Str::random(10)),
+            'node_id' => $origin,
+            'origin_node_id' => $origin,
+            'destination_node_id' => $destination,
+            'manifest_status' => 'OF',
+            'manifest_type' => 'OUTBOUND_TRANSFER',
+            'operational_context_type' => 'OUTBOUND_CONFIRMATION',
+            'context_key' => 'OF:PHYSICAL:'.$manifestId,
+            'route_definition_version_id' => $firstLeg->route_definition_version_id,
+            'route_definition_version_leg_id' => $firstLeg->source_route_definition_version_leg_id,
+            'state' => 'CLOSED',
+            'version' => 1,
+            'created_by' => $actor,
+            'approved_by' => $actor,
+            'closed_at' => now(),
+            'operation_recorded_at' => now(),
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        foreach ($items as $item) {
+            $leg = DB::table('route_plan_legs as leg')
+                ->join('route_plans as plan', 'plan.route_plan_id', '=', 'leg.route_plan_id')
+                ->where('leg.route_plan_leg_id', $item['leg'])
+                ->first(['leg.*', 'plan.route_definition_version_id']);
+            DB::table('manifest_parcels')->insert([
+                'manifest_parcel_id' => (string) Str::uuid(),
+                'hq_id' => $hq,
+                'manifest_id' => $manifestId,
+                'parcel_id' => $item['parcel'],
+                'source_status' => 'ROU',
+                'origin_node_id' => $origin,
+                'destination_node_id' => $destination,
+                'route_plan_id' => $item['plan'],
+                'route_definition_version_id' => $leg->route_definition_version_id,
+                'route_plan_leg_id' => $item['leg'],
+                'route_definition_version_leg_id' => $leg->source_route_definition_version_leg_id,
+                'manifest_parcel_status' => 'SUCCEEDED',
+                'input_source' => 'SCAN',
+                'input_value' => $item['number'],
+                'created_by' => $actor,
+                'processed_at' => now(),
+                'evidence_recorded_at' => now(),
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+        }
+
+        return $manifestId;
     }
 
     /** @return array{array<string,string>,array<string,string>,string} */
@@ -969,6 +1176,72 @@ final class ManifestIntegrationTest extends MySqlRedisTestCase
         ]);
 
         return [$plan, $planLeg];
+    }
+
+    /** @return array{string,string,string} */
+    private function routedTwoLegPlan(
+        string $hq,
+        string $actor,
+        string $consignment,
+        string $origin,
+        string $intermediate,
+        string $destination,
+    ): array {
+        $definition = (string) Str::uuid();
+        $definitionVersion = (string) Str::uuid();
+        $plan = (string) Str::uuid();
+        $definitionLegs = [(string) Str::uuid(), (string) Str::uuid()];
+        $versionLegs = [(string) Str::uuid(), (string) Str::uuid()];
+        $planLegs = [(string) Str::uuid(), (string) Str::uuid()];
+        DB::table('route_definitions')->insert([
+            'route_definition_id' => $definition, 'hq_id' => $hq,
+            'route_code' => 'RTE-'.Str::upper(Str::random(6)), 'route_title' => 'Two-leg configured route',
+            'status' => 'ACTIVE', 'version' => 1, 'created_at' => now(), 'updated_at' => now(),
+        ]);
+        DB::table('route_definition_versions')->insert([
+            'route_definition_version_id' => $definitionVersion, 'hq_id' => $hq,
+            'route_definition_id' => $definition, 'version_number' => 1, 'status' => 'PUBLISHED',
+            'purpose' => 'TRUNK', 'origin_node_id' => $origin, 'destination_node_id' => $destination,
+            'priority' => 1, 'version' => 1, 'created_by' => $actor,
+            'published_by' => $actor, 'published_at' => now(), 'created_at' => now(), 'updated_at' => now(),
+        ]);
+        foreach ([[1, $origin, $intermediate], [2, $intermediate, $destination]] as [$order, $from, $to]) {
+            $index = $order - 1;
+            DB::table('route_definition_legs')->insert([
+                'route_definition_leg_id' => $definitionLegs[$index], 'hq_id' => $hq,
+                'route_definition_id' => $definition, 'leg_order' => $order,
+                'origin_node_id' => $from, 'destination_node_id' => $to,
+                'status' => 'ACTIVE', 'created_at' => now(), 'updated_at' => now(),
+            ]);
+            DB::table('route_definition_version_legs')->insert([
+                'route_definition_version_leg_id' => $versionLegs[$index], 'hq_id' => $hq,
+                'route_definition_version_id' => $definitionVersion, 'leg_order' => $order,
+                'origin_node_id' => $from, 'destination_node_id' => $to,
+                'created_at' => now(), 'updated_at' => now(),
+            ]);
+        }
+        DB::table('route_definitions')->where('route_definition_id', $definition)
+            ->update(['published_version_id' => $definitionVersion]);
+        DB::table('route_plans')->insert([
+            'route_plan_id' => $plan, 'hq_id' => $hq, 'consignment_id' => $consignment,
+            'route_definition_id' => $definition, 'route_definition_version_id' => $definitionVersion,
+            'status' => 'IN_PROGRESS', 'active_slot' => hash('sha256', $hq.'|'.$consignment.'|ACTIVE'),
+            'version' => 1, 'created_by' => $actor, 'created_at' => now(), 'updated_at' => now(),
+        ]);
+        foreach ([[1, $origin, $intermediate], [2, $intermediate, $destination]] as [$order, $from, $to]) {
+            $index = $order - 1;
+            DB::table('route_plan_legs')->insert([
+                'route_plan_leg_id' => $planLegs[$index], 'hq_id' => $hq,
+                'route_plan_id' => $plan, 'source_route_definition_leg_id' => $definitionLegs[$index],
+                'source_route_definition_version_leg_id' => $versionLegs[$index],
+                'leg_order' => $order, 'origin_node_id' => $from, 'destination_node_id' => $to,
+                'status' => $order === 1 ? 'ROUTED' : 'PENDING',
+                'routed_at' => $order === 1 ? now() : null,
+                'created_at' => now(), 'updated_at' => now(),
+            ]);
+        }
+
+        return [$plan, $planLegs[0], $planLegs[1]];
     }
 
     /** @return array{string,string,string} */
