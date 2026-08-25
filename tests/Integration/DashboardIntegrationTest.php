@@ -103,6 +103,13 @@ final class DashboardIntegrationTest extends MySqlRedisTestCase
             $draft['manifest_id'],
             now()->subMinute(),
         );
+        $this->grantPermissionToUserRole($actor['user_id'], 'fleet.driver.view');
+        $this->driver($tenant['hq_id'], $node, 'DASH-A-AVAILABLE', 'AVAILABLE');
+        $this->driver($tenant['hq_id'], $node, 'DASH-A-MISSION', 'ON_MISSION');
+        $this->driver($tenant['hq_id'], $node, 'DASH-A-MAINTENANCE', 'MAINTENANCE');
+        $this->driver($tenant['hq_id'], $node, 'DASH-A-INACTIVE', 'AVAILABLE', 'INACTIVE');
+        $this->driver($tenant['hq_id'], $otherNode, 'DASH-A-OTHER-NODE', 'AVAILABLE');
+        $this->driver($foreignTenant['hq_id'], $foreignNode, 'DASH-B-FOREIGN', 'AVAILABLE');
 
         $login = $this->login('dashboard-a');
         $response = $this->withToken($login['token'])
@@ -129,6 +136,12 @@ final class DashboardIntegrationTest extends MySqlRedisTestCase
             ->assertJsonPath('data.metrics.2.reason_code', 'DATA_NOT_PERSISTED')
             ->assertJsonPath('data.metrics.4.value', null)
             ->assertJsonPath('data.metrics.4.reason_code', 'MODULE_NOT_IMPLEMENTED')
+            ->assertJsonPath('data.metrics.7.key', 'ACTIVE_DRIVERS')
+            ->assertJsonPath('data.metrics.7.value', 3)
+            ->assertJsonPath('data.drivers.status', 'AVAILABLE')
+            ->assertJsonPath('data.drivers.total', 3)
+            ->assertJsonPath('data.drivers.status_counts.AVAILABLE', 1)
+            ->assertJsonPath('data.drivers.status_counts.ON_MISSION', 1)
             ->assertJsonPath('data.filters.0.status', 'UNAVAILABLE')
             ->assertJsonPath(
                 'data.filters.0.reason_code',
@@ -137,7 +150,9 @@ final class DashboardIntegrationTest extends MySqlRedisTestCase
             ->assertJsonCount(2, 'data.attention.items')
             ->assertJsonCount(2, 'data.latest_updates.items')
             ->assertJsonPath('data.shortcuts.0.navigation_target', '/consignments')
-            ->assertJsonPath('data.shortcuts.4.navigation_target', null);
+            ->assertJsonPath('data.shortcuts.4.navigation_target', null)
+            ->assertJsonPath('data.shortcuts.5.status', 'AVAILABLE')
+            ->assertJsonPath('data.shortcuts.5.navigation_target', '/app/administration/fleet/drivers');
 
         $serialized = json_encode($response->json(), JSON_THROW_ON_ERROR);
         $this->assertStringNotContainsString('before-secret', $serialized);
@@ -217,10 +232,29 @@ final class DashboardIntegrationTest extends MySqlRedisTestCase
             ->assertJsonPath('data.attention.status', 'PARTIAL')
             ->assertJsonPath('data.latest_updates.status', 'PARTIAL');
 
+        DB::table('tenant_module_entitlements')->where([
+            'hq_id' => $tenant['hq_id'],
+            'module_code' => 'Driver',
+        ])->update(['status' => 'DISABLED']);
+        $this->app->make(AuthorizationService::class)->invalidateUser($actor['user_id']);
+        $driverEntitlementLogin = $this->login('dashboard-auth');
+        $this->withToken($driverEntitlementLogin['token'])
+            ->withHeader('X-Node-Id', $node)
+            ->getJson('/api/v1/dashboard/operations')
+            ->assertOk()
+            ->assertJsonPath('data.drivers.status', 'UNAVAILABLE')
+            ->assertJsonPath('data.drivers.reason_code', 'ENTITLEMENT_DISABLED')
+            ->assertJsonPath('data.drivers.total', null)
+            ->assertJsonPath('data.shortcuts.5.navigation_target', null);
+
         $this->assignDashboardOnlyRole($tenant['hq_id'], $actor['user_id']);
         DB::table('tenant_module_entitlements')->where([
             'hq_id' => $tenant['hq_id'],
             'module_code' => 'Manifest',
+        ])->update(['status' => 'ENABLED']);
+        DB::table('tenant_module_entitlements')->where([
+            'hq_id' => $tenant['hq_id'],
+            'module_code' => 'Driver',
         ])->update(['status' => 'ENABLED']);
         $this->app->make(AuthorizationService::class)->invalidateUser($actor['user_id']);
 
@@ -234,7 +268,10 @@ final class DashboardIntegrationTest extends MySqlRedisTestCase
             ->assertJsonPath('data.manifests.reason_code', 'PERMISSION_DENIED')
             ->assertJsonPath('data.manifests.total', null)
             ->assertJsonPath('data.attention.status', 'UNAVAILABLE')
-            ->assertJsonPath('data.latest_updates.status', 'UNAVAILABLE');
+            ->assertJsonPath('data.latest_updates.status', 'UNAVAILABLE')
+            ->assertJsonPath('data.drivers.reason_code', 'PERMISSION_DENIED')
+            ->assertJsonPath('data.drivers.total', null)
+            ->assertJsonPath('data.shortcuts.5.navigation_target', null);
     }
 
     public function test_selected_node_scope_is_required_and_enforced(): void
@@ -437,6 +474,9 @@ final class DashboardIntegrationTest extends MySqlRedisTestCase
             'manifest_number' => $number,
             'node_id' => $nodeId,
             'manifest_status' => 'IR',
+            'manifest_type' => 'INBOUND_RECEPTION',
+            'operational_context_type' => 'PICKUP_RECEPTION',
+            'context_key' => "IR:PICKUP:{$nodeId}:{$id}",
             'assigned_driver_id' => null,
             'state' => $state,
             'version' => 1,
@@ -498,6 +538,47 @@ final class DashboardIntegrationTest extends MySqlRedisTestCase
             'source_client' => 'BRANCH_PANEL',
             'correlation_id' => (string) Str::uuid(),
             'created_at' => $at,
+        ]);
+    }
+
+    private function driver(
+        string $hqId,
+        string $nodeId,
+        string $code,
+        string $availability,
+        string $status = 'ACTIVE',
+    ): void {
+        DB::table('drivers')->insert([
+            'driver_id' => (string) Str::uuid(),
+            'hq_id' => $hqId,
+            'user_id' => null,
+            'driver_code' => $code,
+            'display_name' => "Driver {$code}",
+            'mobile' => null,
+            'home_node_id' => $nodeId,
+            'operational_type' => 'MULTI',
+            'status' => $status,
+            'availability_status' => $availability,
+            'version' => 1,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+    }
+
+    private function grantPermissionToUserRole(string $userId, string $permissionCode): void
+    {
+        $roleId = (string) DB::table('user_role_assignments')
+            ->where('user_id', $userId)
+            ->value('role_id');
+        $permissionId = (string) DB::table('permissions')
+            ->where('permission_code', $permissionCode)
+            ->value('permission_id');
+        DB::table('role_permissions')->insert([
+            'role_permission_id' => (string) Str::uuid(),
+            'role_id' => $roleId,
+            'permission_id' => $permissionId,
+            'created_by' => $userId,
+            'created_at' => now(),
         ]);
     }
 
