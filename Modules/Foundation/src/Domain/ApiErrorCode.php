@@ -23,6 +23,13 @@ enum ApiErrorCode: string
     case VersionConflict = 'VERSION_CONFLICT';
     case IdempotencyKeyReused = 'IDEMPOTENCY_KEY_REUSED';
     case ConsignmentNotEditable = 'CONSIGNMENT_NOT_EDITABLE';
+    case ConsignmentNumberInvalidFormat = 'CONSIGNMENT_NUMBER_INVALID_FORMAT';
+    case ConsignmentNumberInvalidLength = 'CONSIGNMENT_NUMBER_INVALID_LENGTH';
+    case ConsignmentNumberPrefixLengthIncompatible = 'CONSIGNMENT_NUMBER_PREFIX_LENGTH_INCOMPATIBLE';
+    case ConsignmentNumberInvalidBoundaries = 'CONSIGNMENT_NUMBER_INVALID_BOUNDARIES';
+    case ConsignmentNumberRangeOverlap = 'CONSIGNMENT_NUMBER_RANGE_OVERLAP';
+    case ConsignmentNumberRangeUnavailable = 'CONSIGNMENT_NUMBER_RANGE_UNAVAILABLE';
+    case ConsignmentNumberRangeExhausted = 'CONSIGNMENT_NUMBER_RANGE_EXHAUSTED';
     case ManifestNotEditable = 'MANIFEST_NOT_EDITABLE';
     case ManifestNoSuccessfulParcels = 'MANIFEST_NO_SUCCESSFUL_PARCELS';
     case ManifestVersionConflict = 'MANIFEST_VERSION_CONFLICT';

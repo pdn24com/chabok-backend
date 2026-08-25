@@ -170,7 +170,8 @@ final readonly class ConsignmentService
             $correlationId,
         ): string {
             $id = (string) Str::uuid();
-            $number = $this->numbers->next();
+            $allocation = $this->numbers->next((string) $actor->hqId);
+            $number = $allocation['consignment_number'];
             $now = now();
             $parcels = (array) $input['parcels'];
             DB::table('consignments')->insert([
@@ -190,6 +191,7 @@ final readonly class ConsignmentService
                 'created_at' => $now,
                 'updated_at' => $now,
             ]);
+            $this->numbers->record((string) $actor->hqId, $allocation['range_id'], $id, $number, $actor->userId, $correlationId);
             foreach (array_values($parcels) as $index => $parcelInput) {
                 $parcelId = (string) Str::uuid();
                 DB::table('parcels')->insert([
