@@ -9,16 +9,19 @@ use Illuminate\Support\Facades\Redis;
 use Illuminate\Support\Str;
 use Modules\Authorization\Infrastructure\Database\Seeders\AuthorizationCatalogSeeder;
 use Modules\Consignment\Application\ConsignmentService;
+use Modules\Consignment\Application\ConsignmentNumberRangeService;
 use Modules\Consignment\Application\Contracts\PricingQuoteProvider;
 use Modules\Consignment\Application\PricingService;
 use Modules\Foundation\Domain\ApiErrorCode;
 use Modules\Foundation\Domain\ApiException;
 use Modules\Foundation\Domain\AuthenticatedPrincipal;
+use Modules\Foundation\Application\Contracts\OutboxWriter;
 use Modules\Geography\Domain\GeographyIds;
 use Modules\Geography\Infrastructure\Database\Seeders\IranGeographySeeder;
 
 final class ConsignmentIntegrationTest extends MySqlRedisTestCase
 {
+    private static int $rangeSequence = 100000;
     protected function setUp(): void
     {
         parent::setUp();
@@ -78,7 +81,7 @@ final class ConsignmentIntegrationTest extends MySqlRedisTestCase
         $this->assertSame('CFM', $created['current_status']);
         $this->assertSame(1, $created['version']);
         $this->assertCount(2, $created['parcels']);
-        $this->assertMatchesRegularExpression('/^CHB-\d{4}-\d{6}$/', $created['consignment_number']);
+        $this->assertMatchesRegularExpression('/^[0-9]{12}$/', $created['consignment_number']);
         $this->assertSame("{$created['consignment_number']}-01", $created['parcels'][0]['parcel_number']);
         $this->assertSame(2500, $created['accepted_pricing_versions'][0]['total_amount']);
         $this->assertDatabaseCount('consignments', 1);
@@ -88,6 +91,12 @@ final class ConsignmentIntegrationTest extends MySqlRedisTestCase
         $this->assertDatabaseCount('consignment_status_events', 3);
         $this->assertDatabaseHas('audit_events', ['action_key' => 'CONSIGNMENT_CREATED']);
         $this->assertDatabaseHas('outbox_events', ['event_type' => 'consignment.created']);
+        try {
+            DB::table('consignment_number_allocations')->where('consignment_id', $created['consignment_id'])->update(['consignment_number' => '999999']);
+            $this->fail('The number allocation ledger must be immutable.');
+        } catch (\Illuminate\Database\QueryException $exception) {
+            $this->assertStringContainsString('immutable Consignment number allocation', $exception->getMessage());
+        }
 
         $page = $this->app->make(ConsignmentService::class)->list(
             $principal,
@@ -345,6 +354,184 @@ final class ConsignmentIntegrationTest extends MySqlRedisTestCase
             ->assertJsonPath('error_code', 'VALIDATION_ERROR');
     }
 
+    public function test_range_validation_is_non_persisting_and_creation_is_available_overlap_safe_and_tenant_scoped(): void
+    {
+        [, $actor, , $principal] = $this->branchContext('RANGE-ADMIN-A', 'range-admin-a');
+        $service = $this->app->make(ConsignmentNumberRangeService::class);
+        try {
+            $service->validate($principal, ['numeric_prefix' => '777001', 'total_length' => 12, 'serial_start' => '1', 'serial_end' => '9']);
+            $this->fail('A Consignment creator without range-management permission must be denied administration.');
+        } catch (ApiException $exception) {
+            $this->assertSame(ApiErrorCode::PermissionDenied, $exception->errorCode);
+        }
+        $this->assignRole($actor['user_id'], 'hq_admin');
+        $input = ['title' => 'HQ labels', 'numeric_prefix' => '777001', 'total_length' => 12, 'serial_start' => '1', 'serial_end' => '999999'];
+        $before = DB::table('consignment_number_ranges')->count();
+        $preview = $service->validate($principal, $input);
+        $this->assertSame('VALID', $preview['validation_result']);
+        $this->assertSame('777001000001', $preview['first_number']);
+        $this->assertSame($before, DB::table('consignment_number_ranges')->count());
+
+        $created = $service->create($principal, $input, (string) Str::uuid());
+        $this->assertSame('AVAILABLE', $created['status']);
+        $this->assertSame('0', $created['allocated_count']);
+        $this->assertSame('999999', $created['remaining_count']);
+        $this->assertDatabaseHas('audit_events', ['action_key' => 'CONSIGNMENT_NUMBER_RANGE_CREATED']);
+        $this->assertDatabaseHas('outbox_events', ['event_type' => 'consignment.number-range.created']);
+
+        $overlap = $service->validate($principal, [...$input, 'numeric_prefix' => '777001', 'serial_start' => '2']);
+        $this->assertSame('OVERLAP', $overlap['validation_result']);
+        try {
+            $service->create($principal, [...$input, 'title' => 'Conflict'], (string) Str::uuid());
+            $this->fail('Overlapping global ranges must be rejected.');
+        } catch (ApiException $exception) {
+            $this->assertSame(ApiErrorCode::ConsignmentNumberRangeOverlap, $exception->errorCode);
+        }
+
+        [, $foreignActor, , $foreignPrincipal] = $this->branchContext('RANGE-ADMIN-B', 'range-admin-b');
+        $this->assignRole($foreignActor['user_id'], 'hq_admin');
+        try {
+            $service->range($foreignPrincipal, $created['range_id']);
+            $this->fail('Cross-HQ range identifiers must not resolve.');
+        } catch (ApiException $exception) {
+            $this->assertSame(ApiErrorCode::ResourceNotFound, $exception->errorCode);
+        }
+    }
+
+    public function test_final_number_exhausts_atomically_and_no_monthly_fallback_is_used(): void
+    {
+        [, , $node, $principal] = $this->branchContext('RANGE-LAST', 'range-last');
+        DB::table('consignment_number_ranges')->where('hq_id', $principal->hqId)->update([
+            'serial_end' => '000001', 'last_number' => DB::raw("CONCAT(numeric_prefix, '000001')"),
+        ]);
+        $draft = $this->draft();
+        $pricing = $this->app->make(PricingService::class);
+        $quote = $pricing->calculate($principal, $node, 'CREATE', $draft, null, null);
+        $created = $this->app->make(ConsignmentService::class)->create($principal, $node, [...$draft, 'accepted_quote' => [
+            'quote_id' => $quote['quote_id'], 'quote_version' => 1, 'option_id' => $quote['options'][0]['option_id'],
+        ]], (string) Str::uuid());
+        $this->assertMatchesRegularExpression('/^[0-9]{12}$/', $created['consignment_number']);
+        $this->assertDatabaseHas('consignment_number_ranges', ['hq_id' => $principal->hqId, 'status' => 'EXHAUSTED', 'next_serial' => null]);
+        $this->assertDatabaseHas('consignment_number_allocations', ['consignment_id' => $created['consignment_id'], 'consignment_number' => $created['consignment_number']]);
+
+        $secondQuote = $pricing->calculate($principal, $node, 'CREATE', $draft, null, null);
+        try {
+            $this->app->make(ConsignmentService::class)->create($principal, $node, [...$draft, 'accepted_quote' => [
+                'quote_id' => $secondQuote['quote_id'], 'quote_version' => 1, 'option_id' => $secondQuote['options'][0]['option_id'],
+            ]], (string) Str::uuid());
+            $this->fail('Exhaustion must fail closed.');
+        } catch (ApiException $exception) {
+            $this->assertSame(ApiErrorCode::ConsignmentNumberRangeExhausted, $exception->errorCode);
+        }
+        $this->assertDatabaseCount('consignment_number_sequences', 0);
+        $this->assertDatabaseCount('consignment_number_allocations', 1);
+    }
+
+    public function test_disabled_ranges_are_skipped_and_fifo_rolls_over_to_the_next_available_range(): void
+    {
+        [, $actor, $node, $principal] = $this->branchContext('RANGE-ROLL', 'range-roll');
+        DB::table('consignment_number_ranges')->where('hq_id', $principal->hqId)->update([
+            'status' => 'DISABLED', 'disabled_by' => $actor['user_id'], 'disabled_at' => now(),
+        ]);
+        $this->assignRole($actor['user_id'], 'hq_admin');
+        $ranges = $this->app->make(ConsignmentNumberRangeService::class);
+        $first = $ranges->create($principal, ['title' => 'First FIFO', 'numeric_prefix' => '888001', 'total_length' => 12, 'serial_start' => '1', 'serial_end' => '1'], (string) Str::uuid());
+        $second = $ranges->create($principal, ['title' => 'Second FIFO', 'numeric_prefix' => '888002', 'total_length' => 12, 'serial_start' => '1', 'serial_end' => '2'], (string) Str::uuid());
+        DB::table('consignment_number_ranges')->where('range_id', $first['range_id'])->update(['created_at' => now()->subMinute()]);
+        $this->assignRole($actor['user_id'], 'branch_manager');
+
+        $pricing = $this->app->make(PricingService::class);
+        $service = $this->app->make(ConsignmentService::class);
+        $draft = $this->draft();
+        $quoteOne = $pricing->calculate($principal, $node, 'CREATE', $draft, null, null);
+        $one = $service->create($principal, $node, [...$draft, 'accepted_quote' => ['quote_id' => $quoteOne['quote_id'], 'quote_version' => 1, 'option_id' => $quoteOne['options'][0]['option_id']]], (string) Str::uuid());
+        $quoteTwo = $pricing->calculate($principal, $node, 'CREATE', $draft, null, null);
+        $two = $service->create($principal, $node, [...$draft, 'accepted_quote' => ['quote_id' => $quoteTwo['quote_id'], 'quote_version' => 1, 'option_id' => $quoteTwo['options'][0]['option_id']]], (string) Str::uuid());
+
+        $this->assertSame('888001000001', $one['consignment_number']);
+        $this->assertSame('888002000001', $two['consignment_number']);
+        $this->assertDatabaseHas('consignment_number_ranges', ['range_id' => $first['range_id'], 'status' => 'EXHAUSTED']);
+        $this->assertDatabaseHas('consignment_number_ranges', ['range_id' => $second['range_id'], 'status' => 'AVAILABLE', 'next_serial' => '000002']);
+    }
+
+    public function test_create_rollback_does_not_consume_or_ledger_a_number(): void
+    {
+        [, , $node, $principal] = $this->branchContext('RANGE-ROLLBACK', 'range-rollback');
+        $range = DB::table('consignment_number_ranges')->where('hq_id', $principal->hqId)->first();
+        $draft = $this->draft();
+        $pricing = $this->app->make(PricingService::class);
+        $quote = $pricing->calculate($principal, $node, 'CREATE', $draft, null, null);
+        $this->app->instance(OutboxWriter::class, new class implements OutboxWriter {
+            public function write(?string $hqId, string $aggregateType, string $aggregateId, string $eventType, string $correlationId, array $payload, int $eventVersion = 1, ?string $causationId = null): void
+            {
+                throw new \RuntimeException('forced outbox rollback');
+            }
+        });
+        try {
+            $this->app->make(ConsignmentService::class)->create($principal, $node, [...$draft, 'accepted_quote' => ['quote_id' => $quote['quote_id'], 'quote_version' => 1, 'option_id' => $quote['options'][0]['option_id']]], (string) Str::uuid());
+            $this->fail('The forced outbox failure must roll back Consignment creation.');
+        } catch (\RuntimeException $exception) {
+            $this->assertSame('forced outbox rollback', $exception->getMessage());
+        }
+        $this->assertDatabaseCount('consignments', 0);
+        $this->assertDatabaseCount('consignment_number_allocations', 0);
+        $this->assertDatabaseHas('consignment_number_ranges', ['range_id' => $range->range_id, 'next_serial' => '000001', 'status' => 'AVAILABLE']);
+    }
+
+    public function test_historical_chb_consignment_numbers_remain_readable(): void
+    {
+        [, , $node, $principal] = $this->branchContext('RANGE-LEGACY', 'range-legacy');
+        $draft = $this->draft();
+        $pricing = $this->app->make(PricingService::class);
+        $quote = $pricing->calculate($principal, $node, 'CREATE', $draft, null, null);
+        $created = $this->app->make(ConsignmentService::class)->create($principal, $node, [...$draft, 'accepted_quote' => ['quote_id' => $quote['quote_id'], 'quote_version' => 1, 'option_id' => $quote['options'][0]['option_id']]], (string) Str::uuid());
+        DB::table('consignments')->where('consignment_id', $created['consignment_id'])->update(['consignment_number' => 'CHB-2608-000001']);
+        $legacy = $this->app->make(ConsignmentService::class)->get($principal, $node, $created['consignment_id']);
+        $this->assertSame('CHB-2608-000001', $legacy['consignment_number']);
+    }
+
+    public function test_registry_and_range_rows_serialize_concurrent_writers(): void
+    {
+        [, , , $principal] = $this->branchContext('RANGE-LOCKS', 'range-locks');
+        config(['database.connections.mysql_contender' => config('database.connections.mysql')]);
+        $owner = DB::connection('mysql');
+        $contender = DB::connection('mysql_contender');
+        $contender->statement('SET SESSION innodb_lock_wait_timeout = 1');
+
+        foreach ([
+            fn () => $owner->table('consignment_number_range_registry')->where('registry_key', 'GLOBAL')->lockForUpdate()->first(),
+            fn () => $owner->table('consignment_number_ranges')->where('hq_id', $principal->hqId)->lockForUpdate()->first(),
+        ] as $index => $takeOwnerLock) {
+            $owner->beginTransaction();
+            $takeOwnerLock();
+            $contender->beginTransaction();
+            try {
+                if ($index === 0) {
+                    $contender->table('consignment_number_range_registry')->where('registry_key', 'GLOBAL')->lockForUpdate()->first();
+                } else {
+                    $contender->table('consignment_number_ranges')->where('hq_id', $principal->hqId)->lockForUpdate()->first();
+                }
+                $this->fail('A concurrent writer must wait for the authoritative lock.');
+            } catch (\Illuminate\Database\QueryException $exception) {
+                $this->assertStringContainsString('Lock wait timeout exceeded', $exception->getMessage());
+            } finally {
+                $contender->rollBack();
+                $owner->rollBack();
+            }
+        }
+        DB::purge('mysql_contender');
+    }
+
+    private function assignRole(string $userId, string $roleCode): void
+    {
+        $roleId = (string) DB::table('roles')->where('role_code', $roleCode)->value('role_id');
+        DB::table('user_role_assignments')->where('user_id', $userId)->update([
+            'role_id' => $roleId,
+            'active_slot' => hash('sha256', "{$userId}|{$roleId}|TENANT|-"),
+        ]);
+        $this->app->make(\Modules\Authorization\Application\AuthorizationService::class)->invalidateUser($userId);
+    }
+
     /** @return array{array<string, mixed>, array<string, mixed>, string, AuthenticatedPrincipal} */
     private function branchContext(string $code, string $username): array
     {
@@ -393,6 +580,24 @@ final class ConsignmentIntegrationTest extends MySqlRedisTestCase
             'includes_descendants' => false,
             'status' => 'ACTIVE',
             'active_slot' => hash('sha256', "{$actor['user_id']}|{$roleId}|TENANT|-"),
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $prefix = (string) ++self::$rangeSequence;
+        DB::table('consignment_number_ranges')->insert([
+            'range_id' => (string) Str::uuid(),
+            'hq_id' => $tenant['hq_id'],
+            'title' => 'Integration allocation inventory',
+            'numeric_prefix' => $prefix,
+            'total_length' => 12,
+            'serial_width' => 6,
+            'serial_start' => '000001',
+            'serial_end' => '999999',
+            'next_serial' => '000001',
+            'first_number' => $prefix.'000001',
+            'last_number' => $prefix.'999999',
+            'status' => 'AVAILABLE',
+            'created_by' => $actor['user_id'],
             'created_at' => now(),
             'updated_at' => now(),
         ]);
