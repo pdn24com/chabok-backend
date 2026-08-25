@@ -133,8 +133,10 @@ final readonly class ConsignmentController
     {
         $allowed = [
             'expected_version', 'change_reason', 'note', 'sender', 'receiver',
-            'service_type_id', 'shipping_method_id', 'pickup_commitment_at',
-            'delivery_commitment_at', 'weight_kg', 'width_cm', 'length_cm',
+            'service_type_id', 'shipping_method_id', 'service_offering_id',
+            'service_offering_version_id', 'selected_option_version_ids',
+            'pickup_service_date', 'pickup_window_code', 'delivery_window_code',
+            'pickup_commitment_at', 'delivery_commitment_at', 'weight_kg', 'width_cm', 'length_cm',
             'height_cm', 'declared_value_amount', 'insurance_enabled',
             'insurance_value_amount', 'cod_enabled', 'cod_amount',
             'accepted_quote',
@@ -151,6 +153,13 @@ final readonly class ConsignmentController
             ...$this->contactRules('receiver', false),
             'service_type_id' => ['sometimes', 'uuid'],
             'shipping_method_id' => ['sometimes', 'uuid'],
+            'service_offering_id' => ['sometimes', 'nullable', 'uuid'],
+            'service_offering_version_id' => ['sometimes', 'nullable', 'uuid'],
+            'selected_option_version_ids' => ['sometimes', 'array'],
+            'selected_option_version_ids.*' => ['uuid'],
+            'pickup_service_date' => ['sometimes', 'nullable', 'date_format:Y-m-d'],
+            'pickup_window_code' => ['sometimes', 'nullable', 'string', 'max:80'],
+            'delivery_window_code' => ['sometimes', 'nullable', 'string', 'max:80'],
             'pickup_commitment_at' => ['sometimes', 'nullable', 'date'],
             'delivery_commitment_at' => ['sometimes', 'nullable', 'date'],
             'weight_kg' => ['sometimes', 'numeric', 'gt:0'],
@@ -291,11 +300,6 @@ final readonly class ConsignmentController
         }
         if (! in_array($input['payment_method'] ?? null, ['CASH', 'CREDIT'], true)) {
             throw ValidationException::withMessages(['payment_method' => ['Only cash or credit is available for new pilot Consignments.']]);
-        }
-        foreach ((array) ($input['parcels'] ?? []) as $index => $parcel) {
-            if (trim((string) ($parcel['content_description'] ?? '')) === '') {
-                throw ValidationException::withMessages(["parcels.{$index}.content_description" => ['Parcel content description is required.']]);
-            }
         }
         $input['insurance_enabled'] = true;
         $input['insurance_value_amount'] = (int) $input['declared_value_amount'];

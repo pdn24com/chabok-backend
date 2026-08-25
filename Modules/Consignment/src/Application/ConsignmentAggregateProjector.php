@@ -21,6 +21,7 @@ final class ConsignmentAggregateProjector
         ?string $manifestId,
         string $reasonCode,
         ?string $driverId = null,
+        ?string $correlationId = null,
     ): array {
         $consignment = DB::table('consignments')->where([
             'hq_id' => $actor->hqId,
@@ -77,6 +78,7 @@ final class ConsignmentAggregateProjector
                 'node_id' => $nodeId,
                 'driver_id' => $driverId,
                 'manifest_id' => $manifestId,
+                'correlation_id' => $correlationId,
                 'reason_code' => $reasonCode,
                 'note' => "{$targetCount}/{$total}",
                 'created_at' => now(),

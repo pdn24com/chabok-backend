@@ -214,7 +214,7 @@ final readonly class CommitmentScheduleService
     }
 
     /** @param array<string,mixed> $context @return array<string,mixed>|null */
-    public function resolveForOffering(string $offeringVersionId, array $context): ?array
+    public function resolveForOffering(string $offeringVersionId, array $context, bool $requireSelection = true): ?array
     {
         $binding = DB::table('service_offering_commitment_bindings')->where('service_offering_version_id', $offeringVersionId)->first();
         if ($binding === null) return null;
@@ -224,8 +224,14 @@ final readonly class CommitmentScheduleService
         $pickup = null;
         if ($binding->pickup_mode === 'SELECTABLE_WINDOW') {
             $code = (string) ($context['pickup_window_code'] ?? '');
-            if ($code === '') return ['eligible' => false, 'reason_code' => 'PICKUP_WINDOW_REQUIRED', 'binding' => (array) $binding, 'pickup' => null, 'delivery' => null];
-            $pickup = $this->windowInstance((string) $version->commitment_schedule_version_id, 'PICKUP', $code, $serviceDate, (string) $version->timezone);
+            $windows = $this->pickupWindowOptions(
+                (string) $version->commitment_schedule_version_id,
+                (string) $version->timezone,
+                isset($context['pickup_service_date']) ? $serviceDate : null,
+            );
+            if ($code === '' && $requireSelection) return ['eligible' => false, 'reason_code' => 'PICKUP_WINDOW_REQUIRED', 'binding' => (array) $binding, 'pickup' => null, 'delivery' => null];
+            $selected = $code === '' ? null : $this->windowInstance((string) $version->commitment_schedule_version_id, 'PICKUP', $code, $serviceDate, (string) $version->timezone);
+            $pickup = ['mode' => 'SELECTABLE_WINDOW', 'windows' => $windows, 'selected' => $selected, ...($selected ?? [])];
         }
         $delivery = ['mode' => (string) $binding->delivery_mode];
         if ($binding->delivery_mode === 'SELECTABLE_WINDOW') {
@@ -247,6 +253,29 @@ final readonly class CommitmentScheduleService
             $delivery += ['anchor' => (string) $binding->duration_anchor, 'duration_value' => $binding->duration_value, 'duration_unit' => $binding->duration_unit, 'computed_at' => $computed?->toISOString(), 'awaiting_operation' => $binding->duration_anchor === 'PICKUP_COMPLETED'];
         }
         return ['eligible' => true, 'reason_code' => null, 'schedule_version_id' => (string) $version->commitment_schedule_version_id, 'timezone' => (string) $version->timezone, 'binding' => (array) $binding, 'pickup' => $pickup, 'delivery' => $delivery];
+    }
+
+    /** @return list<array<string,mixed>> */
+    private function pickupWindowOptions(string $versionId, string $timezone, ?string $serviceDate): array
+    {
+        $now = CarbonImmutable::now($timezone);
+        $windows = DB::table('commitment_schedule_windows')
+            ->where(['commitment_schedule_version_id' => $versionId, 'window_type' => 'PICKUP', 'active' => true])
+            ->orderBy('start_time')->get();
+        $options = [];
+        foreach ($windows as $window) {
+            if ($serviceDate === null) {
+                $instance = $this->nextWindow((array) $window, $timezone, $now);
+                if ($instance !== null) $options[] = $instance;
+                continue;
+            }
+            try {
+                $options[] = $this->windowInstance($versionId, 'PICKUP', (string) $window->window_code, $serviceDate, $timezone);
+            } catch (ApiException) {
+                // A preview omits windows that are unavailable for the selected date.
+            }
+        }
+        return $options;
     }
 
     /** @return array<string,mixed> */

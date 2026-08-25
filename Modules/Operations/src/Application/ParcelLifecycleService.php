@@ -56,6 +56,7 @@ final readonly class ParcelLifecycleService
                 'consignment_id' => $consignmentId, 'parcel_id' => $parcel->parcel_id,
                 'previous_status' => $from, 'new_status' => $to, 'initiator_id' => $actor->userId,
                 'node_id' => $nodeId, 'driver_id' => $driverId, 'manifest_id' => $manifestId,
+                'correlation_id' => $correlationId,
                 'reason_code' => $reasonCode ?? $command, 'note' => $safeNote, 'created_at' => now(),
             ]);
             DB::table('parcel_custody_events')->insert([
@@ -81,6 +82,7 @@ final readonly class ParcelLifecycleService
             $manifestId,
             $reasonCode ?? $command,
             $driverId,
+            $correlationId,
         );
         $this->audit->write($actor->hqId, $actor->userId, $command, 'CONSIGNMENT', $consignmentId, $correlationId, ['status' => $from], ['status' => $to, 'custody_type' => $custodyType]);
         $this->outbox->write($actor->hqId, 'CONSIGNMENT', $consignmentId, 'operations.command.executed', $correlationId, [

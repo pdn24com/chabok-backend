@@ -64,6 +64,18 @@ final readonly class ConsignmentService
                     ->whereColumn('p.consignment_id', 'c.consignment_id')
                     ->whereColumn('p.hq_id', 'c.hq_id'),
                 'parcel_count',
+            )->selectSub(
+                DB::table('consignment_pricing_versions as cpv')->select('cpv.total_amount')
+                    ->whereColumn('cpv.consignment_id', 'c.consignment_id')
+                    ->whereColumn('cpv.hq_id', 'c.hq_id')
+                    ->orderByDesc('cpv.version_number')->limit(1),
+                'payable_total_amount',
+            )->selectSub(
+                DB::table('consignment_pricing_versions as cpv')->select('cpv.currency')
+                    ->whereColumn('cpv.consignment_id', 'c.consignment_id')
+                    ->whereColumn('cpv.hq_id', 'c.hq_id')
+                    ->orderByDesc('cpv.version_number')->limit(1),
+                'payable_currency',
             );
         $this->applyFilters($query, $filters);
         [$sortField, $sortDirection] = $this->sort((string) ($filters['sort'] ?? '-created_at'));
@@ -203,7 +215,7 @@ final readonly class ConsignmentService
                     'current_node_id' => $nodeId,
                     'current_custody_type' => 'NODE',
                     'current_custodian_id' => $nodeId,
-                    'content_description' => trim((string) $parcelInput['content_description']),
+                    'content_description' => trim((string) ($parcelInput['content_description'] ?? '')) ?: null,
                     ...$this->parcelPhysical((array) $parcelInput, $input),
                     'created_at' => $now,
                     'updated_at' => $now,
@@ -227,6 +239,7 @@ final readonly class ConsignmentService
                     null,
                     'CFM',
                     'CONSIGNMENT_CONFIRMED',
+                    $correlationId,
                 );
             }
             $this->insertStatusEvent(
@@ -238,6 +251,7 @@ final readonly class ConsignmentService
                 null,
                 'CFM',
                 'CONSIGNMENT_CONFIRMED',
+                $correlationId,
             );
             $pricingVersionId = $this->persistPricing(
                 (string) $actor->hqId,
@@ -423,6 +437,8 @@ final readonly class ConsignmentService
             'current_status' => (string) $row['current_status'],
             'aggregate' => $this->aggregateResource($row),
             'parcel_count' => (int) $row['parcel_count'],
+            'payable_total_amount' => $row['payable_total_amount'] === null ? null : (int) $row['payable_total_amount'],
+            'payable_currency' => $row['payable_currency'] === null ? null : (string) $row['payable_currency'],
             'version' => (int) $row['version'],
             'created_at' => $this->time($row['created_at']),
             'updated_at' => $this->time($row['updated_at']),
@@ -484,6 +500,18 @@ final readonly class ConsignmentService
                     ->whereColumn('p.consignment_id', 'c.consignment_id')
                     ->whereColumn('p.hq_id', 'c.hq_id'),
                 'parcel_count',
+            )->selectSub(
+                DB::table('consignment_pricing_versions as cpv')->select('cpv.total_amount')
+                    ->whereColumn('cpv.consignment_id', 'c.consignment_id')
+                    ->whereColumn('cpv.hq_id', 'c.hq_id')
+                    ->orderByDesc('cpv.version_number')->limit(1),
+                'payable_total_amount',
+            )->selectSub(
+                DB::table('consignment_pricing_versions as cpv')->select('cpv.currency')
+                    ->whereColumn('cpv.consignment_id', 'c.consignment_id')
+                    ->whereColumn('cpv.hq_id', 'c.hq_id')
+                    ->orderByDesc('cpv.version_number')->limit(1),
+                'payable_currency',
             );
     }
 
@@ -495,6 +523,12 @@ final readonly class ConsignmentService
     {
         $hqId = (string) $row['hq_id'];
         $id = (string) $row['consignment_id'];
+        $offeringEvidence = $row['service_offering_version_id'] === null ? null : DB::table('service_offering_versions as ov')
+            ->join('service_type_versions as stv', 'stv.service_type_version_id', '=', 'ov.service_type_version_id')
+            ->join('shipping_method_versions as smv', 'smv.shipping_method_version_id', '=', 'ov.shipping_method_version_id')
+            ->where('ov.service_offering_version_id', $row['service_offering_version_id'])
+            ->where(fn (Builder $query) => $query->whereNull('ov.hq_id')->orWhere('ov.hq_id', $hqId))
+            ->first(['ov.labels as offering_labels', 'stv.labels as service_type_labels', 'smv.labels as shipping_method_labels']);
         $parcels = in_array('parcel.view', $context['permissions'], true)
             ? DB::table('parcels')->where(['hq_id' => $hqId, 'consignment_id' => $id])
                 ->orderBy('parcel_number')->get()->map(fn ($parcel): array => [
@@ -565,6 +599,8 @@ final readonly class ConsignmentService
                     : json_decode((string) $event->parcel_status_counts, true),
                 'initiator_id' => (string) $event->initiator_id,
                 'node_id' => $event->node_id,
+                'manifest_id' => $event->manifest_id,
+                'correlation_id' => $event->correlation_id,
                 'reason_code' => $event->reason_code,
                 'note' => $event->note,
                 'created_at' => $this->time($event->created_at),
@@ -706,6 +742,9 @@ final readonly class ConsignmentService
             'shipping_method_id' => (string) $row['shipping_method_id'],
             'service_offering_id' => $row['service_offering_id'] ? (string) $row['service_offering_id'] : null,
             'service_offering_version_id' => $row['service_offering_version_id'] ? (string) $row['service_offering_version_id'] : null,
+            'service_offering_title' => $offeringEvidence === null ? null : $this->historicalLabel($offeringEvidence->offering_labels),
+            'service_type_title' => $offeringEvidence === null ? null : $this->historicalLabel($offeringEvidence->service_type_labels),
+            'shipping_method_title' => $offeringEvidence === null ? null : $this->historicalLabel($offeringEvidence->shipping_method_labels),
             'selected_service_option_versions' => $row['selected_service_option_versions'] ? json_decode((string) $row['selected_service_option_versions'], true) : [],
             'commitment_schedule_version_id' => $row['commitment_schedule_version_id'] ? (string) $row['commitment_schedule_version_id'] : null,
             'pickup_service_date' => $row['pickup_service_date'],
@@ -1061,6 +1100,7 @@ final readonly class ConsignmentService
         ?string $previous,
         string $new,
         string $reason,
+        string $correlationId,
     ): void {
         DB::table('consignment_status_events')->insert([
             'status_event_id' => (string) Str::uuid(),
@@ -1072,9 +1112,20 @@ final readonly class ConsignmentService
             'new_status' => $new,
             'initiator_id' => $actorId,
             'node_id' => $nodeId,
+            'correlation_id' => $correlationId,
             'reason_code' => $reason,
             'created_at' => now(),
         ]);
+    }
+
+    private function historicalLabel(mixed $labels): ?string
+    {
+        $decoded = is_string($labels) ? json_decode($labels, true) : (array) $labels;
+        foreach (['fa', 'en'] as $locale) {
+            $label = trim((string) ($decoded[$locale] ?? ''));
+            if ($label !== '') return $label;
+        }
+        return null;
     }
 
     private function nextSequence(string $table, string $consignmentId): int
