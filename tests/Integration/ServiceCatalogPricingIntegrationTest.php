@@ -102,6 +102,23 @@ final class ServiceCatalogPricingIntegrationTest extends MySqlRedisTestCase
         $this->app->make(AuthorizationCatalogSeeder::class)->run();
         $this->app->make(PricingChargeTypeSeeder::class)->run();
         [$tenant, $maker, $checker, $nodeId] = $this->administratorContext();
+        DB::table('consignment_number_ranges')->insert([
+            'range_id' => (string) Str::uuid(),
+            'hq_id' => $tenant['hq_id'],
+            'title' => 'Pricing snapshot integration inventory',
+            'numeric_prefix' => '654321',
+            'total_length' => 12,
+            'serial_width' => 6,
+            'serial_start' => '000001',
+            'serial_end' => '999999',
+            'next_serial' => '000001',
+            'first_number' => '654321000001',
+            'last_number' => '654321999999',
+            'status' => 'AVAILABLE',
+            'created_by' => $maker->userId,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
         $catalog = $this->app->make(ServiceCatalogService::class);
         $pricing = $this->app->make(PricingService::class);
         $validFrom = now()->subMinute()->utc()->toISOString();
@@ -175,6 +192,31 @@ final class ServiceCatalogPricingIntegrationTest extends MySqlRedisTestCase
         ], (string) Str::uuid());
         $catalog->transition($checker, 'offerings', $otherOffering['service_offering_version_id'], 'approve', (string) Str::uuid());
         $catalog->transition($maker, 'offerings', $otherOffering['service_offering_version_id'], 'publish', (string) Str::uuid());
+
+        $preWindowContext = $this->consignmentDraft($type, $method, $offering);
+        unset($preWindowContext['pickup_service_date'], $preWindowContext['pickup_window_code']);
+        $preWindowContext['selected_option_version_ids'] = [$options['SIGNATURE']['service_option_version_id']];
+        $preWindowOfferings = $catalog->resolve($maker, $preWindowContext);
+        $this->assertContains('EXPRESS_GROUND', array_column($preWindowOfferings, 'offering_code'));
+        $preview = $catalog->commitmentPreview($maker, $offering['service_offering_id'], $preWindowContext);
+        $this->assertSame('MORNING', $preview['pickup']['windows'][0]['window_code']);
+        try {
+            $catalog->validateSelection($maker, $offering['service_offering_id'], $offering['service_offering_version_id'], $preWindowContext);
+            $this->fail('Final validation must still require the selected service-specific Pickup window.');
+        } catch (ApiException $exception) {
+            $this->assertSame('PICKUP_WINDOW_REQUIRED', $exception->details['reason_code']);
+        }
+        try {
+            $catalog->validateSelection($maker, $otherOffering['service_offering_id'], $otherOffering['service_offering_version_id'], [
+                ...$preWindowContext,
+                'selected_option_version_ids' => [],
+                'pickup_service_date' => now('Asia/Tehran')->toDateString(),
+                'pickup_window_code' => 'MORNING',
+            ]);
+            $this->fail('A window from another Service Offering must be rejected.');
+        } catch (ApiException $exception) {
+            $this->assertSame('PICKUP_WINDOW_INVALID', $exception->details['reason_code']);
+        }
 
         $selectionContext = [...$this->consignmentDraft($type, $method, $offering), 'selected_option_version_ids' => [$options['SIGNATURE']['service_option_version_id']]];
         $resolvedOfferings = $catalog->resolve($maker, $selectionContext);
@@ -289,6 +331,8 @@ final class ServiceCatalogPricingIntegrationTest extends MySqlRedisTestCase
         $this->assertSame('LOCKED', $created['commercial_pricing_state']);
         $this->assertSame($offering['service_offering_version_id'], $created['service_offering_version_id']);
         $this->assertSame($schedule['commitment_schedule_version_id'], $created['commitment_schedule_version_id']);
+        $this->assertSame('Express Ground', $created['service_offering_title']);
+        $this->assertSame('Ground', $created['shipping_method_title']);
         $this->assertSame('MORNING', $created['pickup_window_code']);
         $this->assertNotNull($created['delivery_commitment_at']);
         $this->assertDatabaseHas('pricing_snapshots', ['object_id' => $created['consignment_id'], 'total_amount' => 23900]);

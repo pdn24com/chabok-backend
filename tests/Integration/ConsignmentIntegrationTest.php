@@ -81,6 +81,8 @@ final class ConsignmentIntegrationTest extends MySqlRedisTestCase
         $this->assertSame('CFM', $created['current_status']);
         $this->assertSame(1, $created['version']);
         $this->assertCount(2, $created['parcels']);
+        $this->assertSame('اسناد', $created['parcels'][0]['content_description']);
+        $this->assertNull($created['parcels'][1]['content_description']);
         $this->assertMatchesRegularExpression('/^[0-9]{12}$/', $created['consignment_number']);
         $this->assertSame("{$created['consignment_number']}-01", $created['parcels'][0]['parcel_number']);
         $this->assertSame(2500, $created['accepted_pricing_versions'][0]['total_amount']);
@@ -89,6 +91,8 @@ final class ConsignmentIntegrationTest extends MySqlRedisTestCase
         $this->assertDatabaseCount('consignment_pricing_versions', 1);
         $this->assertDatabaseCount('consignment_pricing_charge_lines', 2);
         $this->assertDatabaseCount('consignment_status_events', 3);
+        $this->assertSame(3, DB::table('consignment_status_events')
+            ->where('correlation_id', '11111111-2222-4333-8444-555555555555')->count());
         $this->assertDatabaseHas('audit_events', ['action_key' => 'CONSIGNMENT_CREATED']);
         $this->assertDatabaseHas('outbox_events', ['event_type' => 'consignment.created']);
         try {
@@ -104,6 +108,8 @@ final class ConsignmentIntegrationTest extends MySqlRedisTestCase
             ['page' => 1, 'page_size' => 25, 'search' => $created['parcels'][1]['parcel_number']],
         );
         $this->assertSame(1, $page->total());
+        $this->assertSame(2500, (int) $page->items()[0]->payable_total_amount);
+        $this->assertSame('IRR', $page->items()[0]->payable_currency);
 
         $editedDraft = $draft;
         $editedDraft['receiver']['address_text'] = 'Updated safe address';
@@ -647,7 +653,7 @@ final class ConsignmentIntegrationTest extends MySqlRedisTestCase
             'payment_method' => 'CASH',
             'parcels' => [
                 ['content_description' => 'اسناد', 'weight_kg' => 1, 'width_cm' => 10, 'length_cm' => 20, 'height_cm' => 30],
-                ['content_description' => 'قطعات', 'weight_kg' => 1, 'width_cm' => 10, 'length_cm' => 20, 'height_cm' => 30],
+                ['content_description' => null, 'weight_kg' => 1, 'width_cm' => 10, 'length_cm' => 20, 'height_cm' => 30],
             ],
         ];
     }

@@ -31,13 +31,22 @@ final class ConsignmentPilotPolicyTest extends TestCase
         self::addToAssertionCount(1);
     }
 
+    public function test_parcel_content_description_is_optional(): void
+    {
+        foreach (['', null] as $content) {
+            $draft = $this->validDraft();
+            $draft['parcels'][0]['content_description'] = $content;
+            (new ConsignmentPolicy())->assertPilotCreate($draft);
+        }
+        self::addToAssertionCount(2);
+    }
+
     public static function invalidDrafts(): iterable
     {
         yield 'insurance disabled' => [['insurance_enabled' => false, 'insurance_value_amount' => null], 'MANDATORY_INSURANCE_REQUIRED'];
         yield 'separate insured value' => [['insurance_value_amount' => 999], 'MANDATORY_INSURANCE_REQUIRED'];
         yield 'vendor payer' => [['payer' => 'VENDOR'], 'PILOT_PAYER_INVALID'];
         yield 'cod payment method' => [['payment_method' => 'COD'], 'PILOT_PAYMENT_METHOD_INVALID'];
-        yield 'missing parcel content' => [['parcels' => [['content_description' => '']]], 'PARCEL_CONTENT_REQUIRED'];
     }
 
     /** @return array<string,mixed> */
