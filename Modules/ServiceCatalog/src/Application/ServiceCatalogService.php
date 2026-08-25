@@ -172,9 +172,10 @@ final readonly class ServiceCatalogService implements ServiceEligibilityResolver
                 throw new ApiException(ApiErrorCode::Conflict, 409, 'An unpublished successor already exists.');
             }
             $newId = (string) Str::uuid();
+            $previousId = (string) $previous[$versionId];
             unset($previous[$versionId], $previous['approved_by'], $previous['published_by'], $previous['approved_at'], $previous['published_at'], $previous['content_digest']);
             $previous[$versionId] = $newId;
-            $previous['previous_version_id'] = $previous['service_offering_version_id'] ?? $this->latestVersionId($versions, $versionId, $identityId, $identityIdValue);
+            $previous['previous_version_id'] = $previousId;
             $previous['version_number'] = ((int) $previous['version_number']) + 1;
             $previous['status'] = 'DRAFT';
             $previous['lock_version'] = 1;

@@ -85,6 +85,15 @@ final class ServiceCatalogPricingIntegrationTest extends MySqlRedisTestCase
             'SERVICE_EFFECTIVE_INTERVAL_OVERLAP',
             array_column($catalog->validateDraft($maker, 'service-types', $successor['service_type_version_id'])['errors'], 'code'),
         );
+
+        $offeringSuccessor = $catalog->cloneDraft($maker, 'offerings', $offering['service_offering_id'], (string) Str::uuid());
+        $this->assertSame($offering['service_offering_version_id'], $offeringSuccessor['previous_version_id']);
+        $this->assertNotSame($offeringSuccessor['service_offering_version_id'], $offeringSuccessor['previous_version_id']);
+        $this->assertDatabaseHas('service_availability_bindings', [
+            'service_offering_version_id' => $offeringSuccessor['service_offering_version_id'],
+            'scope_type' => 'TENANT',
+            'scope_value' => $tenant['hq_id'],
+        ]);
     }
 
     public function test_published_catalog_and_tariff_produce_immutable_accepted_consignment_pricing(): void
