@@ -258,6 +258,9 @@ final readonly class ManifestOrchestrationService
                 $this->deliveryTasks->ensurePending($actor, $node, (string) $p->consignment_id);
             }
         }
+        if ($target === 'IR' && $p->current_status === 'OS') {
+            $this->deliveryTasks->ensurePending($actor, $node, (string) $p->consignment_id);
+        }
         if ($target === 'OD') {
             $this->deliveryTasks->ensurePending($actor, $node, (string) $p->consignment_id);
             $this->deliveryTasks->activateFromManifest($actor, $node, (string) $p->consignment_id, (string) $m->assigned_driver_id, (string) $m->manifest_id);

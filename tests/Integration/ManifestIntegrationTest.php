@@ -275,6 +275,15 @@ final class ManifestIntegrationTest extends MySqlRedisTestCase
         [$deliveryConsignment, $deliveryParcel, $deliveryNumber] = $this->operationalConsignment(
             $tenant['hq_id'], $actor['user_id'], $node, $node, 'IR', $node,
         );
+        $secondDeliveryParcel = (string) Str::uuid();
+        $secondDeliveryNumber = $deliveryNumber.'-SECOND';
+        DB::table('parcels')->insert([
+            'parcel_id' => $secondDeliveryParcel, 'hq_id' => $tenant['hq_id'],
+            'consignment_id' => $deliveryConsignment, 'parcel_number' => $secondDeliveryNumber,
+            'current_status' => 'IR', 'current_node_id' => $node,
+            'current_custody_type' => 'NODE', 'current_custodian_id' => $node,
+            'version' => 1, 'weight_kg' => 1, 'created_at' => now(), 'updated_at' => now(),
+        ]);
         $driver = $this->driver($tenant['hq_id'], $node, 'DELIVERY');
         $vehicle = $this->vehicle($tenant['hq_id'], $node);
         $this->app->make(DeliveryTaskService::class)->ensurePending(
@@ -287,11 +296,13 @@ final class ManifestIntegrationTest extends MySqlRedisTestCase
             'context_key' => 'OD:'.$node, 'assigned_driver_id' => $driver,
         ], (string) Str::uuid());
         $deliveryAdded = $service->add($principal, $node, $delivery['manifest_id'], [
-            'expected_version' => 1, 'input_source' => 'SCAN', 'identifiers' => [$deliveryNumber],
+            'expected_version' => 1, 'input_source' => 'SCAN',
+            'identifiers' => [$deliveryNumber, $secondDeliveryNumber],
         ], (string) Str::uuid());
         $deliveryOpen = $service->validate($principal, $node, $delivery['manifest_id'], $deliveryAdded['detail']['version'], (string) Str::uuid());
         $deliveryClosed = $service->confirm($principal, $node, $delivery['manifest_id'], $deliveryOpen['version'], (string) Str::uuid());
         $this->assertSame('OD', DB::table('parcels')->where('parcel_id', $deliveryParcel)->value('current_status'));
+        $this->assertSame('OD', DB::table('parcels')->where('parcel_id', $secondDeliveryParcel)->value('current_status'));
         $this->assertSame('DELIVERY_DRIVER', DB::table('parcels')->where('parcel_id', $deliveryParcel)->value('current_custody_type'));
         $this->assertDatabaseHas('delivery_tasks', [
             'consignment_id' => $deliveryConsignment, 'manifest_id' => $deliveryClosed['manifest_id'],
@@ -699,6 +710,11 @@ final class ManifestIntegrationTest extends MySqlRedisTestCase
         $this->closeSingleManifest($service, $principal, $destination, $irOption['selection'], $number);
         $this->assertSame('IR', DB::table('parcels')->where('parcel_id', $parcel)->value('current_status'));
         $this->assertSame('COMPLETED', DB::table('route_plans')->where('route_plan_id', $plan)->value('status'));
+        $this->assertDatabaseHas('delivery_tasks', [
+            'consignment_id' => $consignment,
+            'node_id' => $destination,
+            'status' => 'PENDING',
+        ]);
         $this->assertSame(['RECEIVED', 'RECEIVED'], DB::table('route_plan_legs')
             ->whereIn('route_plan_leg_id', [$firstLeg, $secondLeg])->orderBy('leg_order')->pluck('status')->all());
     }

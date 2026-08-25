@@ -48,17 +48,23 @@ final readonly class DeliveryTaskService
             if ((string) $existing->node_id !== $nodeId) throw new ApiException(ApiErrorCode::ValidationError, 422, 'The Delivery Task belongs to another resolved Last-mile Node.');
             return (string) $existing->delivery_task_id;
         }
-        $consignment = DB::table('consignments')->where(['hq_id' => $actor->hqId, 'consignment_id' => $consignmentId, 'delivery_node_id' => $nodeId])->lockForUpdate()->first();
+        $consignment = DB::table('consignments')->where([
+            'hq_id' => $actor->hqId,
+            'consignment_id' => $consignmentId,
+        ])->lockForUpdate()->first();
         if ($consignment === null) throw new ApiException(ApiErrorCode::ResourceNotFound, 404, 'Resource not found.');
 
         $evidence = DB::table('last_mile_resolution_evidence')->where(['hq_id' => $actor->hqId, 'consignment_id' => $consignmentId])->first();
-        if ($evidence === null && $this->nodeHasCapability((string) $actor->hqId, $nodeId, 'GATEWAY')) {
+        if ($evidence === null && $consignment->delivery_node_id === null
+            && $this->nodeHasCapability((string) $actor->hqId, $nodeId, 'GATEWAY')) {
             $this->resolveLastMile($actor, $nodeId, $consignment);
             $evidence = DB::table('last_mile_resolution_evidence')->where(['hq_id' => $actor->hqId, 'consignment_id' => $consignmentId])->first();
             if ((string) $evidence->last_mile_node_id !== $nodeId) return '';
         }
-        if ($evidence !== null && (string) $evidence->last_mile_node_id !== $nodeId) throw new ApiException(ApiErrorCode::ValidationError, 422, 'Delivery Tasks can be created only at the resolved Last-mile Node.');
-
+        if ($evidence !== null && (string) $evidence->last_mile_node_id !== $nodeId) return '';
+        if ($consignment->delivery_node_id !== null && (string) $consignment->delivery_node_id !== $nodeId) {
+            throw new ApiException(ApiErrorCode::ValidationError, 422, 'Delivery Tasks can be created only at the resolved Last-mile Node.');
+        }
         $id = (string) Str::uuid();
         DB::table('delivery_tasks')->insert(['delivery_task_id' => $id, 'hq_id' => $actor->hqId, 'consignment_id' => $consignmentId, 'node_id' => $nodeId, 'last_mile_resolution_id' => $evidence?->last_mile_resolution_id, 'status' => 'PENDING', 'attempt_number' => 1, 'version' => 1, 'created_at' => now(), 'updated_at' => now()]);
         $this->history($actor, $id, $consignmentId, 'CREATED', null, 'PENDING', 1);
@@ -71,6 +77,11 @@ final readonly class DeliveryTaskService
     {
         $task = DB::table('delivery_tasks')->where(['hq_id' => $actor->hqId, 'consignment_id' => $consignmentId, 'node_id' => $nodeId])->lockForUpdate()->first();
         if ($task === null) throw new ApiException(ApiErrorCode::ValidationError, 422, 'A pending Delivery Task is required before delivery activation.');
+        if ((string) $task->status === 'IN_PROGRESS'
+            && (string) $task->assigned_driver_id === $driverId
+            && (string) $task->manifest_id === $manifestId) {
+            return (string) $task->delivery_task_id;
+        }
         if (! in_array((string) $task->status, ['PENDING', 'ASSIGNED'], true) || ($task->assigned_driver_id !== null && (string) $task->assigned_driver_id !== $driverId)) throw new ApiException(ApiErrorCode::ValidationError, 422, 'The Delivery Task conflicts with the Manifest assignment.');
         $this->eligibleDriverForManifest($actor, $nodeId, $driverId, $manifestId, (string) $task->delivery_task_id);
         $version = (int) $task->version + 1;
