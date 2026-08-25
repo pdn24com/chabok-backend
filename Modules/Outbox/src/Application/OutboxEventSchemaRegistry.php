@@ -125,6 +125,14 @@ final class OutboxEventSchemaRegistry
                 'consignment_id' => 'string',
                 'version' => 'string',
             ],
+            'consignment.number-range.created' => [
+                'range_id' => 'string',
+                'status' => 'string',
+            ],
+            'consignment.number-range.disabled' => [
+                'range_id' => 'string',
+                'status' => 'string',
+            ],
             'manifest.created' => [
                 'manifest_id' => 'string',
                 'manifest_status' => 'string',

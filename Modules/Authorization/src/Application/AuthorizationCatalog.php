@@ -23,6 +23,8 @@ final class AuthorizationCatalog
             'consignment.create' => 'Consignment',
             'consignment.edit' => 'Consignment',
             'consignment.cancel' => 'Consignment',
+            'consignment.number_range.view' => 'Consignment',
+            'consignment.number_range.manage' => 'Consignment',
             'parcel.view' => 'Parcel',
             'manifest.view' => 'Manifest',
             'manifest.create' => 'Manifest',
@@ -107,6 +109,7 @@ final class AuthorizationCatalog
             'platform_super_admin' => ['iam.entitlements.view'],
             'hq_admin' => [
                 'iam.roles.manage', 'iam.entitlements.view',
+                'consignment.number_range.view', 'consignment.number_range.manage',
                 'service_catalog.view', 'service_catalog.history.view', 'service_catalog.resolve',
                 'service_catalog.manage_draft', 'service_catalog.availability.manage',
                 'service_catalog.approve', 'service_catalog.publish', 'service_catalog.audit.view',
