@@ -341,7 +341,7 @@ final readonly class ServiceCatalogService implements ServiceEligibilityResolver
             $decision = $this->evaluate((array) $row, $context);
             if ($decision['outcome'] !== 'INELIGIBLE') {
                 try {
-                    $commitment = $this->commitments->resolveForOffering((string) $row->service_offering_version_id, $context);
+                    $commitment = $this->commitments->resolveForOffering((string) $row->service_offering_version_id, $context, false);
                 } catch (ApiException $exception) {
                     $reasonCode = $exception->details['reason_code'] ?? null;
                     if (in_array($reasonCode, ['PICKUP_WINDOW_INVALID', 'DELIVERY_WINDOW_INVALID'], true)) {
@@ -358,7 +358,7 @@ final readonly class ServiceCatalogService implements ServiceEligibilityResolver
         return $results;
     }
 
-    public function validateSelection(AuthenticatedPrincipal $actor, string $offeringId, ?string $versionId, array $context): array
+    public function validateSelection(AuthenticatedPrincipal $actor, string $offeringId, ?string $versionId, array $context, bool $requireCommitmentSelection = true): array
     {
         $this->assertAccess($actor, 'service_catalog.resolve', runtime: true);
         $context = $this->canonicalizeCoverageContext($context);
@@ -384,7 +384,7 @@ final readonly class ServiceCatalogService implements ServiceEligibilityResolver
             throw new ApiException(ApiErrorCode::ValidationError, 422, 'The selected Service Offering is not eligible.', details: $decision);
         }
 
-        $commitment = $this->commitments->resolveForOffering((string) $row->service_offering_version_id, $context);
+        $commitment = $this->commitments->resolveForOffering((string) $row->service_offering_version_id, $context, $requireCommitmentSelection);
         if ($commitment !== null && $commitment['eligible'] !== true) {
             throw new ApiException(ApiErrorCode::ValidationError, 422, 'The selected Pickup commitment is not eligible.', details: ['reason_code' => $commitment['reason_code']]);
         }
@@ -394,7 +394,7 @@ final readonly class ServiceCatalogService implements ServiceEligibilityResolver
     /** @param array<string, mixed> $context @return array<string, mixed> */
     public function commitmentPreview(AuthenticatedPrincipal $actor, string $offeringId, array $context): array
     {
-        $selection = $this->validateSelection($actor, $offeringId, $context['service_offering_version_id'] ?? null, $context);
+        $selection = $this->validateSelection($actor, $offeringId, $context['service_offering_version_id'] ?? null, $context, false);
 
         return (array) $selection['commitment'];
     }

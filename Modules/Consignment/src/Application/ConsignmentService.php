@@ -203,7 +203,7 @@ final readonly class ConsignmentService
                     'current_node_id' => $nodeId,
                     'current_custody_type' => 'NODE',
                     'current_custodian_id' => $nodeId,
-                    'content_description' => trim((string) $parcelInput['content_description']),
+                    'content_description' => trim((string) ($parcelInput['content_description'] ?? '')) ?: null,
                     ...$this->parcelPhysical((array) $parcelInput, $input),
                     'created_at' => $now,
                     'updated_at' => $now,
