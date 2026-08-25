@@ -452,7 +452,101 @@ final class ManifestIntegrationTest extends MySqlRedisTestCase
             );
             $this->assertSame(0, $option['selection']['expected_version']);
             $this->assertNotEmpty($option['related_node']['node_title']);
+            $this->assertNotEmpty($option['target_node']['node_title']);
+            $this->assertNotEmpty($option['target_node']['node_code']);
             $this->assertContains($option['related_node_role'], ['SOURCE', 'DESTINATION', 'COUNTERPARTY']);
+        }
+    }
+
+    public function test_all_targets_create_empty_drafts_with_explicit_active_target_node(): void
+    {
+        [$tenant, $actor, $node, $principal] = $this->context('MAN-EMPTY', 'manifest-empty');
+        $targetNode = $this->node($tenant['hq_id'], 'MAN-EMPTY-TARGET');
+        $pickupDriver = $this->driver($tenant['hq_id'], $targetNode, 'PICKUP');
+        $linehaulDriver = $this->driver($tenant['hq_id'], $targetNode, 'LINEHAUL');
+        $deliveryDriver = $this->driver($tenant['hq_id'], $targetNode, 'DELIVERY');
+        DB::table('drivers')->where('driver_id', $linehaulDriver)->update(['availability_status' => 'ON_MISSION']);
+        DB::table('drivers')->where('driver_id', $deliveryDriver)->update(['availability_status' => 'ON_MISSION']);
+        $vehicle = $this->vehicle($tenant['hq_id'], $node);
+        $service = $this->app->make(ManifestService::class);
+        $options = $service->contextOptions($principal, $node);
+
+        $this->assertSame(
+            ['AVAILABLE', 'ON_MISSION'],
+            collect($options['drivers'])->pluck('availability_status')->unique()->sort()->values()->all(),
+        );
+        $this->assertContains($targetNode, array_column($options['target_nodes'], 'node_id'));
+
+        foreach (['PD','PU','NPU','IR','ROU','OF','OS','CI','OD','OK','NOK'] as $target) {
+            $option = collect($options['contexts'])->first(
+                fn (array $candidate): bool => $candidate['manifest_status'] === $target
+                    && $candidate['target_node']['node_id'] === $targetNode,
+            );
+            $this->assertNotNull($option, "Missing empty-draft context for {$target}.");
+            $selection = $option['selection'];
+            if ($target === 'PD') $selection['assigned_driver_id'] = $pickupDriver;
+            if ($target === 'OS') {
+                $selection['assigned_driver_id'] = $linehaulDriver;
+                $selection['assigned_vehicle_id'] = $vehicle;
+            }
+            if ($target === 'OD') $selection['assigned_driver_id'] = $deliveryDriver;
+
+            $manifest = $service->create($principal, $node, $selection, (string) Str::uuid());
+            $this->assertSame('DRAFT', $manifest['state']);
+            $this->assertSame(0, $manifest['total_count']);
+            $this->assertSame($node, $manifest['issuing_node']['node_id']);
+            $this->assertSame($targetNode, $manifest['target_node']['node_id']);
+        }
+    }
+
+    public function test_manifest_list_returns_node_references_and_historical_missing_target_as_null(): void
+    {
+        [$tenant, $actor, $node, $principal] = $this->context('MAN-LIST-NODES', 'manifest-list-nodes');
+        $service = $this->app->make(ManifestService::class);
+        $manifest = $service->create($principal, $node, [
+            'expected_version' => 0,
+            'manifest_status' => 'IR',
+            'context_key' => 'IR:PICKUP:'.$node,
+            'target_node_id' => $node,
+        ], (string) Str::uuid());
+
+        $this->assertSame('MAN-LIST-NODES', $manifest['issuing_node']['node_code']);
+        $this->assertSame('MAN-LIST-NODES', $manifest['target_node']['node_title']);
+
+        DB::table('manifests')->where('manifest_id', $manifest['manifest_id'])->update(['destination_node_id' => null]);
+        $listed = $service->listItem(DB::table('manifests')->where('manifest_id', $manifest['manifest_id'])->first());
+        $this->assertSame($node, $listed['issuing_node']['node_id']);
+        $this->assertNull($listed['target_node']);
+    }
+
+    public function test_driver_references_exclude_inactive_unavailable_and_cross_hq_drivers(): void
+    {
+        [$tenant, $actor, $node, $principal] = $this->context('MAN-DRIVER-FILTER', 'manifest-driver-filter');
+        $active = $this->driver($tenant['hq_id'], $node, 'LINEHAUL');
+        $inactive = $this->driver($tenant['hq_id'], $node, 'LINEHAUL');
+        $unavailable = $this->driver($tenant['hq_id'], $node, 'LINEHAUL');
+        DB::table('drivers')->where('driver_id', $active)->update(['availability_status' => 'ON_MISSION']);
+        DB::table('drivers')->where('driver_id', $inactive)->update(['status' => 'INACTIVE']);
+        DB::table('drivers')->where('driver_id', $unavailable)->update(['availability_status' => 'TEMPORARILY_INACTIVE']);
+        [$foreignTenant, $foreignActor, $foreignNode] = $this->context('MAN-DRIVER-FOREIGN', 'manifest-driver-foreign');
+        $foreign = $this->driver($foreignTenant['hq_id'], $foreignNode, 'LINEHAUL');
+        $service = $this->app->make(ManifestService::class);
+        $options = $service->contextOptions($principal, $node);
+        $ids = array_column($options['drivers'], 'driver_id');
+
+        $this->assertContains($active, $ids);
+        $this->assertNotContains($inactive, $ids);
+        $this->assertNotContains($unavailable, $ids);
+        $this->assertNotContains($foreign, $ids);
+
+        $os = collect($options['contexts'])->firstWhere('manifest_status', 'OS')['selection'];
+        $os['assigned_driver_id'] = $foreign;
+        $os['assigned_vehicle_id'] = $this->vehicle($tenant['hq_id'], $node);
+        try {
+            $service->create($principal, $node, $os, (string) Str::uuid());
+            $this->fail('A cross-HQ Driver must be rejected.');
+        } catch (ApiException $exception) {
+            $this->assertSame(ApiErrorCode::DriverOutOfScope, $exception->errorCode);
         }
     }
 

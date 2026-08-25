@@ -112,6 +112,7 @@ final readonly class ManifestService
             $mergedContext = [
                 'manifest_status' => (string) ($input['manifest_status'] ?? $manifest->manifest_status),
                 'context_key' => (string) ($input['context_key'] ?? $manifest->context_key),
+                'target_node_id' => array_key_exists('target_node_id', $input) ? $input['target_node_id'] : $manifest->destination_node_id,
                 'assigned_driver_id' => array_key_exists('assigned_driver_id', $input) ? $input['assigned_driver_id'] : $manifest->assigned_driver_id,
                 'assigned_vehicle_id' => array_key_exists('assigned_vehicle_id', $input) ? $input['assigned_vehicle_id'] : $manifest->assigned_vehicle_id,
             ];
@@ -284,6 +285,7 @@ final readonly class ManifestService
     public function listItem(object|array $row): array
     {
         $r = (array) $row; $counts = $this->counts((string) $r['manifest_id']);
+        $context = $this->operationalContext->summary((object) $r);
         return [
             'manifest_id' => (string) $r['manifest_id'], 'manifest_number' => (string) $r['manifest_number'],
             'node_id' => (string) $r['node_id'], 'manifest_status' => (string) $r['manifest_status'],
@@ -296,7 +298,8 @@ final readonly class ManifestService
             'version' => (int) $r['version'], 'total_count' => array_sum($counts),
             'succeeded_count' => $counts['succeeded'], 'failed_count' => $counts['failed'],
             'created_at' => $this->time($r['created_at']), 'updated_at' => $this->time($r['updated_at']),
-            'context' => $this->operationalContext->summary((object) $r),
+            'issuing_node' => $context['issuing_node'], 'target_node' => $context['target_node'],
+            'context' => $context,
         ];
     }
 

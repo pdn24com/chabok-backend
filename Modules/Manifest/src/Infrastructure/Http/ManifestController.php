@@ -36,11 +36,12 @@ final readonly class ManifestController
 
     public function store(Request $request): JsonResponse
     {
-        StrictPayload::assertOnly($request, ['expected_version', 'manifest_status', 'context_key', 'assigned_driver_id', 'assigned_vehicle_id']);
+        StrictPayload::assertOnly($request, ['expected_version', 'manifest_status', 'context_key', 'target_node_id', 'assigned_driver_id', 'assigned_vehicle_id']);
         $input = $request->validate([
             'expected_version' => ['required', 'integer', 'in:0'],
             'manifest_status' => ['required', 'in:PD,PU,NPU,IR,ROU,OF,OS,CI,OD,OK,NOK'],
             'context_key' => ['required', 'string', 'min:1', 'max:200'],
+            'target_node_id' => ['sometimes', 'uuid'],
             'assigned_driver_id' => ['sometimes', 'nullable', 'uuid'],
             'assigned_vehicle_id' => ['sometimes', 'nullable', 'uuid'],
         ]);
@@ -75,11 +76,12 @@ final readonly class ManifestController
 
     public function update(Request $request, string $manifestId): JsonResponse
     {
-        StrictPayload::assertOnly($request, ['expected_version', 'manifest_status', 'context_key', 'assigned_driver_id', 'assigned_vehicle_id']);
+        StrictPayload::assertOnly($request, ['expected_version', 'manifest_status', 'context_key', 'target_node_id', 'assigned_driver_id', 'assigned_vehicle_id']);
         $input = $request->validate([
             'expected_version' => ['required', 'integer', 'min:1'],
             'manifest_status' => ['sometimes', 'in:PD,PU,NPU,IR,ROU,OF,OS,CI,OD,OK,NOK'],
             'context_key' => ['sometimes', 'string', 'min:1', 'max:200'],
+            'target_node_id' => ['sometimes', 'uuid'],
             'assigned_driver_id' => ['sometimes', 'nullable', 'uuid'],
             'assigned_vehicle_id' => ['sometimes', 'nullable', 'uuid'],
         ]);
