@@ -254,7 +254,7 @@ final class ServiceCatalogPricingIntegrationTest extends MySqlRedisTestCase
         $pickupChargeId = (string) DB::table('pricing_charge_types')->where('code', 'PICKUP_FEE')->value('charge_type_id');
         $taxChargeId = (string) DB::table('pricing_charge_types')->where('code', 'TAX')->value('charge_type_id');
         $tariff = $pricing->createTariff($maker, [
-            'code' => 'STANDARD_SALES', 'purpose' => 'SALES', 'currency' => 'IRR', 'scope_type' => 'TENANT',
+            'code' => 'STANDARD_SALES', 'title' => 'تعرفه فروش اکسپرس', 'purpose' => 'SALES', 'currency' => 'IRR', 'scope_type' => 'TENANT',
             'scope_value' => $tenant['hq_id'], 'priority' => 100, 'zone_set_version_id' => $zoneSet['zone_set_version_id'],
             'valid_from' => $validFrom, 'valid_to' => null, 'volumetric_divisor' => 5000,
             'weight_rounding_step_kg' => 0.5, 'rounding_mode' => 'STEP_UP',
@@ -418,6 +418,46 @@ final class ServiceCatalogPricingIntegrationTest extends MySqlRedisTestCase
             ],
         ], (string) Str::uuid());
         $this->assertContains('PRICING_RULE_RANGE_OVERLAP', array_column($pricing->validateTariff($maker, $ambiguousTariff['tariff_version_id'])['errors'], 'code'));
+
+        $this->assertSame('تعرفه فروش اکسپرس', $tariff['title']);
+        $this->assertSame('تعرفه فروش اکسپرس', $pricing->listTariffs($maker, ['search' => 'اکسپرس'])->items()[0]->title);
+        $noWindowOffering = $catalog->createIdentity($maker, 'offerings', [
+            'code' => 'WITHOUT_WINDOWS', 'labels' => ['fa' => 'حمل بدون بازه'], 'description' => null,
+            'service_type_version_id' => $type['service_type_version_id'],
+            'shipping_method_version_id' => $method['shipping_method_version_id'],
+            'sla_policy' => [], 'availability_summary' => [], 'option_rules' => [], 'eligibility_rules' => [], 'coverage_references' => [],
+            'commitment_binding' => ['commitment_schedule_version_id' => $schedule['commitment_schedule_version_id'], 'pickup_mode' => 'NONE', 'delivery_mode' => 'NONE'],
+            'availability_bindings' => [['scope_type' => 'TENANT', 'scope_value' => $tenant['hq_id'], 'enabled' => true]],
+            'valid_from' => $validFrom, 'valid_to' => null,
+        ], (string) Str::uuid());
+        $catalog->transition($maker, 'offerings', $noWindowOffering['service_offering_version_id'], 'approve', (string) Str::uuid());
+        $catalog->transition($maker, 'offerings', $noWindowOffering['service_offering_version_id'], 'publish', (string) Str::uuid());
+        $withoutWindows = $scheduleService->resolveForOffering($noWindowOffering['service_offering_version_id'], [], true);
+        $this->assertTrue($withoutWindows['eligible']);
+        $this->assertSame('NONE', $withoutWindows['pickup']['mode']);
+        $this->assertSame('NONE', $withoutWindows['delivery']['mode']);
+        config()->set('chabok.pricing.quote_ttl_seconds', 300);
+        $noWindowTariff = $pricing->createTariff($maker, [
+            'code' => 'NO_WINDOW_SALES', 'title' => 'تعرفه بدون بازه', 'purpose' => 'SALES', 'currency' => 'IRR',
+            'scope_type' => 'TENANT', 'zone_set_version_id' => $successorQuote['zone_set_version_id'],
+            'valid_from' => $validFrom, 'valid_to' => null,
+            'rules' => [
+                ['service_offering_version_id' => $noWindowOffering['service_offering_version_id'], 'charge_type_id' => $baseChargeId, 'calculation_method' => 'FIXED', 'basis' => 'SHIPMENT', 'fixed_amount' => 10000, 'priority' => 10],
+                ['service_offering_version_id' => $noWindowOffering['service_offering_version_id'], 'charge_type_id' => $insuranceChargeId, 'calculation_method' => 'PERCENT', 'basis' => 'DECLARED_VALUE', 'percentage_bps' => 2, 'amount_rounding_mode' => 'CEIL', 'amount_rounding_step' => 10000, 'priority' => 20],
+            ],
+        ], (string) Str::uuid());
+        $pricing->transition($maker, 'tariffs', $noWindowTariff['tariff_version_id'], 'approve', (string) Str::uuid());
+        $pricing->transition($maker, 'tariffs', $noWindowTariff['tariff_version_id'], 'publish', (string) Str::uuid());
+        $noWindowDraft = [...$this->consignmentDraft($type, $method, $noWindowOffering), 'pickup_service_date' => null, 'pickup_window_code' => null, 'delivery_window_code' => null, 'pickup_commitment_at' => null, 'delivery_commitment_at' => null, 'selected_option_version_ids' => []];
+        $noWindowQuote = $this->app->make(ConsignmentPricingService::class)->calculate($maker, $nodeId, 'CREATE', $noWindowDraft, null, null);
+        $noWindowCreated = $this->app->make(ConsignmentService::class)->create($maker, $nodeId, [
+            ...$noWindowDraft,
+            'accepted_quote' => ['quote_id' => $noWindowQuote['quote_id'], 'quote_version' => $noWindowQuote['quote_version'], 'option_id' => $noWindowQuote['options'][0]['option_id']],
+        ], (string) Str::uuid());
+        $this->assertNull($noWindowCreated['pickup_window_code']);
+        $this->assertNull($noWindowCreated['pickup_commitment_at']);
+        $this->assertNull($noWindowCreated['delivery_commitment_at']);
+        $this->assertSame('LOCKED', $noWindowCreated['commercial_pricing_state']);
     }
 
     public function test_draft_concurrency_and_cross_tenant_visibility_fail_closed(): void

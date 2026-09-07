@@ -155,7 +155,7 @@ final readonly class ServiceCatalogController
         if ($resource !== 'offerings') return $rules + ['definition' => ['sometimes', 'array']];
         return $rules + [
             'service_type_version_id' => ['required', 'uuid'], 'shipping_method_version_id' => ['required', 'uuid'],
-            'sla_policy' => ['required', 'array'], 'availability_summary' => ['nullable', 'array'],
+            'sla_policy' => ['required_without:commitment_binding', 'array'], 'availability_summary' => ['nullable', 'array'],
             'option_rules' => ['array'], 'eligibility_rules' => ['array'], 'coverage_references' => ['array'], 'availability_bindings' => ['required', 'array', 'min:1'],
             'option_rules.*.service_option_version_id' => ['required', 'uuid'], 'option_rules.*.compatibility' => ['required', 'in:ALLOWED,REQUIRED,FORBIDDEN,CONDITIONAL'], 'option_rules.*.condition' => ['nullable', 'array'],
             'eligibility_rules.*.dimension' => ['required', 'in:GEOGRAPHY,PHYSICAL,CONTENT,VALUE,COMMERCIAL,OPERATIONAL,TEMPORAL,OPTION,CHANNEL'], 'eligibility_rules.*.fact_key' => ['required', 'string', 'max:120'], 'eligibility_rules.*.operator' => ['required', 'in:EQ,NEQ,IN,NOT_IN,MIN,MAX,BETWEEN,EXISTS,NOT_EXISTS'], 'eligibility_rules.*.expected_value' => ['present'], 'eligibility_rules.*.reason_code' => ['required', 'string', 'max:120'], 'eligibility_rules.*.priority' => ['sometimes', 'integer', 'min:1', 'max:65535'],

@@ -221,7 +221,7 @@ final readonly class CommitmentScheduleService
         $version = DB::table('commitment_schedule_versions')->where(['commitment_schedule_version_id' => $binding->commitment_schedule_version_id, 'status' => 'PUBLISHED'])->first();
         if ($version === null) throw new ApiException(ApiErrorCode::ValidationError, 422, 'The bound commitment schedule is not published.', details: ['reason_code' => 'COMMITMENT_SCHEDULE_NOT_PUBLISHED']);
         $serviceDate = (string) ($context['pickup_service_date'] ?? CarbonImmutable::now((string) $version->timezone)->toDateString());
-        $pickup = null;
+        $pickup = ['mode' => (string) $binding->pickup_mode];
         if ($binding->pickup_mode === 'SELECTABLE_WINDOW') {
             $code = (string) ($context['pickup_window_code'] ?? '');
             $windows = $this->pickupWindowOptions(
@@ -237,6 +237,7 @@ final readonly class CommitmentScheduleService
         if ($binding->delivery_mode === 'SELECTABLE_WINDOW') {
             $delivery['windows'] = DB::table('commitment_schedule_windows')->where(['commitment_schedule_version_id' => $version->commitment_schedule_version_id, 'window_type' => 'DELIVERY', 'active' => true])->orderBy('day_offset')->orderBy('start_time')->get()->map(fn ($window) => $this->windowInstance((string) $version->commitment_schedule_version_id, 'DELIVERY', (string) $window->window_code, $serviceDate, (string) $version->timezone))->all();
             $selectedCode = (string) ($context['delivery_window_code'] ?? '');
+            if ($selectedCode === '' && $requireSelection) return ['eligible' => false, 'reason_code' => 'DELIVERY_WINDOW_REQUIRED', 'binding' => (array) $binding, 'pickup' => $pickup, 'delivery' => $delivery];
             $delivery['selected'] = $selectedCode === '' ? null : $this->windowInstance((string) $version->commitment_schedule_version_id, 'DELIVERY', $selectedCode, $serviceDate, (string) $version->timezone);
         } elseif ($binding->delivery_mode === 'COMPUTED') {
             $anchor = match ((string) $binding->duration_anchor) {

@@ -265,6 +265,9 @@ final readonly class ServiceCatalogService implements ServiceEligibilityResolver
                 if ($binding['delivery_mode'] === 'COMPUTED' && (empty($binding['duration_value']) || empty($binding['duration_unit']) || empty($binding['duration_anchor']))) {
                     $errors[] = ['code' => 'COMPUTED_DELIVERY_CONFIGURATION_REQUIRED', 'field' => 'commitment_binding'];
                 }
+                if ($binding['delivery_mode'] === 'COMPUTED' && $binding['pickup_mode'] === 'NONE' && in_array($binding['duration_anchor'], ['PICKUP_COMMITMENT_START', 'PICKUP_COMMITMENT_END'], true)) {
+                    $errors[] = ['code' => 'COMPUTED_DELIVERY_ANCHOR_UNAVAILABLE', 'field' => 'commitment_binding.duration_anchor'];
+                }
             }
         }
         $overlap = $this->hasEffectiveOverlap($resource, $row);
@@ -715,7 +718,10 @@ final readonly class ServiceCatalogService implements ServiceEligibilityResolver
         $start = CarbonImmutable::parse((string) ($context['acceptance_at'] ?? now()->toISOString()))->utc();
         $value = max(0, (int) ($policy['duration_value'] ?? 0));
         $end = match ($policy['duration_unit'] ?? 'HOUR') { 'MINUTE' => $start->addMinutes($value), 'DAY' => $start->addDays($value), default => $start->addHours($value) };
-        return ['commitment_type' => $policy['commitment_type'] ?? 'DURATION', 'starts_at' => $start->toISOString(), 'delivery_commitment_at' => $end->toISOString(), 'policy' => $policy];
+        return ['commitment_type' => $policy['commitment_type'] ?? 'DURATION', 'starts_at' => $start->toISOString(), 'delivery_commitment_at' => $end->toISOString(), 'policy' => $policy,
+            'pickup' => ['mode' => 'NONE'],
+            'delivery' => ['mode' => 'COMPUTED', 'computed_at' => $end->toISOString()],
+        ];
     }
 
     private function assertAccess(AuthenticatedPrincipal $actor, string $permission, bool $runtime = false): void

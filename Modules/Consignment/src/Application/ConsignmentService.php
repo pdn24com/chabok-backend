@@ -1190,9 +1190,9 @@ final readonly class ConsignmentService
         $selectedDelivery = is_array($delivery['selected'] ?? null) ? $delivery['selected'] : [];
         $computedDelivery = $delivery['computed_at'] ?? null;
         $input['commitment_schedule_version_id'] = $commitment['schedule_version_id'] ?? null;
-        $input['pickup_service_date'] = $pickup['service_date'] ?? ($input['pickup_service_date'] ?? null);
-        $input['pickup_window_code'] = $pickup['window_code'] ?? ($input['pickup_window_code'] ?? null);
-        $input['delivery_window_code'] = $selectedDelivery['window_code'] ?? ($input['delivery_window_code'] ?? null);
+        $input['pickup_service_date'] = $pickup['service_date'] ?? null;
+        $input['pickup_window_code'] = $pickup['window_code'] ?? null;
+        $input['delivery_window_code'] = $selectedDelivery['window_code'] ?? null;
         $input['pickup_commitment_start_at'] = $pickup['starts_at'] ?? null;
         $input['pickup_commitment_end_at'] = $pickup['ends_at'] ?? null;
         $input['pickup_commitment_at'] = $pickup['ends_at'] ?? null;

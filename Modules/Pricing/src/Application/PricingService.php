@@ -40,7 +40,10 @@ final readonly class PricingService
         $query = DB::table('tariff_families as f')->where(fn ($q) => $q->whereNull('f.hq_id')->orWhere('f.hq_id', $actor->hqId))
             ->select(['f.*'])->selectSub(DB::table('tariff_versions as v')->select('v.status')->whereColumn('v.tariff_family_id', 'f.tariff_family_id')->orderByDesc('v.version_number')->limit(1), 'latest_status')
             ->selectSub(DB::table('tariff_versions as v')->select('v.version_number')->whereColumn('v.tariff_family_id', 'f.tariff_family_id')->orderByDesc('v.version_number')->limit(1), 'latest_version_number');
-        if (($filters['search'] ?? '') !== '') $query->where('f.code', 'like', '%'.addcslashes((string) $filters['search'], '%_\\').'%');
+        if (($filters['search'] ?? '') !== '') {
+            $search = '%'.addcslashes((string) $filters['search'], '%_\\').'%';
+            $query->where(fn ($q) => $q->where('f.code', 'like', $search)->orWhere('f.title', 'like', $search));
+        }
         return $query->orderBy('f.code')->paginate(min(100, max(1, (int) ($filters['page_size'] ?? 25))), page: max(1, (int) ($filters['page'] ?? 1)));
     }
 
@@ -192,7 +195,7 @@ final readonly class PricingService
                 'PLATFORM' => null,
                 default => $input['scope_value'] ?? null,
             };
-            DB::table('tariff_families')->insert(['tariff_family_id' => $familyId, 'hq_id' => $actor->hqId, 'owner_key' => $actor->hqId, 'code' => Str::upper($input['code']), 'purpose' => $input['purpose'], 'scope_type' => $scopeType, 'scope_value' => $scopeValue, 'currency' => 'IRR', 'priority' => $input['priority'] ?? 100, 'created_by' => $actor->userId, 'created_at' => $now, 'updated_at' => $now]);
+            DB::table('tariff_families')->insert(['tariff_family_id' => $familyId, 'hq_id' => $actor->hqId, 'owner_key' => $actor->hqId, 'code' => Str::upper($input['code']), 'title' => isset($input['title']) ? trim((string) $input['title']) : null, 'purpose' => $input['purpose'], 'scope_type' => $scopeType, 'scope_value' => $scopeValue, 'currency' => 'IRR', 'priority' => $input['priority'] ?? 100, 'created_by' => $actor->userId, 'created_at' => $now, 'updated_at' => $now]);
             DB::table('tariff_versions')->insert(['tariff_version_id' => $versionId, 'tariff_family_id' => $familyId, 'hq_id' => $actor->hqId, 'zone_set_version_id' => $input['zone_set_version_id'], 'version_number' => 1, 'status' => 'DRAFT', 'valid_from' => $this->databaseTimestamp($input['valid_from'] ?? null), 'valid_to' => $this->databaseTimestamp($input['valid_to'] ?? null), 'lock_version' => 1, 'volumetric_divisor' => $input['volumetric_divisor'] ?? 5000, 'weight_rounding_step_kg' => $input['weight_rounding_step_kg'] ?? 0.5, 'rounding_mode' => $input['rounding_mode'] ?? 'STEP_UP', 'created_by' => $actor->userId, 'created_at' => $now, 'updated_at' => $now]);
             $this->replaceRules($versionId, (array) $input['rules']);
             $this->record($actor, 'TARIFF_FAMILY_CREATED', 'TARIFF_FAMILY', $familyId, $correlationId, ['version_id' => $versionId]);
@@ -393,7 +396,7 @@ final readonly class PricingService
     /** @return array<string,mixed> */
     public function tariffVersion(AuthenticatedPrincipal $actor, string $versionId): array
     {
-        $row = DB::table('tariff_versions as v')->join('tariff_families as f', 'f.tariff_family_id', '=', 'v.tariff_family_id')->where('v.tariff_version_id', $versionId)->where(fn ($q) => $q->whereNull('f.hq_id')->orWhere('f.hq_id', $actor->hqId))->select(['v.*', 'f.code', 'f.purpose', 'f.currency'])->first();
+        $row = DB::table('tariff_versions as v')->join('tariff_families as f', 'f.tariff_family_id', '=', 'v.tariff_family_id')->where('v.tariff_version_id', $versionId)->where(fn ($q) => $q->whereNull('f.hq_id')->orWhere('f.hq_id', $actor->hqId))->select(['v.*', 'f.code', 'f.title', 'f.purpose', 'f.currency'])->first();
         if ($row === null) throw new ApiException(ApiErrorCode::ResourceNotFound, 404, 'Resource not found.');
         $result = (array) $row; $result['rules'] = DB::table('tariff_rate_rules')->where('tariff_version_id', $versionId)->orderBy('priority')->get()->map(fn ($r) => $this->decode((array) $r))->all(); return $result;
     }
