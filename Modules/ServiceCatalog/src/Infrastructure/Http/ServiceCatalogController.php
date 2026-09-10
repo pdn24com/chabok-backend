@@ -89,7 +89,7 @@ final readonly class ServiceCatalogController
 
     public function commitments(Request $request, string $offeringId): JsonResponse
     {
-        $input = $request->validate(['service_offering_version_id' => ['nullable', 'uuid'], 'channel' => ['required', 'string'], 'acceptance_at' => ['nullable', 'date'], 'pickup_window_code' => ['nullable', 'string', 'max:80'], 'pickup_service_date' => ['nullable', 'date_format:Y-m-d'], 'delivery_window_code' => ['nullable', 'string', 'max:80'], 'sender' => ['required', 'array'], 'receiver' => ['required', 'array'], 'parcels' => ['nullable', 'array']]);
+        $input = $request->validate(['service_offering_version_id' => ['nullable', 'uuid'], 'channel' => ['required', 'string'], 'acceptance_at' => ['nullable', 'date'], 'as_of_timestamp' => ['nullable', 'date'], 'pickup_window_code' => ['nullable', 'string', 'max:80'], 'pickup_service_date' => ['nullable', 'date_format:Y-m-d'], 'delivery_window_code' => ['nullable', 'string', 'max:80'], 'sender' => ['required', 'array'], 'receiver' => ['required', 'array'], 'parcels' => ['nullable', 'array']]);
         return ApiResponder::success($request, $this->catalog->commitmentPreview($this->principal($request), $offeringId, $input));
     }
 

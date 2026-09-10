@@ -45,6 +45,7 @@ final class DeterministicCalculator
                 'category' => $rule['category'], 'calculation_method' => $method, 'basis' => $rule['basis'],
                 'quantity' => round($quantity, 4), 'unit_rate' => $rule['unit_rate'] === null ? null : (float) $rule['unit_rate'],
                 'amount' => max(0, $amount), 'accounting_mapping_key' => $rule['accounting_mapping_key'],
+                'taxable' => (bool) ($rule['taxable'] ?? true),
                 'explanation' => [
                     'range_from' => $from, 'range_to' => $to,
                     'declared_value_basis' => $rule['basis'] === 'DECLARED_VALUE' ? (int) $quantity : null,
@@ -92,7 +93,13 @@ final class DeterministicCalculator
     private function percentAmount(array $rule, array $lines, array $facts): int
     {
         $codes = is_string($rule['basis_charge_codes'] ?? null) ? json_decode($rule['basis_charge_codes'], true) : ($rule['basis_charge_codes'] ?? []);
-        $base = $codes ? array_sum(array_map(fn ($line) => in_array($line['charge_code'], $codes, true) ? $line['amount'] : 0, $lines)) : $this->quantity((string) $rule['basis'], $facts);
+        $isTax = $rule['category'] === 'TAX';
+        $base = $codes ? array_sum(array_map(static function ($line) use ($codes, $isTax): int {
+            if (! in_array($line['charge_code'], $codes, true)) return 0;
+            if ($isTax && (! ($line['taxable'] ?? true) || $line['category'] === 'TAX')) return 0;
+            return $isTax && $line['category'] === 'DISCOUNT' ? -$line['amount'] : $line['amount'];
+        }, $lines)) : $this->quantity((string) $rule['basis'], $facts);
+        $base = max(0, $base);
         return $this->money($base * ((int) ($rule['percentage_bps'] ?? 0)) / 10000);
     }
 

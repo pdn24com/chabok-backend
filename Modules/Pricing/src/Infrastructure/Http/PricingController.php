@@ -71,17 +71,50 @@ final readonly class PricingController
     /** @return array<string,mixed> */
     private function zoneSetRules(bool $create): array
     {
-        $rules = ['valid_from' => ['nullable', 'date'], 'valid_to' => ['nullable', 'date'], 'zones' => ['required', 'array', 'min:1'], 'zones.*.code' => ['required', 'regex:/^[A-Z][A-Z0-9_]{1,79}$/'], 'zones.*.title' => ['required', 'string', 'max:200'], 'zones.*.remote_area' => ['sometimes', 'boolean'], 'zones.*.members' => ['required', 'array', 'min:1'], 'zones.*.members.*.member_type' => ['required', 'in:EXPLICIT_OVERRIDE,POSTAL_RANGE,CITY,PROVINCE'], 'zones.*.members.*.reference_value' => ['required_unless:zones.*.members.*.member_type,CITY,PROVINCE', 'nullable', 'string', 'max:200'], 'zones.*.members.*.city_id' => ['required_if:zones.*.members.*.member_type,CITY', 'nullable', 'uuid'], 'zones.*.members.*.province_id' => ['required_if:zones.*.members.*.member_type,PROVINCE', 'nullable', 'uuid'], 'zones.*.members.*.range_end' => ['nullable', 'string', 'max:200']];
+        $rules = ['valid_from' => ['nullable', 'date'], 'valid_to' => ['nullable', 'date'], 'zones' => ['required', 'array', 'min:1'], 'zones.*.pricing_zone_id' => ['nullable', 'uuid', 'distinct'], 'zones.*.rank' => ['nullable', 'integer', 'min:1', 'distinct'], 'zones.*.code' => ['required', 'regex:/^[A-Z][A-Z0-9_]{1,79}$/'], 'zones.*.title' => ['required', 'string', 'max:200'], 'zones.*.remote_area' => ['sometimes', 'boolean'], 'zones.*.members' => ['required', 'array', 'min:1'], 'zones.*.members.*.member_type' => ['required', 'in:EXPLICIT_OVERRIDE,POSTAL_RANGE,CITY,PROVINCE'], 'zones.*.members.*.reference_value' => ['required_unless:zones.*.members.*.member_type,CITY,PROVINCE', 'nullable', 'string', 'max:200'], 'zones.*.members.*.city_id' => ['required_if:zones.*.members.*.member_type,CITY', 'nullable', 'uuid'], 'zones.*.members.*.province_id' => ['required_if:zones.*.members.*.member_type,PROVINCE', 'nullable', 'uuid'], 'zones.*.members.*.range_end' => ['nullable', 'string', 'max:200']];
         if ($create) $rules += ['code' => ['required', 'regex:/^[A-Z][A-Z0-9_]{1,79}$/'], 'purpose' => ['required', 'in:SALES,PURCHASE,COMMISSION,INTERNAL_TRANSFER'], 'title' => ['required', 'string', 'max:200']];
         return $rules;
     }
     /** @return array<string,mixed> */
     private function tariffRules(bool $create): array
     {
-        $rules = ['zone_set_version_id' => ['required', 'uuid'], 'valid_from' => ['nullable', 'date'], 'valid_to' => ['nullable', 'date'], 'volumetric_divisor' => ['numeric', 'gt:0'], 'weight_rounding_step_kg' => ['numeric', 'gt:0'], 'rounding_mode' => ['in:HALF_UP,HALF_EVEN,CEILING,FLOOR,STEP_UP'], 'rules' => ['required', 'array', 'min:1'], 'rules.*.service_offering_version_id' => ['required', 'uuid'], 'rules.*.service_option_version_id' => ['nullable', 'uuid'], 'rules.*.charge_type_id' => ['required', 'uuid'], 'rules.*.origin_zone_id' => ['nullable', 'uuid'], 'rules.*.destination_zone_id' => ['nullable', 'uuid'], 'rules.*.calculation_method' => ['required', 'in:FIXED,PER_UNIT,SLAB,TIERED,PERCENT,MIN_MAX'], 'rules.*.basis' => ['sometimes', 'in:SHIPMENT,ACTUAL_WEIGHT,BILLABLE_WEIGHT,PARCEL_COUNT,DECLARED_VALUE,COD_AMOUNT'], 'rules.*.range_from' => ['nullable', 'numeric', 'min:0'], 'rules.*.range_to' => ['nullable', 'numeric', 'gt:rules.*.range_from'], 'rules.*.fixed_amount' => ['nullable', 'integer', 'min:0'], 'rules.*.unit_rate' => ['nullable', 'numeric', 'min:0'], 'rules.*.percentage_bps' => ['nullable', 'integer', 'min:0', 'max:10000'], 'rules.*.minimum_amount' => ['nullable', 'integer', 'min:0'], 'rules.*.maximum_amount' => ['nullable', 'integer', 'min:0'], 'rules.*.amount_rounding_mode' => ['sometimes', 'in:NONE,CEIL,FLOOR,HALF_UP'], 'rules.*.amount_rounding_step' => ['nullable', 'integer', 'min:1'], 'rules.*.basis_charge_codes' => ['nullable', 'array'], 'rules.*.basis_charge_codes.*' => ['string', 'max:80'], 'rules.*.conditions' => ['nullable', 'array'], 'rules.*.priority' => ['sometimes', 'integer', 'min:1', 'max:65535']];
+        $rules = $this->matrixRules() + ['zone_set_version_id' => ['required', 'uuid'], 'valid_from' => ['nullable', 'date'], 'valid_to' => ['nullable', 'date'], 'volumetric_divisor' => ['numeric', 'gt:0'], 'weight_rounding_step_kg' => ['numeric', 'gt:0'], 'rounding_mode' => ['in:HALF_UP,HALF_EVEN,CEILING,FLOOR,STEP_UP'], 'rules' => ['present', 'array', 'max:10000'], 'rules.*.service_offering_version_id' => ['required', 'uuid'], 'rules.*.service_option_version_id' => ['nullable', 'uuid'], 'rules.*.charge_type_id' => ['required', 'uuid'], 'rules.*.origin_zone_id' => ['nullable', 'uuid'], 'rules.*.destination_zone_id' => ['nullable', 'uuid'], 'rules.*.calculation_method' => ['required', 'in:FIXED,PER_UNIT,SLAB,TIERED,PERCENT,MIN_MAX'], 'rules.*.basis' => ['sometimes', 'in:FLAT,SHIPMENT,ACTUAL_WEIGHT,BILLABLE_WEIGHT,PARCEL_COUNT,DECLARED_VALUE,COD_AMOUNT'], 'rules.*.range_from' => ['nullable', 'numeric', 'min:0'], 'rules.*.range_to' => ['nullable', 'numeric', 'gt:rules.*.range_from'], 'rules.*.fixed_amount' => ['nullable', 'integer', 'min:0'], 'rules.*.unit_rate' => ['nullable', 'numeric', 'min:0'], 'rules.*.percentage_bps' => ['nullable', 'integer', 'min:0', 'max:10000'], 'rules.*.minimum_amount' => ['nullable', 'integer', 'min:0'], 'rules.*.maximum_amount' => ['nullable', 'integer', 'min:0'], 'rules.*.amount_rounding_mode' => ['sometimes', 'in:NONE,CEIL,FLOOR,HALF_UP'], 'rules.*.amount_rounding_step' => ['nullable', 'integer', 'min:1'], 'rules.*.basis_charge_codes' => ['nullable', 'array'], 'rules.*.basis_charge_codes.*' => ['string', 'max:80'], 'rules.*.conditions' => ['nullable', 'array'], 'rules.*.priority' => ['sometimes', 'integer', 'min:1', 'max:65535']];
         if ($create) $rules += ['code' => ['required', 'regex:/^[A-Z][A-Z0-9_]{1,79}$/'], 'purpose' => ['required', 'in:SALES,PURCHASE,COMMISSION,INTERNAL_TRANSFER'], 'currency' => ['required', 'in:IRR'], 'title' => ['required', 'string', 'max:200'], 'scope_type' => ['in:PLATFORM,TENANT,SEGMENT,CUSTOMER,CONTRACT'], 'scope_value' => ['nullable', 'string', 'max:120'], 'priority' => ['integer', 'min:1', 'max:65535']];
         return $rules;
     }
+    private function matrixRules(): array
+    {
+        return [
+            'zone_policy' => ['sometimes', 'in:DIRECTIONAL,HIGHER_ZONE_RANK'],
+            'freight_matrices' => ['sometimes', 'array', 'max:100'],
+            'freight_matrices.*.id' => ['required', 'uuid', 'distinct'],
+            'freight_matrices.*.service_offering_version_id' => ['required', 'uuid'],
+            'freight_matrices.*.service_option_version_id' => ['nullable', 'uuid'],
+            'freight_matrices.*.origin_zone_id' => ['nullable', 'uuid'],
+            'freight_matrices.*.zone_ids' => ['required', 'array', 'min:1', 'max:100'],
+            'freight_matrices.*.zone_ids.*' => ['uuid'],
+            'freight_matrices.*.bands' => ['present', 'array', 'max:500'],
+            'freight_matrices.*.bands.*.id' => ['required', 'uuid'],
+            'freight_matrices.*.bands.*.from' => ['required', 'numeric', 'min:0', 'decimal:0,4'],
+            'freight_matrices.*.bands.*.to' => ['required', 'numeric', 'gt:0', 'decimal:0,4'],
+            'freight_matrices.*.bands.*.cells' => ['present', 'array', 'max:100'],
+            'freight_matrices.*.bands.*.cells.*.id' => ['required', 'uuid'],
+            'freight_matrices.*.bands.*.cells.*.zone_id' => ['required', 'uuid'],
+            'freight_matrices.*.bands.*.cells.*.state' => ['required', 'in:EMPTY,RATE,UNCOVERED'],
+            'freight_matrices.*.bands.*.cells.*.amount' => ['nullable', 'integer', 'min:0', 'max:9007199254740991'],
+            'rules.*.matrix_cell_id' => ['nullable', 'uuid'],
+            'rules.*.taxable' => ['nullable', 'boolean'],
+        ];
+    }
+
+    public function simulateDraft(Request $request, string $versionId): JsonResponse
+    {
+        $input = $request->validate($this->quoteRules() + ['expected_version' => ['required', 'integer', 'min:1']]);
+        $expected = (int) $input['expected_version'];
+        unset($input['expected_version']);
+        return ApiResponder::success($request, $this->pricing->simulateDraft($this->principal($request), $versionId, $input, $expected));
+    }
+
     private function principal(Request $request): AuthenticatedPrincipal { return $request->attributes->get('principal'); }
     private function correlation(Request $request): string { return (string) $request->attributes->get('correlation_id'); }
 }

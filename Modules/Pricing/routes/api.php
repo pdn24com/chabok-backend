@@ -11,6 +11,7 @@ Route::prefix('api/v1')->middleware(['api', 'access.auth', 'password.changed'])-
     Route::post('/pricing/quotes/{quoteId}/reject', [PricingController::class, 'reject'])->whereUuid('quoteId');
     Route::post('/pricing/snapshots/accept', [PricingController::class, 'accept'])->middleware('idempotent:pricing.snapshots.accept');
     Route::prefix('admin/pricing')->group(function (): void {
+        Route::post('/tariff-versions/{versionId}/simulate', [PricingController::class, 'simulateDraft'])->whereUuid('versionId');
         Route::get('/audit', [PricingController::class, 'audit']);
         Route::get('/tariff-families', [PricingController::class, 'tariffs']);
         Route::get('/charge-types', [PricingController::class, 'chargeTypes']);

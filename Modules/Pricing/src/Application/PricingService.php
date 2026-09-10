@@ -26,6 +26,8 @@ final readonly class PricingService
         private AuthorizationContextResolver $authorization,
         private ServiceEligibilityResolver $catalog,
         private DeterministicCalculator $calculator,
+        private TariffMatrixCompiler $matrixCompiler,
+        private \Modules\Pricing\Domain\FreightMatrices $matrices,
         private TransactionManager $transactions,
         private AuditWriter $audit,
         private OutboxWriter $outbox,
@@ -84,7 +86,7 @@ final readonly class PricingService
             $reference = (array) $row;
             $reference['zones'] = DB::table('pricing_zones')
                 ->where('zone_set_version_id', $row->zone_set_version_id)
-                ->orderBy('title')->get(['pricing_zone_id', 'code', 'title', 'remote_area'])
+                ->orderBy('title')->get(['pricing_zone_id', 'code', 'title', 'remote_area', 'rank'])
                 ->map(fn ($zone) => [...(array) $zone, 'remote_area' => (bool) $zone->remote_area])->all();
 
             return $reference;
@@ -116,7 +118,22 @@ final readonly class PricingService
         [$identityTable, $versionTable, $parentId, $versionId] = $this->pricingMap($kind);
         if (! DB::table($identityTable)->where($parentId, $identityId)->where(fn ($q) => $q->whereNull('hq_id')->orWhere('hq_id', $actor->hqId))->exists()) throw new ApiException(ApiErrorCode::ResourceNotFound, 404, 'Resource not found.');
         return DB::table($versionTable)->where($parentId, $identityId)->orderByDesc('version_number')->pluck($versionId)
-            ->map(fn ($id) => $kind === 'tariffs' ? $this->tariffVersion($actor, (string) $id) : $this->zoneVersion($actor, (string) $id))->all();
+            ->map(function ($id) use ($kind, $actor): array {
+                if ($kind !== 'tariffs') return $this->zoneVersion($actor, (string) $id);
+                $version = $this->tariffVersion($actor, (string) $id);
+                $version['configured_zone_set'] = $this->zoneVersion($actor, $version['zone_set_version_id']);
+                $asOf = CarbonImmutable::now('UTC');
+                $version['zone_resolution_at'] = $asOf->toISOString();
+                $version['effective_zone_set'] = null;
+                $version['zone_resolution_error'] = null;
+                try {
+                    $effectiveId = $this->resolveEffectiveZoneSetVersion($version['zone_set_version_id'], $asOf);
+                    $version['effective_zone_set'] = $this->zoneVersion($actor, $effectiveId);
+                } catch (ApiException $error) {
+                    $version['zone_resolution_error'] = 'PRICING_ZONE_VERSION_UNAVAILABLE_OR_AMBIGUOUS';
+                }
+                return $version;
+            })->all();
     }
 
     /** @return array<string,mixed> */
@@ -176,6 +193,7 @@ final readonly class PricingService
             $this->assertDraft($row, (int) $input['expected_version']);
             DB::table('pricing_zone_set_versions')->where('zone_set_version_id', $versionId)->update(['valid_from' => $this->databaseTimestamp($input['valid_from'] ?? null), 'valid_to' => $this->databaseTimestamp($input['valid_to'] ?? null), 'lock_version' => ((int) $row->lock_version) + 1, 'updated_at' => now()]);
             $this->replaceZones($versionId, (array) $input['zones']);
+            $this->record($actor, 'PRICING_ZONE_DRAFT_UPDATED', 'PRICING_VERSION', $versionId, (string) Str::uuid(), ['lock_version' => ((int) $row->lock_version) + 1]);
             return $this->zoneVersion($actor, $versionId);
         });
     }
@@ -186,6 +204,7 @@ final readonly class PricingService
         $this->assertAccess($actor, 'pricing.tariff.manage_draft');
         if ($input['currency'] !== 'IRR') throw new ApiException(ApiErrorCode::ValidationError, 422, 'Milestone 1 supports IRR only.');
         if (! in_array((string) ($input['scope_type'] ?? 'TENANT'), ['TENANT', 'PLATFORM'], true)) throw new ApiException(ApiErrorCode::ValidationError, 422, 'The selected tariff scope has no authoritative reference directory.');
+        $input = $this->matrixCompiler->prepare($input, $this->zoneVersion($actor, (string) $input['zone_set_version_id'])['zones'], $actor->hqId);
         $this->assertTariffReferences($actor, $input);
         return $this->transactions->run(function () use ($actor, $input, $correlationId): array {
             $familyId = (string) Str::uuid(); $versionId = (string) Str::uuid(); $now = now();
@@ -196,7 +215,7 @@ final readonly class PricingService
                 default => $input['scope_value'] ?? null,
             };
             DB::table('tariff_families')->insert(['tariff_family_id' => $familyId, 'hq_id' => $actor->hqId, 'owner_key' => $actor->hqId, 'code' => Str::upper($input['code']), 'title' => isset($input['title']) ? trim((string) $input['title']) : null, 'purpose' => $input['purpose'], 'scope_type' => $scopeType, 'scope_value' => $scopeValue, 'currency' => 'IRR', 'priority' => $input['priority'] ?? 100, 'created_by' => $actor->userId, 'created_at' => $now, 'updated_at' => $now]);
-            DB::table('tariff_versions')->insert(['tariff_version_id' => $versionId, 'tariff_family_id' => $familyId, 'hq_id' => $actor->hqId, 'zone_set_version_id' => $input['zone_set_version_id'], 'version_number' => 1, 'status' => 'DRAFT', 'valid_from' => $this->databaseTimestamp($input['valid_from'] ?? null), 'valid_to' => $this->databaseTimestamp($input['valid_to'] ?? null), 'lock_version' => 1, 'volumetric_divisor' => $input['volumetric_divisor'] ?? 5000, 'weight_rounding_step_kg' => $input['weight_rounding_step_kg'] ?? 0.5, 'rounding_mode' => $input['rounding_mode'] ?? 'STEP_UP', 'created_by' => $actor->userId, 'created_at' => $now, 'updated_at' => $now]);
+            DB::table('tariff_versions')->insert(['tariff_version_id' => $versionId, 'tariff_family_id' => $familyId, 'hq_id' => $actor->hqId, 'zone_set_version_id' => $input['zone_set_version_id'], 'zone_policy' => $input['zone_policy'], 'freight_matrices' => json_encode($input['freight_matrices'], JSON_THROW_ON_ERROR), 'version_number' => 1, 'status' => 'DRAFT', 'valid_from' => $this->databaseTimestamp($input['valid_from'] ?? null), 'valid_to' => $this->databaseTimestamp($input['valid_to'] ?? null), 'lock_version' => 1, 'volumetric_divisor' => $input['volumetric_divisor'] ?? 5000, 'weight_rounding_step_kg' => $input['weight_rounding_step_kg'] ?? 0.5, 'rounding_mode' => $input['rounding_mode'] ?? 'STEP_UP', 'created_by' => $actor->userId, 'created_at' => $now, 'updated_at' => $now]);
             $this->replaceRules($versionId, (array) $input['rules']);
             $this->record($actor, 'TARIFF_FAMILY_CREATED', 'TARIFF_FAMILY', $familyId, $correlationId, ['version_id' => $versionId]);
             return $this->tariffVersion($actor, $versionId);
@@ -207,12 +226,14 @@ final readonly class PricingService
     public function updateTariffVersion(AuthenticatedPrincipal $actor, string $versionId, array $input): array
     {
         $this->assertAccess($actor, 'pricing.tariff.manage_draft');
+        $input = $this->matrixCompiler->prepare($input, $this->zoneVersion($actor, (string) $input['zone_set_version_id'])['zones'], $actor->hqId);
         $this->assertTariffReferences($actor, $input);
         return $this->transactions->run(function () use ($actor, $versionId, $input): array {
             $row = DB::table('tariff_versions')->where('tariff_version_id', $versionId)->where('hq_id', $actor->hqId)->lockForUpdate()->first();
             $this->assertDraft($row, (int) $input['expected_version']);
-            DB::table('tariff_versions')->where('tariff_version_id', $versionId)->update(['zone_set_version_id' => $input['zone_set_version_id'], 'valid_from' => $this->databaseTimestamp($input['valid_from'] ?? null), 'valid_to' => $this->databaseTimestamp($input['valid_to'] ?? null), 'volumetric_divisor' => $input['volumetric_divisor'] ?? 5000, 'weight_rounding_step_kg' => $input['weight_rounding_step_kg'] ?? 0.5, 'rounding_mode' => $input['rounding_mode'] ?? 'STEP_UP', 'lock_version' => ((int) $row->lock_version) + 1, 'updated_at' => now()]);
+            DB::table('tariff_versions')->where('tariff_version_id', $versionId)->update(['zone_set_version_id' => $input['zone_set_version_id'], 'zone_policy' => $input['zone_policy'], 'freight_matrices' => json_encode($input['freight_matrices'], JSON_THROW_ON_ERROR), 'valid_from' => $this->databaseTimestamp($input['valid_from'] ?? null), 'valid_to' => $this->databaseTimestamp($input['valid_to'] ?? null), 'volumetric_divisor' => $input['volumetric_divisor'] ?? 5000, 'weight_rounding_step_kg' => $input['weight_rounding_step_kg'] ?? 0.5, 'rounding_mode' => $input['rounding_mode'] ?? 'STEP_UP', 'lock_version' => ((int) $row->lock_version) + 1, 'updated_at' => now()]);
             $this->replaceRules($versionId, (array) $input['rules']);
+            $this->record($actor, 'PRICING_DRAFT_UPDATED', 'PRICING_VERSION', $versionId, (string) Str::uuid(), ['lock_version' => ((int) $row->lock_version) + 1]);
             return $this->tariffVersion($actor, $versionId);
         });
     }
@@ -221,7 +242,10 @@ final readonly class PricingService
     public function validateTariff(AuthenticatedPrincipal $actor, string $versionId): array
     {
         $this->assertAccess($actor, 'pricing.tariff.manage_draft');
-        $version = $this->tariffVersion($actor, $versionId); $errors = [];
+        $version = $this->tariffVersion($actor, $versionId);
+        $zones = $this->zoneVersion($actor, $version['zone_set_version_id'])['zones'];
+        $errors = $this->matrices->validate($version['freight_matrices'] ?? [], array_column($zones, 'pricing_zone_id'), $version['zone_policy'], true);
+        if ($version['zone_policy'] === 'HIGHER_ZONE_RANK' && ! $this->matrices->ranksValid($zones)) $errors[] = ['code' => 'PRICING_ZONE_RANK_INCOMPLETE', 'field' => 'zone_set_version_id'];
         if (! $version['valid_from']) $errors[] = ['code' => 'PRICING_VALID_FROM_REQUIRED', 'field' => 'valid_from'];
         if ($version['valid_from'] && $version['valid_to'] && $version['valid_to'] <= $version['valid_from']) $errors[] = ['code' => 'PRICING_EFFECTIVE_INTERVAL_INVALID', 'field' => 'valid_to'];
         if ($this->hasVersionOverlap('tariff_versions', 'tariff_family_id', $version)) $errors[] = ['code' => 'PRICING_EFFECTIVE_INTERVAL_OVERLAP', 'field' => 'valid_from'];
@@ -237,6 +261,7 @@ final readonly class PricingService
             if ($method === 'SLAB' && $rule['fixed_amount'] === null && $rule['unit_rate'] === null) $errors[] = ['code' => 'PRICING_SLAB_RATE_REQUIRED', 'field' => 'rules'];
             if ($method === 'PERCENT' && $rule['percentage_bps'] === null) $errors[] = ['code' => 'PRICING_PERCENTAGE_REQUIRED', 'field' => 'rules'];
             if ($method === 'MIN_MAX' && $rule['minimum_amount'] === null && $rule['maximum_amount'] === null) $errors[] = ['code' => 'PRICING_MIN_MAX_BOUND_REQUIRED', 'field' => 'rules'];
+            if ($rule['minimum_amount'] !== null && $rule['maximum_amount'] !== null && $rule['minimum_amount'] > $rule['maximum_amount']) $errors[] = ['code' => 'PRICING_MIN_MAX_INVALID', 'field' => 'rules'];
             if (($rule['amount_rounding_mode'] ?? 'NONE') !== 'NONE' && empty($rule['amount_rounding_step'])) $errors[] = ['code' => 'PRICING_AMOUNT_ROUNDING_STEP_REQUIRED', 'field' => 'rules'];
         }
         $duplicates = collect($version['rules'])->groupBy(fn ($r) => implode('|', [$r['service_offering_version_id'], $r['service_option_version_id'], $r['origin_zone_id'], $r['destination_zone_id'], $r['charge_type_id'], $r['priority'], $r['range_from'], $r['range_to']]))->filter(fn ($g) => $g->count() > 1);
@@ -257,6 +282,10 @@ final readonly class PricingService
         $members = collect($version['zones'])->flatMap(fn ($zone) => collect($zone['members'])->map(fn ($member) => [...$member, 'pricing_zone_id' => $zone['pricing_zone_id']]));
         $ambiguous = $members->groupBy(fn ($member) => implode('|', [$member['member_type'], (string) ($member['city_id'] ?? $member['province_id'] ?? mb_strtolower((string) $member['reference_value'])), (string) ($member['range_end'] ?? ''), $this->memberPrecedence((string) $member['member_type'])]))
             ->contains(fn ($group) => $group->pluck('pricing_zone_id')->unique()->count() > 1);
+        $postal = $members->where('member_type', 'POSTAL_RANGE')->values()->all();
+        foreach ($postal as $index => $left) foreach (array_slice($postal, $index + 1) as $right) {
+            if ($left['pricing_zone_id'] !== $right['pricing_zone_id'] && strlen((string) $left['reference_value']) === strlen((string) $right['reference_value']) && strcmp((string) $left['reference_value'], (string) $right['range_end']) <= 0 && strcmp((string) $right['reference_value'], (string) $left['range_end']) <= 0) $ambiguous = true;
+        }
         if ($ambiguous) $errors[] = ['code' => 'PRICING_ZONE_AMBIGUOUS', 'field' => 'zones'];
         return ['valid' => $errors === [], 'errors' => $errors];
     }
@@ -298,18 +327,36 @@ final readonly class PricingService
     /** @param array<string,mixed> $input @return array<string,mixed> */
     public function calculateQuote(AuthenticatedPrincipal $actor, array $input, string $idempotencyKey): array
     {
+        return $this->calculate($actor, $input, $idempotencyKey);
+    }
+
+    public function simulateDraft(AuthenticatedPrincipal $actor, string $versionId, array $input, int $expectedVersion): array
+    {
+        $this->assertAccess($actor, 'pricing.tariff.manage_draft');
+        return $this->transactions->run(function () use ($actor, $versionId, $input, $expectedVersion): array {
+            $draft = DB::table('tariff_versions as v')->join('tariff_families as f', 'f.tariff_family_id', '=', 'v.tariff_family_id')
+                ->where('v.tariff_version_id', $versionId)->where('v.hq_id', $actor->hqId)
+                ->select(['v.*', 'f.currency', 'f.code as tariff_code', 'f.title as tariff_title'])->lockForUpdate()->first();
+            if ($draft === null) throw new ApiException(ApiErrorCode::TenantAccessDenied, 403, 'Access denied.');
+            $this->assertDraft($draft, $expectedVersion);
+            return $this->calculate($actor, $input, '', $draft);
+        });
+    }
+
+    private function calculate(AuthenticatedPrincipal $actor, array $input, string $idempotencyKey, ?object $draft = null): array
+    {
         $this->assertAccess($actor, 'pricing.quote.calculate', runtime: true);
         $purpose = (string) ($input['purpose'] ?? 'SALES');
         if ($purpose !== 'SALES') throw new ApiException(ApiErrorCode::ValidationError, 422, 'This pricing purpose is not active in Milestone 1.', details: ['reason_code' => 'PRICING_PURPOSE_NOT_ACTIVE']);
         $input = $this->normalize($input); $inputFingerprint = $this->fingerprint($input);
-        $existing = DB::table('pricing_quotes')->where(['hq_id' => $actor->hqId, 'requested_by' => $actor->userId, 'idempotency_key' => $idempotencyKey])->first();
+        $existing = $draft === null ? DB::table('pricing_quotes')->where(['hq_id' => $actor->hqId, 'requested_by' => $actor->userId, 'idempotency_key' => $idempotencyKey])->first() : null;
         if ($existing !== null) {
             if ((string) $existing->input_fingerprint !== $inputFingerprint) throw new ApiException(ApiErrorCode::IdempotencyKeyReused, 409, 'The idempotency key was already used with different pricing input.');
             return $this->quoteDetail($actor, (string) $existing->quote_id);
         }
         $offering = $this->catalog->validateSelection($actor, (string) $input['service_offering_id'], $input['service_offering_version_id'] ?? null, $input);
         $asOf = CarbonImmutable::parse((string) $input['as_of_timestamp'])->utc();
-        $tariff = DB::table('tariff_versions as v')->join('tariff_families as f', 'f.tariff_family_id', '=', 'v.tariff_family_id')
+        $tariff = $draft ?? DB::table('tariff_versions as v')->join('tariff_families as f', 'f.tariff_family_id', '=', 'v.tariff_family_id')
             ->where('f.purpose', 'SALES')->where('f.currency', 'IRR')->where(fn ($q) => $q->whereNull('f.hq_id')->orWhere('f.hq_id', $actor->hqId))
             ->whereExists(fn ($q) => $q->selectRaw('1')->from('tariff_rate_rules as eligible_rule')->whereColumn('eligible_rule.tariff_version_id', 'v.tariff_version_id')->where('eligible_rule.service_offering_version_id', $offering['service_offering_version_id']))
             ->where(function ($q) use ($actor): void {
@@ -317,20 +364,28 @@ final readonly class PricingService
                     ->orWhere(fn ($scope) => $scope->where('f.scope_type', 'TENANT')->where(fn ($value) => $value->whereNull('f.scope_value')->orWhere('f.scope_value', $actor->hqId)));
             })
             ->where('v.status', 'PUBLISHED')->where('v.valid_from', '<=', $asOf)->where(fn ($q) => $q->whereNull('v.valid_to')->orWhere('v.valid_to', '>', $asOf))
-            ->orderBy('f.priority')->orderByRaw("FIELD(f.scope_type, 'CONTRACT', 'CUSTOMER', 'SEGMENT', 'TENANT', 'PLATFORM')")->orderBy('f.code')->orderByDesc('v.version_number')->select(['v.*', 'f.currency', 'f.code as tariff_code'])->first();
+            ->orderBy('f.priority')->orderByRaw("FIELD(f.scope_type, 'CONTRACT', 'CUSTOMER', 'SEGMENT', 'TENANT', 'PLATFORM')")->orderBy('f.code')->orderByDesc('v.version_number')->select(['v.*', 'f.currency', 'f.code as tariff_code', 'f.title as tariff_title'])->first();
         if ($tariff === null) throw new ApiException(ApiErrorCode::PricingTariffNotFound, 422, 'No eligible tariff was found.', details: ['reason_code' => 'PRICING_TARIFF_NOT_FOUND']);
         $resolvedZoneSetVersionId = $this->resolveEffectiveZoneSetVersion((string) $tariff->zone_set_version_id, $asOf);
         [$origin, $originEvidence] = $this->resolveZone($resolvedZoneSetVersionId, (array) $input['sender']);
         [$destination, $destinationEvidence] = $this->resolveZone($resolvedZoneSetVersionId, (array) $input['receiver']);
         $facts = $this->facts($input, (array) $tariff, $destination);
+        $basisZone = $destination;
+        if ($tariff->zone_policy === 'HIGHER_ZONE_RANK') {
+            $rankedZones = DB::table('pricing_zones')->where('zone_set_version_id', $resolvedZoneSetVersionId)->get()->map(fn ($z) => (array) $z)->all();
+            if (! $this->matrices->ranksValid($rankedZones)) throw new ApiException(ApiErrorCode::PricingZoneUnresolved, 422, 'Zone ranks are incomplete or ambiguous.', details: ['reason_code' => 'PRICING_ZONE_RANK_INCOMPLETE']);
+            $basisZone = $origin['rank'] > $destination['rank'] ? $origin : $destination;
+        }
+        $matrixCell = $this->matrixCell($tariff, $offering, $input, $origin, $basisZone, $facts['billable_weight_kg']);
         $rules = DB::table('tariff_rate_rules as r')->join('pricing_charge_types as c', 'c.charge_type_id', '=', 'r.charge_type_id')
             ->leftJoin('pricing_zones as origin_rule_zone', 'origin_rule_zone.pricing_zone_id', '=', 'r.origin_zone_id')
             ->leftJoin('pricing_zones as destination_rule_zone', 'destination_rule_zone.pricing_zone_id', '=', 'r.destination_zone_id')
             ->where('r.tariff_version_id', $tariff->tariff_version_id)->where('r.service_offering_version_id', $offering['service_offering_version_id'])
             ->where(fn ($q) => $q->whereNull('r.service_option_version_id')->orWhereIn('r.service_option_version_id', (array) $input['selected_option_version_ids']))
-            ->where(fn ($q) => $q->whereNull('r.origin_zone_id')->orWhere('origin_rule_zone.code', $origin['code']))
-            ->where(fn ($q) => $q->whereNull('r.destination_zone_id')->orWhere('destination_rule_zone.code', $destination['code']))
-            ->select(['r.*', 'c.code as charge_type_code', 'c.category', 'c.accounting_mapping_key', 'c.code as title'])->get()->map(fn ($r) => (array) $r)->all();
+            ->select(['r.*', 'origin_rule_zone.code as origin_code', 'destination_rule_zone.code as destination_code', 'c.code as charge_type_code', 'c.category', 'c.accounting_mapping_key', 'c.code as title', DB::raw('COALESCE(r.taxable, c.taxable) as taxable')])->get()->filter(function ($r) use ($matrixCell, $origin, $destination): bool {
+                if ($r->matrix_cell_id !== null) return $r->matrix_cell_id === $matrixCell;
+                return ($r->origin_code === null || $r->origin_code === $origin['code']) && ($r->destination_code === null || $r->destination_code === $destination['code']);
+            })->map(fn ($r) => (array) $r)->values()->all();
         if ($rules === []) throw new ApiException(ApiErrorCode::PricingRuleNotFound, 422, 'No pricing rule matches the selected service and lane.', details: ['reason_code' => 'PRICING_RULE_NOT_FOUND']);
         $calculation = $this->calculator->calculate($rules, $facts);
         if ($calculation['lines'] === [] || $calculation['total_amount'] <= 0 || ! collect($calculation['lines'])->contains(fn ($line) => $line['charge_code'] === 'BASE_FREIGHT')) throw new ApiException(ApiErrorCode::PricingRejected, 422, 'Pricing did not produce a complete nonzero base price.', details: ['reason_code' => 'PRICING_INCOMPLETE_RESULT']);
@@ -338,6 +393,12 @@ final readonly class PricingService
         $quoteId = (string) Str::uuid(); $now = CarbonImmutable::now('UTC'); $ttl = (int) config('chabok.pricing.quote_ttl_seconds', 900);
         $evidence = ['tariff_code' => $tariff->tariff_code, 'zone_set' => ['configured_version_id' => (string) $tariff->zone_set_version_id, 'resolved_version_id' => $resolvedZoneSetVersionId], 'origin' => $originEvidence, 'destination' => $destinationEvidence, 'weight' => $facts, 'service' => ['outcome' => $offering['outcome'], 'reason_codes' => $offering['reason_codes'], 'labels' => $offering['labels'] ?? [], 'service_type_id' => $offering['service_type_id'], 'shipping_method_id' => $offering['shipping_method_id'], 'selected_option_version_ids' => $input['selected_option_version_ids'], 'commitment' => $offering['commitment'] ?? null]];
         $warnings = $facts['weight_evidence'] === 'AGGREGATE_FALLBACK' ? ['PRICING_AGGREGATE_WEIGHT_FALLBACK'] : [];
+        $evidence['tariff_title'] = $tariff->tariff_title;
+        $evidence['tariff_version_number'] = (int) $tariff->version_number;
+        $evidence['zone_policy'] = $tariff->zone_policy;
+        $evidence['zones'] = ['origin' => $origin, 'destination' => $destination, 'basis' => $basisZone];
+        $evidence['matrix_cell_id'] = $matrixCell;
+        if ($draft !== null) return [...$calculation, 'mode' => 'DRAFT', 'acceptable' => false, 'tariff_version_id' => $tariff->tariff_version_id, 'lock_version' => (int) $tariff->lock_version, 'zone_set_version_id' => $resolvedZoneSetVersionId, 'currency' => 'IRR', 'calculated_at' => $now->toISOString(), 'resolution_evidence' => $evidence, 'warnings' => $warnings, 'lines' => array_map(fn ($l) => [...$l, 'charge_type_code' => $l['charge_code']], $calculation['lines'])];
         $this->transactions->run(function () use ($actor, $input, $idempotencyKey, $inputFingerprint, $offering, $tariff, $resolvedZoneSetVersionId, $origin, $destination, $calculation, $quoteId, $now, $ttl, $evidence, $warnings): void {
             DB::table('pricing_quotes')->insert(['quote_id' => $quoteId, 'hq_id' => $actor->hqId, 'requested_by' => $actor->userId, 'purpose' => 'SALES', 'tariff_version_id' => $tariff->tariff_version_id, 'zone_set_version_id' => $resolvedZoneSetVersionId, 'service_offering_id' => $offering['service_offering_id'], 'service_offering_version_id' => $offering['service_offering_version_id'], 'origin_zone_id' => $origin['pricing_zone_id'], 'destination_zone_id' => $destination['pricing_zone_id'], 'currency' => 'IRR', 'subtotal_amount' => $calculation['subtotal_amount'], 'discount_amount' => $calculation['discount_amount'], 'tax_amount' => $calculation['tax_amount'], 'total_amount' => $calculation['total_amount'], 'normalized_input' => json_encode($input, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE), 'resolution_evidence' => json_encode($evidence, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE), 'warnings' => json_encode($warnings, JSON_THROW_ON_ERROR), 'input_fingerprint' => $inputFingerprint, 'result_fingerprint' => $calculation['result_fingerprint'], 'idempotency_key' => $idempotencyKey, 'status' => 'OFFERED', 'calculated_at' => $now, 'expires_at' => $now->addSeconds($ttl), 'created_at' => $now, 'updated_at' => $now]);
             $this->insertLines('pricing_quote_lines', 'quote_line_id', 'quote_id', $quoteId, $calculation['lines']);
@@ -398,7 +459,7 @@ final readonly class PricingService
     {
         $row = DB::table('tariff_versions as v')->join('tariff_families as f', 'f.tariff_family_id', '=', 'v.tariff_family_id')->where('v.tariff_version_id', $versionId)->where(fn ($q) => $q->whereNull('f.hq_id')->orWhere('f.hq_id', $actor->hqId))->select(['v.*', 'f.code', 'f.title', 'f.purpose', 'f.currency'])->first();
         if ($row === null) throw new ApiException(ApiErrorCode::ResourceNotFound, 404, 'Resource not found.');
-        $result = (array) $row; $result['rules'] = DB::table('tariff_rate_rules')->where('tariff_version_id', $versionId)->orderBy('priority')->get()->map(fn ($r) => $this->decode((array) $r))->all(); return $result;
+        $result = $this->decode((array) $row); $result['rules'] = DB::table('tariff_rate_rules')->where('tariff_version_id', $versionId)->orderBy('priority')->get()->map(fn ($r) => $this->decode((array) $r))->all(); return $result;
     }
 
     /** @return array<string,mixed> */
@@ -435,10 +496,22 @@ final readonly class PricingService
     /** @param list<array<string,mixed>> $zones */
     private function replaceZones(string $versionId, array $zones): void
     {
+        $codes = []; $ranks = [];
+        foreach ($zones as $zone) {
+            $code = Str::upper($zone['code']); $rank = $zone['rank'] ?? null;
+            if (isset($codes[$code]) || ($rank !== null && ($rank < 1 || (int) $rank != $rank || isset($ranks[(int) $rank])))) throw new ApiException(ApiErrorCode::ValidationError, 422, 'Zone codes and explicit ranks must be unique within the version.');
+            $codes[$code] = true; if ($rank !== null) $ranks[(int) $rank] = true;
+            foreach ($zone['members'] as $member) if ($member['member_type'] === 'POSTAL_RANGE') {
+                $from = (string) ($member['reference_value'] ?? ''); $to = (string) ($member['range_end'] ?? '');
+                if (! preg_match('/^[0-9]{1,32}$/', $from) || ! preg_match('/^[0-9]{1,32}$/', $to) || strlen($from) !== strlen($to) || strcmp($from, $to) > 0) throw new ApiException(ApiErrorCode::ValidationError, 422, 'Postal range requires ordered digit strings of equal length.');
+            }
+        }
+        $existing = DB::table('pricing_zones')->where('zone_set_version_id', $versionId)->pluck('pricing_zone_id', 'code')->all();
         DB::table('pricing_zones')->where('zone_set_version_id', $versionId)->delete();
         foreach ($zones as $zone) {
-            $zoneId = (string) Str::uuid();
-            DB::table('pricing_zones')->insert(['pricing_zone_id' => $zoneId, 'zone_set_version_id' => $versionId, 'code' => Str::upper($zone['code']), 'title' => $zone['title'], 'remote_area' => $zone['remote_area'] ?? false]);
+            $requestedId = $zone['pricing_zone_id'] ?? null;
+            $zoneId = in_array($requestedId, $existing, true) ? $requestedId : ($existing[Str::upper($zone['code'])] ?? (string) Str::uuid());
+            DB::table('pricing_zones')->insert(['pricing_zone_id' => $zoneId, 'zone_set_version_id' => $versionId, 'code' => Str::upper($zone['code']), 'title' => $zone['title'], 'remote_area' => $zone['remote_area'] ?? false, 'rank' => $zone['rank'] ?? null]);
             foreach ((array) ($zone['members'] ?? []) as $member) {
                 $type = (string) $member['member_type'];
                 $city = $type === 'CITY' ? $this->canonicalCityMember($member) : null;
@@ -457,7 +530,7 @@ final readonly class PricingService
     private function replaceRules(string $versionId, array $rules): void
     {
         DB::table('tariff_rate_rules')->where('tariff_version_id', $versionId)->delete();
-        foreach ($rules as $rule) DB::table('tariff_rate_rules')->insert(['rate_rule_id' => (string) Str::uuid(), 'tariff_version_id' => $versionId, 'service_offering_version_id' => $rule['service_offering_version_id'], 'service_option_version_id' => $rule['service_option_version_id'] ?? null, 'charge_type_id' => $rule['charge_type_id'], 'origin_zone_id' => $rule['origin_zone_id'] ?? null, 'destination_zone_id' => $rule['destination_zone_id'] ?? null, 'calculation_method' => $rule['calculation_method'], 'basis' => $rule['basis'] ?? 'BILLABLE_WEIGHT', 'range_from' => $rule['range_from'] ?? null, 'range_to' => $rule['range_to'] ?? null, 'fixed_amount' => $rule['fixed_amount'] ?? null, 'unit_rate' => $rule['unit_rate'] ?? null, 'percentage_bps' => $rule['percentage_bps'] ?? null, 'minimum_amount' => $rule['minimum_amount'] ?? null, 'maximum_amount' => $rule['maximum_amount'] ?? null, 'amount_rounding_mode' => $rule['amount_rounding_mode'] ?? 'NONE', 'amount_rounding_step' => $rule['amount_rounding_step'] ?? null, 'basis_charge_codes' => isset($rule['basis_charge_codes']) ? json_encode($rule['basis_charge_codes'], JSON_THROW_ON_ERROR) : null, 'conditions' => isset($rule['conditions']) ? json_encode($rule['conditions'], JSON_THROW_ON_ERROR) : null, 'priority' => $rule['priority'] ?? 100]);
+        foreach ($rules as $rule) DB::table('tariff_rate_rules')->insert(['rate_rule_id' => (string) Str::uuid(), 'matrix_cell_id' => $rule['matrix_cell_id'] ?? null, 'taxable' => $rule['taxable'] ?? null, 'tariff_version_id' => $versionId, 'service_offering_version_id' => $rule['service_offering_version_id'], 'service_option_version_id' => $rule['service_option_version_id'] ?? null, 'charge_type_id' => $rule['charge_type_id'], 'origin_zone_id' => $rule['origin_zone_id'] ?? null, 'destination_zone_id' => $rule['destination_zone_id'] ?? null, 'calculation_method' => $rule['calculation_method'], 'basis' => $rule['basis'] ?? 'BILLABLE_WEIGHT', 'range_from' => $rule['range_from'] ?? null, 'range_to' => $rule['range_to'] ?? null, 'fixed_amount' => $rule['fixed_amount'] ?? null, 'unit_rate' => $rule['unit_rate'] ?? null, 'percentage_bps' => $rule['percentage_bps'] ?? null, 'minimum_amount' => $rule['minimum_amount'] ?? null, 'maximum_amount' => $rule['maximum_amount'] ?? null, 'amount_rounding_mode' => $rule['amount_rounding_mode'] ?? 'NONE', 'amount_rounding_step' => $rule['amount_rounding_step'] ?? null, 'basis_charge_codes' => isset($rule['basis_charge_codes']) ? json_encode($rule['basis_charge_codes'], JSON_THROW_ON_ERROR) : null, 'conditions' => isset($rule['conditions']) ? json_encode($rule['conditions'], JSON_THROW_ON_ERROR) : null, 'priority' => $rule['priority'] ?? 100]);
     }
 
     /** @param array<string,mixed> $party @return array{array<string,mixed>,array<string,mixed>} */
@@ -468,7 +541,32 @@ final readonly class PricingService
         if ($matches === []) throw new ApiException(ApiErrorCode::PricingZoneUnresolved, 422, 'Pricing zone could not be resolved.', details: ['reason_code' => 'PRICING_ZONE_UNRESOLVED']);
         usort($matches, fn ($left, $right) => $right->effective_precedence <=> $left->effective_precedence); $top = $matches[0]->effective_precedence; $winners = array_values(array_filter($matches, fn ($m) => $m->effective_precedence === $top));
         if (count(array_unique(array_map(fn ($m) => $m->pricing_zone_id, $winners))) > 1) throw new ApiException(ApiErrorCode::PricingZoneAmbiguous, 422, 'Pricing zone is ambiguous.', details: ['reason_code' => 'PRICING_ZONE_AMBIGUOUS']);
-        $winner = $winners[0]; return [['pricing_zone_id' => $winner->pricing_zone_id, 'code' => $winner->code, 'remote_area' => (bool) $winner->remote_area], ['member_id' => $winner->zone_member_id, 'member_type' => $winner->member_type, 'precedence' => $winner->effective_precedence]];
+        $winner = $winners[0]; return [['pricing_zone_id' => $winner->pricing_zone_id, 'code' => $winner->code, 'title' => $winner->title, 'rank' => $winner->rank === null ? null : (int) $winner->rank, 'remote_area' => (bool) $winner->remote_area], ['member_id' => $winner->zone_member_id, 'member_type' => $winner->member_type, 'precedence' => $winner->effective_precedence]];
+    }
+
+    private function matrixCell(object $tariff, array $offering, array $input, array $origin, array $basisZone, float $weight): ?string
+    {
+        $matrices = json_decode($tariff->freight_matrices ?? '[]', true) ?? [];
+        if ($matrices === []) return null;
+        $codes = DB::table('pricing_zones')->where('zone_set_version_id', $tariff->zone_set_version_id)->pluck('code', 'pricing_zone_id')->all();
+        $candidates = array_values(array_filter($matrices, static function ($m) use ($offering, $input, $origin, $codes): bool {
+            return $m['service_offering_version_id'] === $offering['service_offering_version_id']
+                && (empty($m['service_option_version_id']) || in_array($m['service_option_version_id'], $input['selected_option_version_ids'], true))
+                && (empty($m['origin_zone_id']) || ($codes[$m['origin_zone_id']] ?? null) === $origin['code']);
+        }));
+        $specific = array_values(array_filter($candidates, static fn ($m) => ! empty($m['service_option_version_id'])));
+        if ($specific !== []) $candidates = $specific;
+        if ($candidates === []) return null;
+        if (count($candidates) !== 1) throw new ApiException(ApiErrorCode::PricingRejected, 422, 'More than one freight matrix applies.', details: ['reason_code' => 'PRICING_MATRIX_AMBIGUOUS']);
+        foreach ($candidates[0]['bands'] as $band) {
+            if ($weight < (float) $band['from'] || $weight >= (float) $band['to']) continue;
+            foreach ($band['cells'] as $cell) {
+                if (($codes[$cell['zone_id']] ?? null) !== $basisZone['code']) continue;
+                if ($cell['state'] === 'RATE') return $cell['id'];
+                throw new ApiException(ApiErrorCode::PricingRuleNotFound, 422, 'The selected freight lane is not priced.', details: ['reason_code' => $cell['state'] === 'UNCOVERED' ? 'PRICING_LANE_UNCOVERED' : 'PRICING_MATRIX_RATE_MISSING']);
+            }
+        }
+        throw new ApiException(ApiErrorCode::PricingRuleNotFound, 422, 'The shipment is outside the declared freight matrix.', details: ['reason_code' => 'PRICING_MATRIX_OUTSIDE_DOMAIN']);
     }
 
     private function resolveEffectiveZoneSetVersion(string $configuredVersionId, CarbonImmutable $asOf): string
@@ -515,7 +613,16 @@ final readonly class PricingService
     /** @param array<string,mixed> $input @return array<string,mixed> */
     private function normalize(array $input): array
     {
-        unset($input['_hq_id'], $input['_node_id'], $input['_actor_user_id'], $input['_actor_session_id'], $input['_pricing_request_id']); foreach (['sender', 'receiver'] as $party) { $input[$party] = $this->geography->canonicalizeContact((array) ($input[$party] ?? []), false); unset($input[$party]['city_reference']); } $input['purpose'] = $input['purpose'] ?? 'SALES'; $input['channel'] = $input['channel'] ?? 'BRANCH'; $input['as_of_timestamp'] = CarbonImmutable::parse((string) ($input['as_of_timestamp'] ?? now()->toISOString()))->utc()->toISOString(); $input['selected_option_version_ids'] = array_values((array) ($input['selected_option_version_ids'] ?? [])); return $input;
+        if (! (bool) ($input['insurance_enabled'] ?? false)) throw new ApiException(ApiErrorCode::ValidationError, 422, 'Declared-value insurance is mandatory.', fieldErrors: ['insurance_enabled' => ['Insurance is required.']]);
+        $packages = $input['parcels'] ?? [];
+        if ($packages === []) $packages = [$input];
+        foreach ($packages as $index => $package) {
+            if (! isset($package['weight_kg']) || ! is_numeric($package['weight_kg']) || ! is_finite((float) $package['weight_kg']) || $package['weight_kg'] <= 0) throw new ApiException(ApiErrorCode::ValidationError, 422, 'A positive parcel weight is required.', fieldErrors: ["parcels.{$index}.weight_kg" => ['Positive weight required.']]);
+            $dimensions = array_filter(array_intersect_key($package, array_flip(['length_cm', 'width_cm', 'height_cm'])), fn ($v) => $v !== null);
+            if ($dimensions !== [] && (count($dimensions) !== 3 || count(array_filter($dimensions, fn ($v) => is_numeric($v) && is_finite((float) $v) && $v > 0)) !== 3)) throw new ApiException(ApiErrorCode::ValidationError, 422, 'Provide all three positive parcel dimensions or omit them together.', fieldErrors: ["parcels.{$index}" => ['Incomplete or invalid dimensions.']]);
+        }
+        if (($input['cod_enabled'] ?? false) && (int) ($input['cod_amount'] ?? 0) <= 0) throw new ApiException(ApiErrorCode::ValidationError, 422, 'COD requires a positive goods collection amount.');
+        unset($input['_hq_id'], $input['_node_id'], $input['_actor_user_id'], $input['_actor_session_id'], $input['_pricing_request_id']); foreach (['sender', 'receiver'] as $party) { $input[$party] = $this->geography->canonicalizeContact((array) ($input[$party] ?? []), false); unset($input[$party]['city_reference']); } $input['purpose'] = $input['purpose'] ?? 'SALES'; $input['channel'] = $input['channel'] ?? 'BRANCH'; $input['as_of_timestamp'] = CarbonImmutable::parse((string) ($input['as_of_timestamp'] ?? now()->toISOString()))->utc()->toISOString(); $input['acceptance_at'] = $input['acceptance_at'] ?? $input['as_of_timestamp']; $input['selected_option_version_ids'] = array_values((array) ($input['selected_option_version_ids'] ?? [])); return $input;
     }
 
     /**
@@ -641,7 +748,7 @@ final readonly class PricingService
     }
 
     /** @param array<string,mixed> $row @return array<string,mixed> */
-    private function decode(array $row): array { foreach (['normalized_input', 'resolution_evidence', 'warnings', 'explanation', 'conditions', 'basis_charge_codes'] as $field) if (isset($row[$field]) && is_string($row[$field])) $row[$field] = json_decode($row[$field], true); return $row; }
+    private function decode(array $row): array { foreach (['freight_matrices', 'normalized_input', 'resolution_evidence', 'warnings', 'explanation', 'conditions', 'basis_charge_codes'] as $field) if (isset($row[$field]) && is_string($row[$field])) $row[$field] = json_decode($row[$field], true); return $row; }
 
     /** @param array<string,mixed> $after */
     private function record(AuthenticatedPrincipal $actor, string $action, string $type, string $id, string $correlationId, array $after): void { $this->audit->write($actor->hqId, $actor->userId, $action, $type, $id, $correlationId, after: $after, sourceClient: 'BRANCH_PANEL'); $this->outbox->write($actor->hqId, $type, $id, 'pricing.configuration.changed', $correlationId, ['action' => $action, 'target_type' => $type, 'target_id' => $id]); }

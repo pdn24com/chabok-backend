@@ -460,6 +460,83 @@ final class ServiceCatalogPricingIntegrationTest extends MySqlRedisTestCase
         $this->assertSame('LOCKED', $noWindowCreated['commercial_pricing_state']);
     }
 
+    public function test_v2_ranked_matrix_draft_simulation_and_publication_share_the_engine(): void
+    {
+        $this->app->make(AuthorizationCatalogSeeder::class)->run();
+        $this->app->make(PricingChargeTypeSeeder::class)->run();
+        [$tenant, $maker, $checker] = $this->administratorContext('V2');
+        $catalog = $this->app->make(ServiceCatalogService::class);
+        $pricing = $this->app->make(PricingService::class);
+        $type = $catalog->createIdentity($maker, 'service-types', ['code' => 'V2_TYPE', 'labels' => ['fa' => 'سرویس آزمون'], 'definition' => [], 'valid_from' => null, 'valid_to' => null], (string) Str::uuid());
+        $catalog->transition($checker, 'service-types', $type['service_type_version_id'], 'approve', (string) Str::uuid());
+        $catalog->transition($maker, 'service-types', $type['service_type_version_id'], 'publish', (string) Str::uuid());
+        $method = $catalog->createIdentity($maker, 'shipping-methods', ['code' => 'V2_GROUND', 'labels' => ['fa' => 'زمینی'], 'definition' => [], 'valid_from' => null, 'valid_to' => null], (string) Str::uuid());
+        $catalog->transition($checker, 'shipping-methods', $method['shipping_method_version_id'], 'approve', (string) Str::uuid());
+        $catalog->transition($maker, 'shipping-methods', $method['shipping_method_version_id'], 'publish', (string) Str::uuid());
+        $offering = $catalog->createIdentity($maker, 'offerings', [
+            'code' => 'V2_SERVICE', 'labels' => ['fa' => 'سرویس مستقل'], 'service_type_version_id' => $type['service_type_version_id'], 'shipping_method_version_id' => $method['shipping_method_version_id'],
+            'sla_policy' => ['commitment_type' => 'DURATION', 'duration_value' => 24, 'duration_unit' => 'HOUR'], 'option_rules' => [], 'eligibility_rules' => [], 'coverage_references' => [],
+            'availability_bindings' => [['scope_type' => 'TENANT', 'scope_value' => $tenant['hq_id'], 'enabled' => true]], 'valid_from' => null, 'valid_to' => null,
+        ], (string) Str::uuid());
+        $catalog->transition($checker, 'offerings', $offering['service_offering_version_id'], 'approve', (string) Str::uuid());
+        $catalog->transition($maker, 'offerings', $offering['service_offering_version_id'], 'publish', (string) Str::uuid());
+        $cities = DB::table('cities')->where('is_active', true)->orderBy('city_id')->limit(2)->pluck('city_id')->all();
+        $zoneSet = $pricing->createZoneSet($maker, ['code' => 'V2_ZONES', 'purpose' => 'SALES', 'title' => 'مناطق رتبه‌ای', 'valid_from' => now()->subMinute()->toISOString(), 'zones' => [
+            ['code' => 'AA', 'title' => 'منطقه الف', 'rank' => 2, 'members' => [['member_type' => 'CITY', 'city_id' => $cities[0]]]],
+            ['code' => 'BB', 'title' => 'منطقه ب', 'rank' => 9, 'members' => [['member_type' => 'CITY', 'city_id' => $cities[1]]]],
+        ]], (string) Str::uuid());
+        $pricing->transition($maker, 'zone-sets', $zoneSet['zone_set_version_id'], 'approve', (string) Str::uuid());
+        $pricing->transition($maker, 'zone-sets', $zoneSet['zone_set_version_id'], 'publish', (string) Str::uuid());
+        $zones = collect($zoneSet['zones'])->keyBy('code');
+        $matrix = ['id' => (string) Str::uuid(), 'service_offering_version_id' => $offering['service_offering_version_id'], 'service_option_version_id' => null, 'origin_zone_id' => null, 'zone_ids' => [$zones['AA']['pricing_zone_id'], $zones['BB']['pricing_zone_id']], 'bands' => [
+            ['id' => (string) Str::uuid(), 'from' => 0.5, 'to' => 2, 'cells' => [
+                ['id' => (string) Str::uuid(), 'zone_id' => $zones['AA']['pricing_zone_id'], 'state' => 'RATE', 'amount' => 1000],
+                ['id' => (string) Str::uuid(), 'zone_id' => $zones['BB']['pricing_zone_id'], 'state' => 'RATE', 'amount' => 5000],
+            ]],
+        ]];
+        $tariff = $pricing->createTariff($maker, [
+            'code' => 'V2_TARIFF', 'title' => 'تعرفه دوطرفه', 'currency' => 'IRR', 'purpose' => 'SALES', 'zone_set_version_id' => $zoneSet['zone_set_version_id'], 'zone_policy' => 'HIGHER_ZONE_RANK', 'valid_from' => now()->subMinute()->toISOString(), 'freight_matrices' => [$matrix],
+            'rules' => [['service_offering_version_id' => $offering['service_offering_version_id'], 'charge_type_id' => DB::table('pricing_charge_types')->where('code', 'INSURANCE')->value('charge_type_id'), 'calculation_method' => 'PERCENT', 'basis' => 'DECLARED_VALUE', 'percentage_bps' => 2, 'amount_rounding_mode' => 'CEIL', 'amount_rounding_step' => 10000, 'priority' => 20, 'taxable' => false]],
+        ], (string) Str::uuid());
+        $input = ['service_offering_id' => $offering['service_offering_id'], 'service_offering_version_id' => $offering['service_offering_version_id'], 'sender' => ['city_id' => $cities[0]], 'receiver' => ['city_id' => $cities[1]], 'parcels' => [['weight_kg' => 1]], 'declared_value_amount' => 290000000, 'insurance_enabled' => true, 'cod_enabled' => false];
+        $before = DB::table('pricing_quotes')->count();
+        $forward = $pricing->simulateDraft($maker, $tariff['tariff_version_id'], $input, 1);
+        $reverse = $pricing->simulateDraft($maker, $tariff['tariff_version_id'], [...$input, 'sender' => $input['receiver'], 'receiver' => $input['sender']], 1);
+        $this->assertSame(65000, $forward['total_amount']);
+        $this->assertSame($forward['total_amount'], $reverse['total_amount']);
+        $this->assertSame(false, $forward['acceptable']);
+        $this->assertArrayNotHasKey('quote_id', $forward);
+        $this->assertSame($before, DB::table('pricing_quotes')->count());
+        $this->assertSame(9, $forward['resolution_evidence']['zones']['basis']['rank']);
+        $this->assertSame('HIGHER_ZONE_RANK', $forward['resolution_evidence']['zone_policy']);
+        $multi = $pricing->simulateDraft($maker, $tariff['tariff_version_id'], [...$input, 'parcels' => [['weight_kg' => 0.5], ['weight_kg' => 0.5]]], 1);
+        $this->assertSame(65000, $multi['total_amount']);
+        $this->assertSame(2, $multi['resolution_evidence']['weight']['parcel_count']);
+        foreach ([['parcels' => [['weight_kg' => 1, 'width_cm' => 10]]], ['insurance_enabled' => false], ['cod_enabled' => true, 'cod_amount' => 0]] as $invalid) {
+            try { $pricing->simulateDraft($maker, $tariff['tariff_version_id'], [...$input, ...$invalid], 1); $this->fail('Invalid input must not simulate.'); } catch (ApiException $e) { $this->assertSame(ApiErrorCode::ValidationError, $e->errorCode); }
+        }
+        try { $pricing->simulateDraft($maker, $tariff['tariff_version_id'], [...$input, 'parcels' => [['weight_kg' => 2]]], 1); $this->fail('Exclusive upper bound must not match.'); } catch (ApiException $e) { $this->assertSame(ApiErrorCode::PricingRuleNotFound, $e->errorCode); }
+        $noRole = $this->user($tenant['hq_id'], 'v2-unprivileged');
+        try { $pricing->simulateDraft(new AuthenticatedPrincipal($noRole['user_id'], (string) Str::uuid(), $tenant['hq_id'], false), $tariff['tariff_version_id'], $input, 1); $this->fail('Draft permission is required.'); } catch (ApiException $e) { $this->assertSame(ApiErrorCode::PermissionDenied, $e->errorCode); }
+        $token = $this->login('v2-maker')['token'];
+        $this->withToken($token)->postJson('/api/v1/admin/pricing/tariff-versions/'.$tariff['tariff_version_id'].'/simulate', [...$input, 'expected_version' => 1])->assertOk()->assertJsonPath('data.acceptable', false)->assertJsonPath('data.total_amount', 65000);
+
+        try { $pricing->simulateDraft($maker, $tariff['tariff_version_id'], $input, 99); $this->fail('Stale draft should fail.'); } catch (ApiException $e) { $this->assertSame(ApiErrorCode::VersionConflict, $e->errorCode); }
+        [, $foreign] = $this->administratorContext('V2-FOREIGN');
+        try { $pricing->simulateDraft($foreign, $tariff['tariff_version_id'], $input, 1); $this->fail('Foreign draft should fail.'); } catch (ApiException $e) { $this->assertSame(ApiErrorCode::TenantAccessDenied, $e->errorCode); }
+        $pricing->transition($maker, 'tariffs', $tariff['tariff_version_id'], 'approve', (string) Str::uuid());
+        $pricing->transition($maker, 'tariffs', $tariff['tariff_version_id'], 'publish', (string) Str::uuid());
+        $quote = $pricing->calculateQuote($maker, $input, (string) Str::uuid());
+        $this->assertSame(65000, $quote['total_amount']);
+        $this->assertSame($forward['zone_set_version_id'], $quote['zone_set_version_id']);
+        $history = $pricing->history($maker, 'tariffs', $tariff['tariff_family_id']);
+        $this->assertSame($quote['zone_set_version_id'], $history[0]['effective_zone_set']['zone_set_version_id']);
+        try { DB::table('tariff_versions')->where('tariff_version_id', $tariff['tariff_version_id'])->update(['zone_policy' => 'DIRECTIONAL']); $this->fail('Published policy is immutable.'); } catch (QueryException $e) { $this->assertStringContainsString('immutable published Pricing', $e->getMessage()); }
+        $this->assertSame($quote, $pricing->quoteDetail($maker, $quote['quote_id']));
+
+        try { $pricing->simulateDraft($maker, $tariff['tariff_version_id'], $input, 1); $this->fail('Published simulation must use runtime.'); } catch (ApiException $e) { $this->assertSame(ApiErrorCode::ValidationError, $e->errorCode); }
+    }
+
     public function test_draft_concurrency_and_cross_tenant_visibility_fail_closed(): void
     {
         $this->app->make(AuthorizationCatalogSeeder::class)->run();
