@@ -14,7 +14,7 @@ use Modules\Foundation\Application\Contracts\TransactionManager;
 use Modules\Foundation\Domain\ApiErrorCode;
 use Modules\Foundation\Domain\ApiException;
 use Modules\Foundation\Domain\AuthenticatedPrincipal;
-use Modules\Operations\Domain\GeoJsonGeometry;
+use Modules\Geography\Domain\GeoJsonGeometry;
 
 final readonly class CoveragePolicyService
 {

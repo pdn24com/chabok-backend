@@ -16,6 +16,8 @@ use Modules\Foundation\Domain\ApiErrorCode;
 use Modules\Foundation\Domain\ApiException;
 use Modules\Foundation\Domain\AuthenticatedPrincipal;
 use Modules\Geography\Application\GeographyResolver;
+use Modules\Geography\Application\PolygonGeometry;
+use Modules\Pricing\Domain\PostalRange;
 use Modules\Geography\Domain\PersianSearchNormalizer;
 use Modules\Pricing\Domain\DeterministicCalculator;
 use Modules\ServiceCatalog\Application\Contracts\ServiceEligibilityResolver;
@@ -33,6 +35,7 @@ final readonly class PricingService
         private OutboxWriter $outbox,
         private GeographyResolver $geography,
         private PersianSearchNormalizer $normalizer,
+        private PolygonGeometry $polygons,
     ) {}
 
     /** @param array<string,mixed> $filters */
@@ -154,7 +157,7 @@ final readonly class PricingService
                 $rules = DB::table('tariff_rate_rules')->where('tariff_version_id', $previousId)->get()->map(fn ($row) => $this->decode((array) $row))->all();
                 $this->replaceRules($newId, $rules);
             } else {
-                $this->replaceZones($newId, $this->zoneVersion($actor, $previousId)['zones']);
+                $this->replaceZones($newId, $this->zoneVersion($actor, $previousId)['zones'], $previousId);
             }
             $this->record($actor, 'PRICING_DRAFT_CLONED', 'PRICING_VERSION', $newId, $correlationId, ['previous_version_id' => $previousId]);
             return $kind === 'tariffs' ? $this->tariffVersion($actor, $newId) : $this->zoneVersion($actor, $newId);
@@ -275,12 +278,13 @@ final readonly class PricingService
     {
         $this->assertAccess($actor, 'pricing.tariff.manage_draft');
         $version = $this->zoneVersion($actor, $versionId); $errors = [];
+        try { $this->validatePolygons($version['zones']); } catch (ApiException $exception) { $errors[] = ['code' => 'PRICING_POLYGON_INVALID_OR_OVERLAPPING', 'field' => 'zones']; }
         if (! $version['valid_from']) $errors[] = ['code' => 'PRICING_VALID_FROM_REQUIRED', 'field' => 'valid_from'];
         if ($version['valid_from'] && $version['valid_to'] && $version['valid_to'] <= $version['valid_from']) $errors[] = ['code' => 'PRICING_EFFECTIVE_INTERVAL_INVALID', 'field' => 'valid_to'];
         if ($this->hasVersionOverlap('pricing_zone_set_versions', 'pricing_zone_set_id', $version)) $errors[] = ['code' => 'PRICING_EFFECTIVE_INTERVAL_OVERLAP', 'field' => 'valid_from'];
         if ($version['zones'] === []) $errors[] = ['code' => 'PRICING_ZONE_REQUIRED', 'field' => 'zones'];
         $members = collect($version['zones'])->flatMap(fn ($zone) => collect($zone['members'])->map(fn ($member) => [...$member, 'pricing_zone_id' => $zone['pricing_zone_id']]));
-        $ambiguous = $members->groupBy(fn ($member) => implode('|', [$member['member_type'], (string) ($member['city_id'] ?? $member['province_id'] ?? mb_strtolower((string) $member['reference_value'])), (string) ($member['range_end'] ?? ''), $this->memberPrecedence((string) $member['member_type'])]))
+        $ambiguous = $members->where('member_type', '!=', 'POLYGON')->groupBy(fn ($member) => implode('|', [$member['member_type'], (string) ($member['city_id'] ?? $member['province_id'] ?? mb_strtolower((string) $member['reference_value'])), (string) ($member['range_end'] ?? ''), $this->memberPrecedence((string) $member['member_type'])]))
             ->contains(fn ($group) => $group->pluck('pricing_zone_id')->unique()->count() > 1);
         $postal = $members->where('member_type', 'POSTAL_RANGE')->values()->all();
         foreach ($postal as $index => $left) foreach (array_slice($postal, $index + 1) as $right) {
@@ -367,8 +371,8 @@ final readonly class PricingService
             ->orderBy('f.priority')->orderByRaw("FIELD(f.scope_type, 'CONTRACT', 'CUSTOMER', 'SEGMENT', 'TENANT', 'PLATFORM')")->orderBy('f.code')->orderByDesc('v.version_number')->select(['v.*', 'f.currency', 'f.code as tariff_code', 'f.title as tariff_title'])->first();
         if ($tariff === null) throw new ApiException(ApiErrorCode::PricingTariffNotFound, 422, 'No eligible tariff was found.', details: ['reason_code' => 'PRICING_TARIFF_NOT_FOUND']);
         $resolvedZoneSetVersionId = $this->resolveEffectiveZoneSetVersion((string) $tariff->zone_set_version_id, $asOf);
-        [$origin, $originEvidence] = $this->resolveZone($resolvedZoneSetVersionId, (array) $input['sender']);
-        [$destination, $destinationEvidence] = $this->resolveZone($resolvedZoneSetVersionId, (array) $input['receiver']);
+        [$origin, $originEvidence] = $this->resolveZone($resolvedZoneSetVersionId, (array) $input['sender'], 'sender');
+        [$destination, $destinationEvidence] = $this->resolveZone($resolvedZoneSetVersionId, (array) $input['receiver'], 'receiver');
         $facts = $this->facts($input, (array) $tariff, $destination);
         $basisZone = $destination;
         if ($tariff->zone_policy === 'HIGHER_ZONE_RANK') {
@@ -477,9 +481,9 @@ final readonly class PricingService
                 ->select([
                     'm.zone_member_id', 'm.pricing_zone_id', 'm.member_type', 'm.reference_value',
                     'm.city_id', DB::raw('COALESCE(c.province_id, m.province_id) as province_id'),
-                    'm.range_end', 'm.precedence', 'c.name_fa as city_name_fa', 'c.legacy_city_code',
+                    'm.geometry', 'm.range_end', 'm.precedence', 'c.name_fa as city_name_fa', 'c.legacy_city_code',
                     'p.name_fa as province_name_fa', 'p.legacy_province_code',
-                ])->get()->map(fn ($m) => (array) $m)->all();
+                ])->get()->map(fn ($m) => [...(array) $m, 'geometry' => $m->geometry === null ? null : json_decode($m->geometry, true, 512, JSON_THROW_ON_ERROR)])->all();
             return $zone;
         })->all();
         return $result;
@@ -493,18 +497,45 @@ final readonly class PricingService
         return $snapshot;
     }
 
-    /** @param list<array<string,mixed>> $zones */
-    private function replaceZones(string $versionId, array $zones): void
+    /** Validate the complete candidate before any deletion; the version lock serializes writers. */
+    private function validatePolygons(array $zones): array
     {
+        $polygons = [];
+        foreach ($zones as $zi => &$zone) foreach ($zone['members'] as &$member) {
+            if ($member['member_type'] !== 'POLYGON') { unset($member['geometry']); continue; }
+            $member['geometry'] = $this->polygons->normalize((array) ($member['geometry'] ?? []));
+            foreach ($polygons as [$otherZone, $geometry]) {
+                if ($otherZone !== $zi && $this->polygons->intersects($geometry, $member['geometry'])) throw new ApiException(ApiErrorCode::PricingZoneAmbiguous, 422, 'محدوده با چندضلعی منطقهٔ دیگری تداخل دارد؛ پیش از ذخیره مرزها را اصلاح کنید.', details: ['reason_code' => 'PRICING_POLYGON_OVERLAP']);
+            }
+            $polygons[] = [$zi, $member['geometry']];
+        }
+        unset($zone, $member);
+        return $zones;
+    }
+
+    /** @param list<array<string,mixed>> $zones */
+    private function replaceZones(string $versionId, array $zones, ?string $sourceVersionId = null): void
+    {
+        $savedPostal = DB::table('pricing_zone_members as m')->join('pricing_zones as z', 'z.pricing_zone_id', '=', 'm.pricing_zone_id')
+            ->where('z.zone_set_version_id', $sourceVersionId ?? $versionId)->where('m.member_type', 'POSTAL_RANGE')->get(['z.pricing_zone_id', 'm.reference_value', 'm.range_end']);
+        foreach ($zones as &$zone) foreach ($zone['members'] as &$member) {
+            if ($member['member_type'] === 'POSTAL_RANGE') {
+                $from = PostalRange::normalize((string) ($member['reference_value'] ?? ''));
+                $to = PostalRange::normalize((string) ($member['range_end'] ?? ''));
+                $savedIndex = $savedPostal->search(fn ($old) => $old->pricing_zone_id === ($zone['pricing_zone_id'] ?? null) && $old->reference_value === $from && $old->range_end === $to);
+                $unchanged = $savedIndex !== false;
+                if ($unchanged) $savedPostal->forget($savedIndex);
+                if (! $unchanged && ! PostalRange::valid($from, $to)) throw new ApiException(ApiErrorCode::ValidationError, 422, 'ابتدا و انتهای بازهٔ کدپستی باید دقیقاً ده رقم و به‌ترتیب باشند.', details: ['reason_code' => 'PRICING_POSTAL_RANGE_INVALID']);
+                $member['reference_value'] = $from; $member['range_end'] = $to;
+            }
+        }
+        unset($zone, $member);
+        $zones = $this->validatePolygons($zones);
         $codes = []; $ranks = [];
         foreach ($zones as $zone) {
             $code = Str::upper($zone['code']); $rank = $zone['rank'] ?? null;
             if (isset($codes[$code]) || ($rank !== null && ($rank < 1 || (int) $rank != $rank || isset($ranks[(int) $rank])))) throw new ApiException(ApiErrorCode::ValidationError, 422, 'Zone codes and explicit ranks must be unique within the version.');
             $codes[$code] = true; if ($rank !== null) $ranks[(int) $rank] = true;
-            foreach ($zone['members'] as $member) if ($member['member_type'] === 'POSTAL_RANGE') {
-                $from = (string) ($member['reference_value'] ?? ''); $to = (string) ($member['range_end'] ?? '');
-                if (! preg_match('/^[0-9]{1,32}$/', $from) || ! preg_match('/^[0-9]{1,32}$/', $to) || strlen($from) !== strlen($to) || strcmp($from, $to) > 0) throw new ApiException(ApiErrorCode::ValidationError, 422, 'Postal range requires ordered digit strings of equal length.');
-            }
         }
         $existing = DB::table('pricing_zones')->where('zone_set_version_id', $versionId)->pluck('pricing_zone_id', 'code')->all();
         DB::table('pricing_zones')->where('zone_set_version_id', $versionId)->delete();
@@ -521,7 +552,7 @@ final readonly class PricingService
                     throw new ApiException(ApiErrorCode::ValidationError, 422, 'Zone member province is inactive or invalid.');
                 }
                 $reference = $cityId ?? $provinceId ?? (string) ($member['reference_value'] ?? '');
-                DB::table('pricing_zone_members')->insert(['zone_member_id' => (string) Str::uuid(), 'pricing_zone_id' => $zoneId, 'member_type' => $type, 'reference_value' => $reference, 'city_id' => $cityId, 'province_id' => $provinceId, 'range_end' => $member['range_end'] ?? null, 'precedence' => $this->memberPrecedence($type)]);
+                DB::table('pricing_zone_members')->insert(['zone_member_id' => (string) Str::uuid(), 'pricing_zone_id' => $zoneId, 'member_type' => $type, 'reference_value' => $reference, 'city_id' => $cityId, 'province_id' => $provinceId, 'range_end' => $member['range_end'] ?? null, 'geometry' => isset($member['geometry']) ? json_encode($member['geometry'], JSON_THROW_ON_ERROR) : null, 'precedence' => $this->memberPrecedence($type)]);
             }
         }
     }
@@ -534,10 +565,16 @@ final readonly class PricingService
     }
 
     /** @param array<string,mixed> $party @return array{array<string,mixed>,array<string,mixed>} */
-    private function resolveZone(string $versionId, array $party): array
+    private function resolveZone(string $versionId, array $party, string $partyName): array
     {
         $members = DB::table('pricing_zone_members as m')->join('pricing_zones as z', 'z.pricing_zone_id', '=', 'm.pricing_zone_id')->where('z.zone_set_version_id', $versionId)->get(); $matches = [];
-        foreach ($members as $m) { $matchesMember = match ($m->member_type) { 'EXPLICIT_OVERRIDE' => ($party['zone_override'] ?? null) === $m->reference_value, 'POSTAL_RANGE' => isset($party['postal_code']) && strcmp((string) $party['postal_code'], (string) $m->reference_value) >= 0 && strcmp((string) $party['postal_code'], (string) $m->range_end) <= 0, 'CITY' => $m->city_id !== null ? ($party['city_id'] ?? null) === $m->city_id : isset($party['city']) && $this->normalizer->normalize((string) $party['city']) === $this->normalizer->normalize((string) $m->reference_value), 'PROVINCE' => $m->province_id !== null ? ($party['province_id'] ?? null) === $m->province_id : isset($party['state']) && $this->normalizer->normalize((string) $party['state']) === $this->normalizer->normalize((string) $m->reference_value), default => false }; if ($matchesMember) { $m->effective_precedence = $this->memberPrecedence((string) $m->member_type); $matches[] = $m; } }
+        if ($members->contains('member_type', 'POLYGON')) {
+            foreach (['latitude' => 90, 'longitude' => 180] as $coordinate => $limit) {
+                $value = $party[$coordinate] ?? null;
+                if (! is_numeric($value) || ! is_finite((float) $value) || abs((float) $value) > $limit) throw new ApiException(ApiErrorCode::PricingZoneUnresolved, 422, 'تعرفهٔ انتخاب‌شده به موقعیت دقیق نیاز دارد؛ موقعیت مبدأ و مقصد را روی نقشه ثبت کنید.', fieldErrors: ["{$partyName}.{$coordinate}" => ['موقعیت دقیق نشانی الزامی است.']], details: ['reason_code' => 'PRICING_COORDINATES_REQUIRED', 'party' => $partyName]);
+            }
+        }
+        foreach ($members as $m) { $matchesMember = match ($m->member_type) { 'EXPLICIT_OVERRIDE' => ($party['zone_override'] ?? null) === $m->reference_value, 'POSTAL_RANGE' => isset($party['postal_code']) && strcmp((string) $party['postal_code'], (string) $m->reference_value) >= 0 && strcmp((string) $party['postal_code'], (string) $m->range_end) <= 0, 'CITY' => $m->city_id !== null ? ($party['city_id'] ?? null) === $m->city_id : isset($party['city']) && $this->normalizer->normalize((string) $party['city']) === $this->normalizer->normalize((string) $m->reference_value), 'POLYGON' => $this->polygons->contains(json_decode($m->geometry, true, 512, JSON_THROW_ON_ERROR), (float) $party['latitude'], (float) $party['longitude']), 'PROVINCE' => $m->province_id !== null ? ($party['province_id'] ?? null) === $m->province_id : isset($party['state']) && $this->normalizer->normalize((string) $party['state']) === $this->normalizer->normalize((string) $m->reference_value), default => false }; if ($matchesMember) { $m->effective_precedence = $this->memberPrecedence((string) $m->member_type); $matches[] = $m; } }
         if ($matches === []) throw new ApiException(ApiErrorCode::PricingZoneUnresolved, 422, 'Pricing zone could not be resolved.', details: ['reason_code' => 'PRICING_ZONE_UNRESOLVED']);
         usort($matches, fn ($left, $right) => $right->effective_precedence <=> $left->effective_precedence); $top = $matches[0]->effective_precedence; $winners = array_values(array_filter($matches, fn ($m) => $m->effective_precedence === $top));
         if (count(array_unique(array_map(fn ($m) => $m->pricing_zone_id, $winners))) > 1) throw new ApiException(ApiErrorCode::PricingZoneAmbiguous, 422, 'Pricing zone is ambiguous.', details: ['reason_code' => 'PRICING_ZONE_AMBIGUOUS']);
@@ -656,7 +693,7 @@ final readonly class PricingService
 
     private function memberPrecedence(string $type): int
     {
-        return match ($type) { 'EXPLICIT_OVERRIDE' => 400, 'POSTAL_RANGE' => 300, 'CITY' => 200, 'PROVINCE' => 100, default => 0 };
+        return match ($type) { 'EXPLICIT_OVERRIDE' => 400, 'POSTAL_RANGE' => 300, 'POLYGON' => 250, 'CITY' => 200, 'PROVINCE' => 100, default => 0 };
     }
 
     private function databaseTimestamp(mixed $value): ?string

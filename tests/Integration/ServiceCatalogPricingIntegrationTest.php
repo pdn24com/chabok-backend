@@ -460,6 +460,83 @@ final class ServiceCatalogPricingIntegrationTest extends MySqlRedisTestCase
         $this->assertSame('LOCKED', $noWindowCreated['commercial_pricing_state']);
     }
 
+    public function test_pricing_polygon_configuration_rejects_collisions_and_preserves_legacy_members(): void
+    {
+        $this->app->make(AuthorizationCatalogSeeder::class)->run();
+        [$tenant, $maker] = $this->administratorContext('POLYGONS');
+        $pricing = $this->app->make(PricingService::class);
+        $square = fn (float $x) => ['type' => 'Polygon', 'coordinates' => [[[$x, 35], [$x + 1, 35], [$x + 1, 36], [$x, 36], [$x, 35]]]];
+        $zones = [
+            ['code' => 'AA', 'title' => 'الف', 'remote_area' => true, 'members' => [['member_type' => 'POLYGON', 'geometry' => $square(50)], ['member_type' => 'EXPLICIT_OVERRIDE', 'reference_value' => 'VIP'], ['member_type' => 'POSTAL_RANGE', 'reference_value' => '۰۰۰۰۰۰۰۰۰۱', 'range_end' => '٠٠٠٠٠٠٠٠٠٩']]],
+            ['code' => 'BB', 'title' => 'ب', 'members' => [['member_type' => 'POLYGON', 'geometry' => $square(53)]]],
+        ];
+        $token = $this->login('polygons-maker')['token'];
+        $response = $this->withToken($token)->postJson('/api/v1/admin/pricing/zone-sets', ['code' => 'POLYGON_SET', 'title' => 'محدوده‌ها', 'purpose' => 'SALES', 'valid_from' => now()->subMinute()->toISOString(), 'zones' => $zones])->assertCreated();
+        $saved = $response->json('data'); $id = $saved['zone_set_version_id'];
+        $aa = array_search('AA', array_column($saved['zones'], 'code')); $bb = array_search('BB', array_column($saved['zones'], 'code'));
+        $polygonIndex = array_search('POLYGON', array_column($saved['zones'][$aa]['members'], 'member_type'));
+        $postalIndex = array_search('POSTAL_RANGE', array_column($saved['zones'][$aa]['members'], 'member_type'));
+        $overrideIndex = array_search('EXPLICIT_OVERRIDE', array_column($saved['zones'][$aa]['members'], 'member_type'));
+        $this->assertEquals($square(50), $saved['zones'][$aa]['members'][$polygonIndex]['geometry']);
+        $this->assertSame('0000000001', $saved['zones'][$aa]['members'][$postalIndex]['reference_value']);
+        $this->assertTrue($pricing->validateZoneSet($maker, $id)['valid']);
+        $resolve = new \ReflectionMethod($pricing, 'resolveZone');
+        [$zone, $evidence] = $resolve->invoke($pricing, $id, ['latitude' => 35, 'longitude' => 50], 'sender');
+        $this->assertSame('AA', $zone['code']); $this->assertSame(250, $evidence['precedence']);
+        [, $postalEvidence] = $resolve->invoke($pricing, $id, ['latitude' => 35.5, 'longitude' => 50.5, 'postal_code' => '0000000005'], 'sender');
+        $this->assertSame('POSTAL_RANGE', $postalEvidence['member_type']);
+        [, $overrideEvidence] = $resolve->invoke($pricing, $id, ['latitude' => 35.5, 'longitude' => 50.5, 'postal_code' => '0000000005', 'zone_override' => 'VIP'], 'sender');
+        $this->assertSame('EXPLICIT_OVERRIDE', $overrideEvidence['member_type']);
+        foreach ([50.5, 51.0] as $overlap) {
+            $candidate = $saved['zones']; $candidate[$bb]['members'][0]['geometry'] = $square($overlap);
+            try { $pricing->updateZoneVersion($maker, $id, ['expected_version' => 1, 'zones' => $candidate]); $this->fail('Overlap or shared boundary must fail before mutation.'); }
+            catch (ApiException $error) { $this->assertSame(ApiErrorCode::PricingZoneAmbiguous, $error->errorCode); }
+            $this->assertSame($saved, $pricing->zoneVersion($maker, $id));
+        }
+        foreach ([['type' => 'Polygon', 'coordinates' => [[[50, 35], [51, 36], [50, 36], [51, 35], [50, 35]]]], $square(181)] as $invalid) {
+            $candidate = $saved['zones']; $candidate[$aa]['members'][$polygonIndex]['geometry'] = $invalid;
+            try { $pricing->updateZoneVersion($maker, $id, ['expected_version' => 1, 'zones' => $candidate]); $this->fail('Invalid geometry must fail.'); }
+            catch (ApiException $error) { $this->assertSame(ApiErrorCode::ValidationError, $error->errorCode); }
+        }
+        $noRole = $this->user($tenant['hq_id'], 'polygon-no-role');
+        try { $pricing->updateZoneVersion(new AuthenticatedPrincipal($noRole['user_id'], (string) Str::uuid(), $tenant['hq_id'], false), $id, ['expected_version' => 1, 'zones' => $saved['zones']]); $this->fail('Permission required.'); }
+        catch (ApiException $error) { $this->assertSame(ApiErrorCode::PermissionDenied, $error->errorCode); }
+        [, $foreign] = $this->administratorContext('POLYGON-FOREIGN');
+        try { $pricing->updateZoneVersion($foreign, $id, ['expected_version' => 1, 'zones' => $saved['zones']]); $this->fail('Foreign tenant must fail.'); }
+        catch (ApiException $error) { $this->assertContains($error->errorCode, [ApiErrorCode::TenantAccessDenied, ApiErrorCode::ResourceNotFound]); }
+        // Simulate an existing historical-length draft without normalizing it.
+        DB::table('pricing_zone_members')->where('zone_member_id', $saved['zones'][$aa]['members'][$postalIndex]['zone_member_id'])->update(['reference_value' => '001', 'range_end' => '009']);
+        $legacy = $pricing->zoneVersion($maker, $id); $legacy['zones'][$aa]['title'] = 'عنوان ویرایش‌شده';
+        $updated = $pricing->updateZoneVersion($maker, $id, ['expected_version' => 1, 'zones' => $legacy['zones']]);
+        $aa = array_search('AA', array_column($updated['zones'], 'code'));
+        $postalIndex = array_search('POSTAL_RANGE', array_column($updated['zones'][$aa]['members'], 'member_type'));
+        $overrideIndex = array_search('EXPLICIT_OVERRIDE', array_column($updated['zones'][$aa]['members'], 'member_type'));
+        $this->assertSame('001', $updated['zones'][$aa]['members'][$postalIndex]['reference_value']);
+        $this->assertTrue((bool) $updated['zones'][$aa]['remote_area']);
+        $this->assertSame('VIP', $updated['zones'][$aa]['members'][$overrideIndex]['reference_value']);
+        $candidate = $updated['zones']; $candidate[$aa]['members'][$postalIndex]['range_end'] = '008';
+        try { $pricing->updateZoneVersion($maker, $id, ['expected_version' => 2, 'zones' => $candidate]); $this->fail('Changed legacy range requires ten digits.'); }
+        catch (ApiException $error) { $this->assertSame(ApiErrorCode::ValidationError, $error->errorCode); }
+    }
+
+    public function test_pricing_polygon_holes_multipolygons_and_invalid_topology(): void
+    {
+        $geometry = $this->app->make(\Modules\Geography\Application\PolygonGeometry::class);
+        $shell = [[50, 35], [54, 35], [54, 39], [50, 39], [50, 35]];
+        $hole = [[51, 36], [52, 36], [52, 37], [51, 37], [51, 36]];
+        $valid = $geometry->normalize(['type' => 'Polygon', 'coordinates' => [$shell, $hole]]);
+        $this->assertTrue($geometry->contains($valid, 35, 50));
+        $this->assertFalse($geometry->contains($valid, 36.5, 51.5));
+        $this->assertTrue($geometry->contains($valid, 36, 51));
+        $multi = $geometry->normalize(['type' => 'MultiPolygon', 'coordinates' => [[$shell, $hole], [[[60, 30], [61, 30], [61, 31], [60, 31], [60, 30]]]]]);
+        $this->assertTrue($geometry->contains($multi, 30.5, 60.5));
+        $this->assertFalse($geometry->contains($multi, 34, 56));
+        foreach ([['type' => 'Polygon', 'coordinates' => [$hole, $shell]], ['type' => 'Polygon', 'coordinates' => [[[50, 35], [51, 35], [52, 35], [50, 35]]]]] as $invalid) {
+            try { $geometry->normalize($invalid); $this->fail('Invalid holes or zero area must fail.'); }
+            catch (ApiException $error) { $this->assertSame(ApiErrorCode::ValidationError, $error->errorCode); }
+        }
+    }
+
     public function test_v2_ranked_matrix_draft_simulation_and_publication_share_the_engine(): void
     {
         $this->app->make(AuthorizationCatalogSeeder::class)->run();
@@ -482,7 +559,7 @@ final class ServiceCatalogPricingIntegrationTest extends MySqlRedisTestCase
         $catalog->transition($maker, 'offerings', $offering['service_offering_version_id'], 'publish', (string) Str::uuid());
         $cities = DB::table('cities')->where('is_active', true)->orderBy('city_id')->limit(2)->pluck('city_id')->all();
         $zoneSet = $pricing->createZoneSet($maker, ['code' => 'V2_ZONES', 'purpose' => 'SALES', 'title' => 'مناطق رتبه‌ای', 'valid_from' => now()->subMinute()->toISOString(), 'zones' => [
-            ['code' => 'AA', 'title' => 'منطقه الف', 'rank' => 2, 'members' => [['member_type' => 'CITY', 'city_id' => $cities[0]]]],
+            ['code' => 'AA', 'title' => 'منطقه الف', 'rank' => 2, 'members' => [['member_type' => 'CITY', 'city_id' => $cities[0]], ['member_type' => 'POLYGON', 'geometry' => ['type' => 'Polygon', 'coordinates' => [[[50, 35], [51, 35], [51, 36], [50, 36], [50, 35]]]]]]],
             ['code' => 'BB', 'title' => 'منطقه ب', 'rank' => 9, 'members' => [['member_type' => 'CITY', 'city_id' => $cities[1]]]],
         ]], (string) Str::uuid());
         $pricing->transition($maker, 'zone-sets', $zoneSet['zone_set_version_id'], 'approve', (string) Str::uuid());
@@ -498,8 +575,10 @@ final class ServiceCatalogPricingIntegrationTest extends MySqlRedisTestCase
             'code' => 'V2_TARIFF', 'title' => 'تعرفه دوطرفه', 'currency' => 'IRR', 'purpose' => 'SALES', 'zone_set_version_id' => $zoneSet['zone_set_version_id'], 'zone_policy' => 'HIGHER_ZONE_RANK', 'valid_from' => now()->subMinute()->toISOString(), 'freight_matrices' => [$matrix],
             'rules' => [['service_offering_version_id' => $offering['service_offering_version_id'], 'charge_type_id' => DB::table('pricing_charge_types')->where('code', 'INSURANCE')->value('charge_type_id'), 'calculation_method' => 'PERCENT', 'basis' => 'DECLARED_VALUE', 'percentage_bps' => 2, 'amount_rounding_mode' => 'CEIL', 'amount_rounding_step' => 10000, 'priority' => 20, 'taxable' => false]],
         ], (string) Str::uuid());
-        $input = ['service_offering_id' => $offering['service_offering_id'], 'service_offering_version_id' => $offering['service_offering_version_id'], 'sender' => ['city_id' => $cities[0]], 'receiver' => ['city_id' => $cities[1]], 'parcels' => [['weight_kg' => 1]], 'declared_value_amount' => 290000000, 'insurance_enabled' => true, 'cod_enabled' => false];
+        $input = ['service_offering_id' => $offering['service_offering_id'], 'service_offering_version_id' => $offering['service_offering_version_id'], 'sender' => ['city_id' => $cities[0], 'latitude' => 35.5, 'longitude' => 50.5], 'receiver' => ['city_id' => $cities[1], 'latitude' => 38, 'longitude' => 53], 'parcels' => [['weight_kg' => 1]], 'declared_value_amount' => 290000000, 'insurance_enabled' => true, 'cod_enabled' => false];
         $before = DB::table('pricing_quotes')->count();
+        try { $missing = $input; unset($missing['sender']['latitude']); $pricing->simulateDraft($maker, $tariff['tariff_version_id'], $missing, 1); $this->fail('Polygon pricing requires actual coordinates.'); }
+        catch (ApiException $error) { $this->assertSame(ApiErrorCode::PricingZoneUnresolved, $error->errorCode); }
         $forward = $pricing->simulateDraft($maker, $tariff['tariff_version_id'], $input, 1);
         $reverse = $pricing->simulateDraft($maker, $tariff['tariff_version_id'], [...$input, 'sender' => $input['receiver'], 'receiver' => $input['sender']], 1);
         $this->assertSame(65000, $forward['total_amount']);
@@ -533,6 +612,18 @@ final class ServiceCatalogPricingIntegrationTest extends MySqlRedisTestCase
         $this->assertSame($quote['zone_set_version_id'], $history[0]['effective_zone_set']['zone_set_version_id']);
         try { DB::table('tariff_versions')->where('tariff_version_id', $tariff['tariff_version_id'])->update(['zone_policy' => 'DIRECTIONAL']); $this->fail('Published policy is immutable.'); } catch (QueryException $e) { $this->assertStringContainsString('immutable published Pricing', $e->getMessage()); }
         $this->assertSame($quote, $pricing->quoteDetail($maker, $quote['quote_id']));
+        $targetId = (string) Str::uuid();
+        DB::table('consignments')->insert([
+            'consignment_id' => $targetId, 'hq_id' => $tenant['hq_id'], 'consignment_number' => 'POLYGON-SNAPSHOT', 'initiator_id' => $maker->userId, 'pickup_node_id' => $this->nodeIdForTenant($tenant['hq_id']),
+            'sender_contact_name' => 'Sender', 'sender_mobile' => '09120000001', 'sender_address_text' => 'Address', 'sender_state' => 'State', 'sender_city' => 'City',
+            'receiver_contact_name' => 'Receiver', 'receiver_mobile' => '09120000002', 'receiver_address_text' => 'Address', 'receiver_state' => 'State', 'receiver_city' => 'City',
+            'service_type_id' => $type['service_type_id'], 'shipping_method_id' => $method['shipping_method_id'], 'weight_kg' => 1, 'declared_value_amount' => 290000000, 'insurance_value_amount' => 290000000, 'insurance_enabled' => true, 'cod_enabled' => false, 'payer' => 'SENDER', 'payment_method' => 'CASH', 'current_status' => 'CFM', 'created_at' => now(), 'updated_at' => now(),
+        ]);
+        $snapshot = $pricing->acceptQuote($maker, $quote['quote_id'], 'CONSIGNMENT', $targetId, $quote['input_fingerprint'], (string) Str::uuid());
+        $before = DB::table('pricing_snapshots')->where('pricing_snapshot_id', $snapshot['pricing_snapshot_id'])->first();
+        $successor = $pricing->cloneDraft($maker, 'zone-sets', $zoneSet['pricing_zone_set_id'], (string) Str::uuid());
+        $this->assertEquals(collect($zoneSet['zones'])->flatMap(fn ($z) => $z['members'])->firstWhere('member_type', 'POLYGON')['geometry'], collect($successor['zones'])->flatMap(fn ($z) => $z['members'])->firstWhere('member_type', 'POLYGON')['geometry']);
+        $this->assertEquals($before, DB::table('pricing_snapshots')->where('pricing_snapshot_id', $snapshot['pricing_snapshot_id'])->first());
 
         try { $pricing->simulateDraft($maker, $tariff['tariff_version_id'], $input, 1); $this->fail('Published simulation must use runtime.'); } catch (ApiException $e) { $this->assertSame(ApiErrorCode::ValidationError, $e->errorCode); }
     }
