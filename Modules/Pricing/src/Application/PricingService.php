@@ -596,7 +596,7 @@ final readonly class PricingService
         if ($candidates === []) return null;
         if (count($candidates) !== 1) throw new ApiException(ApiErrorCode::PricingRejected, 422, 'More than one freight matrix applies.', details: ['reason_code' => 'PRICING_MATRIX_AMBIGUOUS']);
         $bands = $candidates[0]['bands'];
-        if (! empty($candidates[0]['linear_tail'])) $bands[] = [...$candidates[0]['linear_tail'], 'to' => null];
+        $bands = [...$bands, ...$this->matrices->linearBands($candidates[0])];
         foreach ($bands as $band) {
             if ($weight < (float) $band['from'] || ($band['to'] !== null && $weight >= (float) $band['to'])) continue;
             foreach ($band['cells'] as $cell) {

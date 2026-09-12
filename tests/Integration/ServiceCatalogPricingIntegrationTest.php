@@ -634,8 +634,19 @@ final class ServiceCatalogPricingIntegrationTest extends MySqlRedisTestCase
 
         $draft = $pricing->cloneDraft($maker, 'tariffs', $tariff['tariff_family_id'], (string) Str::uuid());
         $this->assertEquals($matrix['linear_tail'], $draft['freight_matrices'][0]['linear_tail']);
+        $segments = $draft['freight_matrices'];
+        $segments[0]['linear_bands'] = [];
+        foreach ([[2, 50, 1, 10000], [50, 100, 0.5, 20000], [100, null, 1, 30000]] as [$from, $to, $step, $increment]) {
+            $segments[0]['linear_bands'][] = ['id' => (string) Str::uuid(), 'from' => $from, 'to' => $to, 'step_kg' => $step, 'cells' => array_map(fn ($zone) => ['id' => (string) Str::uuid(), 'zone_id' => $zone, 'state' => 'RATE', 'amount' => $increment], $matrix['zone_ids'])];
+        }
+        $segments[0]['linear_tail'] = null;
+        $this->withToken($token)->patchJson('/api/v1/admin/pricing/tariff-versions/'.$draft['tariff_version_id'], [...$draft, 'freight_matrices' => $segments, 'expected_version' => 1])->assertOk();
+        foreach ([[50,545000], [50.1,565000], [100,2545000], [100.1,2575000]] as [$weight,$total]) {
+            $this->assertSame($total, $pricing->simulateDraft($maker, $draft['tariff_version_id'], [...$input, 'parcels' => [['weight_kg' => $weight]]], 2)['total_amount']);
+        }
+        $this->assertEquals($segments[0]['linear_bands'], $pricing->tariffVersion($maker, $draft['tariff_version_id'])['freight_matrices'][0]['linear_bands']);
         $broken = $draft['freight_matrices']; $broken[0]['linear_tail']['cells'][0]['state'] = 'EMPTY'; $broken[0]['linear_tail']['cells'][0]['amount'] = null;
-        $this->withToken($token)->patchJson('/api/v1/admin/pricing/tariff-versions/'.$draft['tariff_version_id'], [...$draft, 'freight_matrices' => $broken, 'expected_version' => 1])->assertOk();
+        $this->withToken($token)->patchJson('/api/v1/admin/pricing/tariff-versions/'.$draft['tariff_version_id'], [...$draft, 'freight_matrices' => $broken, 'expected_version' => 2])->assertOk();
         $this->withToken($token)->postJson('/api/v1/admin/pricing/tariffs/'.$draft['tariff_version_id'].'/approve')->assertStatus(422);
         $this->assertSame('DRAFT', $pricing->tariffVersion($maker, $draft['tariff_version_id'])['status']);
         $this->assertSame(75000, $pricing->quoteDetail($maker, $linearQuote['quote_id'])['total_amount']);

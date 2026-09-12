@@ -25,16 +25,19 @@ final class FreightMatrices
             $bands = $matrix['bands'];
             if ($publishing && $bands === []) $error('PRICING_MATRIX_EMPTY', $path.'.bands');
             usort($bands, static fn ($a, $b) => (float) $a['from'] <=> (float) $b['from']);
-            $tail = $matrix['linear_tail'] ?? null;
-            if ($tail !== null) {
-                $last = $bands === [] ? null : $bands[array_key_last($bands)];
-                $step = (float) ($tail['step_kg'] ?? 0);
-                if ($last === null || (float) $tail['from'] !== (float) $last['to'] || ! is_finite($step) || $step <= 0 || abs($step * 10000 - round($step * 10000)) > 0.00001) $error('PRICING_LINEAR_TAIL_INVALID', $path.'.linear_tail');
-                foreach ($tail['cells'] as $cell) {
+            $linear = $this->linearBands($matrix);
+            if (array_key_exists('linear_bands', $matrix) && ! empty($matrix['linear_tail'])) $error('PRICING_LINEAR_TAIL_INVALID', $path.'.linear_bands');
+            $last = $bands === [] ? null : $bands[array_key_last($bands)];
+            foreach ($linear as $li => $segment) {
+                $step = (float) ($segment['step_kg'] ?? 0);
+                $end = $segment['to'];
+                if ($last === null || $last['to'] === null || (float) $segment['from'] !== (float) $last['to'] || ! is_finite($step) || $step <= 0 || $step > 99999999 || abs($step * 10000 - round($step * 10000)) > 0.00001 || ($end === null && $li !== array_key_last($linear))) $error('PRICING_LINEAR_TAIL_INVALID', $path.'.linear_bands.'.$li);
+                foreach ($segment['cells'] as $cell) {
                     $base = array_values(array_filter($last['cells'] ?? [], static fn ($c) => $c['zone_id'] === $cell['zone_id']));
-                    if ($cell['state'] === 'RATE' && (($base[0]['state'] ?? null) !== 'RATE')) $error('PRICING_LINEAR_BASE_REQUIRED', $path.'.linear_tail.cells');
+                    if ($cell['state'] === 'RATE' && (($base[0]['state'] ?? null) !== 'RATE')) $error('PRICING_LINEAR_BASE_REQUIRED', $path.'.linear_bands.'.$li.'.cells');
                 }
-                $bands[] = [...$tail, 'to' => (float) $tail['from'] + max(0.0001, $step)];
+                $bands[] = [...$segment, 'to' => $end ?? ((float) $segment['from'] + max(0.0001, $step))];
+                $last = $segment;
             }
             $previousEnd = null;
             foreach ($bands as $bi => $band) {
@@ -80,27 +83,45 @@ final class FreightMatrices
             ];
         }
         foreach ($matrices as $matrix) {
-            $tail = $matrix['linear_tail'] ?? null;
-            if ($tail === null) continue;
+            $linear = $this->linearBands($matrix);
+            if ($linear === []) continue;
             $bands = $matrix['bands'];
             usort($bands, static fn ($a, $b) => (float) $a['to'] <=> (float) $b['to']);
             $last = $bands[array_key_last($bands)];
-            foreach ($tail['cells'] as $cell) {
-                if ($cell['state'] !== 'RATE') continue;
-                $base = array_values(array_filter($last['cells'], static fn ($c) => $c['zone_id'] === $cell['zone_id']))[0];
-                $rules[] = [
-                    'rate_rule_id' => $cell['id'], 'matrix_cell_id' => $cell['id'],
-                    'service_offering_version_id' => $matrix['service_offering_version_id'],
-                    'service_option_version_id' => $matrix['service_option_version_id'] ?? null,
-                    'origin_zone_id' => $matrix['origin_zone_id'] ?? null, 'destination_zone_id' => $cell['zone_id'],
-                    'charge_type_id' => $chargeTypeId, 'calculation_method' => 'SLAB', 'basis' => 'BILLABLE_WEIGHT',
-                    'range_from' => $tail['from'], 'range_to' => null, 'fixed_amount' => $base['amount'],
-                    'unit_rate' => $cell['amount'], 'incremental_step_kg' => $tail['step_kg'],
-                    'priority' => 10, 'conditions' => [], 'basis_charge_codes' => [],
-                ];
+            $bases = [];
+            foreach ($last['cells'] as $cell) if ($cell['state'] === 'RATE') $bases[$cell['zone_id']] = (int) $cell['amount'];
+            foreach ($linear as $segment) {
+                $nextBases = [];
+                foreach ($segment['cells'] as $cell) {
+                    if ($cell['state'] !== 'RATE') continue;
+                    $base = $bases[$cell['zone_id']];
+                    $rules[] = [
+                        'rate_rule_id' => $cell['id'], 'matrix_cell_id' => $cell['id'],
+                        'service_offering_version_id' => $matrix['service_offering_version_id'],
+                        'service_option_version_id' => $matrix['service_option_version_id'] ?? null,
+                        'origin_zone_id' => $matrix['origin_zone_id'] ?? null, 'destination_zone_id' => $cell['zone_id'],
+                        'charge_type_id' => $chargeTypeId, 'calculation_method' => 'SLAB', 'basis' => 'BILLABLE_WEIGHT',
+                        'range_from' => $segment['from'], 'range_to' => $segment['to'], 'fixed_amount' => $base,
+                        'unit_rate' => $cell['amount'], 'incremental_step_kg' => $segment['step_kg'],
+                        'priority' => 10, 'conditions' => [], 'basis_charge_codes' => [],
+                    ];
+                    if ($segment['to'] !== null) {
+                        $distance = (int) round((float) $segment['to'] * 10000) - (int) round((float) $segment['from'] * 10000);
+                        $step = (int) round((float) $segment['step_kg'] * 10000);
+                        $nextBases[$cell['zone_id']] = $base + intdiv($distance + $step - 1, $step) * (int) $cell['amount'];
+                    }
+                }
+                $bases = $nextBases;
             }
         }
         return $rules;
+    }
+
+    /** Read legacy single tails without modifying saved versions or snapshots. */
+    public function linearBands(array $matrix): array
+    {
+        if (array_key_exists('linear_bands', $matrix)) return $matrix['linear_bands'];
+        return empty($matrix['linear_tail']) ? [] : [[...$matrix['linear_tail'], 'to' => null]];
     }
 
     /** Complete ranks are required on the whole version, not only the selected pair. */
