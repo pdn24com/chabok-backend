@@ -304,7 +304,7 @@ final readonly class PricingService
             if ($row === null) throw new ApiException(ApiErrorCode::ResourceNotFound, 404, 'Resource not found.');
             if ($action === 'approve') {
                 if ((string) $row->status !== 'DRAFT') throw new ApiException(ApiErrorCode::ValidationError, 422, 'Only a draft can be approved.');
-                if ($kind === 'tariffs' && ! $this->validateTariff($actor, $versionId)['valid']) throw new ApiException(ApiErrorCode::ValidationError, 422, 'Tariff validation failed.');
+                if ($kind === 'tariffs') { $validation = $this->validateTariff($actor, $versionId); if (! $validation['valid']) throw new ApiException(ApiErrorCode::ValidationError, 422, 'اعتبارسنجی تعرفه ناموفق بود؛ خطاها را پیش از تأیید اصلاح کنید.', details: $validation); }
                 if ($kind === 'zone-sets' && ! $this->validateZoneSet($actor, $versionId)['valid']) throw new ApiException(ApiErrorCode::ValidationError, 422, 'Zone Set validation failed.');
                 $changes = ['status' => 'APPROVED', 'approved_by' => $actor->userId, 'approved_at' => now()];
             } elseif ($action === 'publish') {
@@ -461,7 +461,7 @@ final readonly class PricingService
     /** @return array<string,mixed> */
     public function tariffVersion(AuthenticatedPrincipal $actor, string $versionId): array
     {
-        $row = DB::table('tariff_versions as v')->join('tariff_families as f', 'f.tariff_family_id', '=', 'v.tariff_family_id')->where('v.tariff_version_id', $versionId)->where(fn ($q) => $q->whereNull('f.hq_id')->orWhere('f.hq_id', $actor->hqId))->select(['v.*', 'f.code', 'f.title', 'f.purpose', 'f.currency'])->first();
+        $row = DB::table('tariff_versions as v')->join('tariff_families as f', 'f.tariff_family_id', '=', 'v.tariff_family_id')->where('v.tariff_version_id', $versionId)->where(fn ($q) => $q->whereNull('f.hq_id')->orWhere('f.hq_id', $actor->hqId))->select(['v.*', 'f.code', 'f.title', 'f.purpose', 'f.currency', 'f.scope_type', 'f.scope_value', 'f.priority'])->first();
         if ($row === null) throw new ApiException(ApiErrorCode::ResourceNotFound, 404, 'Resource not found.');
         $result = $this->decode((array) $row); $result['rules'] = DB::table('tariff_rate_rules')->where('tariff_version_id', $versionId)->orderBy('priority')->get()->map(fn ($r) => $this->decode((array) $r))->all(); return $result;
     }
@@ -561,7 +561,7 @@ final readonly class PricingService
     private function replaceRules(string $versionId, array $rules): void
     {
         DB::table('tariff_rate_rules')->where('tariff_version_id', $versionId)->delete();
-        foreach ($rules as $rule) DB::table('tariff_rate_rules')->insert(['rate_rule_id' => (string) Str::uuid(), 'matrix_cell_id' => $rule['matrix_cell_id'] ?? null, 'taxable' => $rule['taxable'] ?? null, 'tariff_version_id' => $versionId, 'service_offering_version_id' => $rule['service_offering_version_id'], 'service_option_version_id' => $rule['service_option_version_id'] ?? null, 'charge_type_id' => $rule['charge_type_id'], 'origin_zone_id' => $rule['origin_zone_id'] ?? null, 'destination_zone_id' => $rule['destination_zone_id'] ?? null, 'calculation_method' => $rule['calculation_method'], 'basis' => $rule['basis'] ?? 'BILLABLE_WEIGHT', 'range_from' => $rule['range_from'] ?? null, 'range_to' => $rule['range_to'] ?? null, 'fixed_amount' => $rule['fixed_amount'] ?? null, 'unit_rate' => $rule['unit_rate'] ?? null, 'percentage_bps' => $rule['percentage_bps'] ?? null, 'minimum_amount' => $rule['minimum_amount'] ?? null, 'maximum_amount' => $rule['maximum_amount'] ?? null, 'amount_rounding_mode' => $rule['amount_rounding_mode'] ?? 'NONE', 'amount_rounding_step' => $rule['amount_rounding_step'] ?? null, 'basis_charge_codes' => isset($rule['basis_charge_codes']) ? json_encode($rule['basis_charge_codes'], JSON_THROW_ON_ERROR) : null, 'conditions' => isset($rule['conditions']) ? json_encode($rule['conditions'], JSON_THROW_ON_ERROR) : null, 'priority' => $rule['priority'] ?? 100]);
+        foreach ($rules as $rule) DB::table('tariff_rate_rules')->insert(['rate_rule_id' => (string) Str::uuid(), 'matrix_cell_id' => $rule['matrix_cell_id'] ?? null, 'taxable' => $rule['taxable'] ?? null, 'tariff_version_id' => $versionId, 'service_offering_version_id' => $rule['service_offering_version_id'], 'service_option_version_id' => $rule['service_option_version_id'] ?? null, 'charge_type_id' => $rule['charge_type_id'], 'origin_zone_id' => $rule['origin_zone_id'] ?? null, 'destination_zone_id' => $rule['destination_zone_id'] ?? null, 'calculation_method' => $rule['calculation_method'], 'basis' => $rule['basis'] ?? 'BILLABLE_WEIGHT', 'range_from' => $rule['range_from'] ?? null, 'range_to' => $rule['range_to'] ?? null, 'fixed_amount' => $rule['fixed_amount'] ?? null, 'unit_rate' => $rule['unit_rate'] ?? null, 'incremental_step_kg' => $rule['incremental_step_kg'] ?? null, 'percentage_bps' => $rule['percentage_bps'] ?? null, 'minimum_amount' => $rule['minimum_amount'] ?? null, 'maximum_amount' => $rule['maximum_amount'] ?? null, 'amount_rounding_mode' => $rule['amount_rounding_mode'] ?? 'NONE', 'amount_rounding_step' => $rule['amount_rounding_step'] ?? null, 'basis_charge_codes' => isset($rule['basis_charge_codes']) ? json_encode($rule['basis_charge_codes'], JSON_THROW_ON_ERROR) : null, 'conditions' => isset($rule['conditions']) ? json_encode($rule['conditions'], JSON_THROW_ON_ERROR) : null, 'priority' => $rule['priority'] ?? 100]);
     }
 
     /** @param array<string,mixed> $party @return array{array<string,mixed>,array<string,mixed>} */
@@ -595,8 +595,10 @@ final readonly class PricingService
         if ($specific !== []) $candidates = $specific;
         if ($candidates === []) return null;
         if (count($candidates) !== 1) throw new ApiException(ApiErrorCode::PricingRejected, 422, 'More than one freight matrix applies.', details: ['reason_code' => 'PRICING_MATRIX_AMBIGUOUS']);
-        foreach ($candidates[0]['bands'] as $band) {
-            if ($weight < (float) $band['from'] || $weight >= (float) $band['to']) continue;
+        $bands = $candidates[0]['bands'];
+        if (! empty($candidates[0]['linear_tail'])) $bands[] = [...$candidates[0]['linear_tail'], 'to' => null];
+        foreach ($bands as $band) {
+            if ($weight < (float) $band['from'] || ($band['to'] !== null && $weight >= (float) $band['to'])) continue;
             foreach ($band['cells'] as $cell) {
                 if (($codes[$cell['zone_id']] ?? null) !== $basisZone['code']) continue;
                 if ($cell['state'] === 'RATE') return $cell['id'];

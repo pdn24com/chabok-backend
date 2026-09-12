@@ -571,6 +571,7 @@ final class ServiceCatalogPricingIntegrationTest extends MySqlRedisTestCase
                 ['id' => (string) Str::uuid(), 'zone_id' => $zones['BB']['pricing_zone_id'], 'state' => 'RATE', 'amount' => 5000],
             ]],
         ]];
+        $matrix['linear_tail'] = ['id' => (string) Str::uuid(), 'from' => 2, 'step_kg' => 1, 'cells' => array_map(fn ($zone) => ['id' => (string) Str::uuid(), 'zone_id' => $zone, 'state' => 'RATE', 'amount' => 10000], $matrix['zone_ids'])];
         $tariff = $pricing->createTariff($maker, [
             'code' => 'V2_TARIFF', 'title' => 'تعرفه دوطرفه', 'currency' => 'IRR', 'purpose' => 'SALES', 'zone_set_version_id' => $zoneSet['zone_set_version_id'], 'zone_policy' => 'HIGHER_ZONE_RANK', 'valid_from' => now()->subMinute()->toISOString(), 'freight_matrices' => [$matrix],
             'rules' => [['service_offering_version_id' => $offering['service_offering_version_id'], 'charge_type_id' => DB::table('pricing_charge_types')->where('code', 'INSURANCE')->value('charge_type_id'), 'calculation_method' => 'PERCENT', 'basis' => 'DECLARED_VALUE', 'percentage_bps' => 2, 'amount_rounding_mode' => 'CEIL', 'amount_rounding_step' => 10000, 'priority' => 20, 'taxable' => false]],
@@ -594,7 +595,10 @@ final class ServiceCatalogPricingIntegrationTest extends MySqlRedisTestCase
         foreach ([['parcels' => [['weight_kg' => 1, 'width_cm' => 10]]], ['insurance_enabled' => false], ['cod_enabled' => true, 'cod_amount' => 0]] as $invalid) {
             try { $pricing->simulateDraft($maker, $tariff['tariff_version_id'], [...$input, ...$invalid], 1); $this->fail('Invalid input must not simulate.'); } catch (ApiException $e) { $this->assertSame(ApiErrorCode::ValidationError, $e->errorCode); }
         }
-        try { $pricing->simulateDraft($maker, $tariff['tariff_version_id'], [...$input, 'parcels' => [['weight_kg' => 2]]], 1); $this->fail('Exclusive upper bound must not match.'); } catch (ApiException $e) { $this->assertSame(ApiErrorCode::PricingRuleNotFound, $e->errorCode); }
+        foreach ([[2, 65000], [2.1, 75000], [3, 75000], [3.1, 85000], [100, 1045000]] as [$weight, $total]) {
+            $linear = $pricing->simulateDraft($maker, $tariff['tariff_version_id'], [...$input, 'parcels' => [['weight_kg' => $weight]]], 1);
+            $this->assertSame($total, $linear['total_amount']);
+        }
         $noRole = $this->user($tenant['hq_id'], 'v2-unprivileged');
         try { $pricing->simulateDraft(new AuthenticatedPrincipal($noRole['user_id'], (string) Str::uuid(), $tenant['hq_id'], false), $tariff['tariff_version_id'], $input, 1); $this->fail('Draft permission is required.'); } catch (ApiException $e) { $this->assertSame(ApiErrorCode::PermissionDenied, $e->errorCode); }
         $token = $this->login('v2-maker')['token'];
@@ -607,6 +611,9 @@ final class ServiceCatalogPricingIntegrationTest extends MySqlRedisTestCase
         $pricing->transition($maker, 'tariffs', $tariff['tariff_version_id'], 'publish', (string) Str::uuid());
         $quote = $pricing->calculateQuote($maker, $input, (string) Str::uuid());
         $this->assertSame(65000, $quote['total_amount']);
+        $linearQuote = $pricing->calculateQuote($maker, [...$input, 'parcels' => [['weight_kg' => 2.1]]], (string) Str::uuid());
+        $this->assertSame(75000, $linearQuote['total_amount']);
+        $this->assertEquals(1, $linearQuote['lines'][0]['explanation']['incremental_step_kg']);
         $this->assertSame($forward['zone_set_version_id'], $quote['zone_set_version_id']);
         $history = $pricing->history($maker, 'tariffs', $tariff['tariff_family_id']);
         $this->assertSame($quote['zone_set_version_id'], $history[0]['effective_zone_set']['zone_set_version_id']);
@@ -625,6 +632,13 @@ final class ServiceCatalogPricingIntegrationTest extends MySqlRedisTestCase
         $this->assertEquals(collect($zoneSet['zones'])->flatMap(fn ($z) => $z['members'])->firstWhere('member_type', 'POLYGON')['geometry'], collect($successor['zones'])->flatMap(fn ($z) => $z['members'])->firstWhere('member_type', 'POLYGON')['geometry']);
         $this->assertEquals($before, DB::table('pricing_snapshots')->where('pricing_snapshot_id', $snapshot['pricing_snapshot_id'])->first());
 
+        $draft = $pricing->cloneDraft($maker, 'tariffs', $tariff['tariff_family_id'], (string) Str::uuid());
+        $this->assertEquals($matrix['linear_tail'], $draft['freight_matrices'][0]['linear_tail']);
+        $broken = $draft['freight_matrices']; $broken[0]['linear_tail']['cells'][0]['state'] = 'EMPTY'; $broken[0]['linear_tail']['cells'][0]['amount'] = null;
+        $this->withToken($token)->patchJson('/api/v1/admin/pricing/tariff-versions/'.$draft['tariff_version_id'], [...$draft, 'freight_matrices' => $broken, 'expected_version' => 1])->assertOk();
+        $this->withToken($token)->postJson('/api/v1/admin/pricing/tariffs/'.$draft['tariff_version_id'].'/approve')->assertStatus(422);
+        $this->assertSame('DRAFT', $pricing->tariffVersion($maker, $draft['tariff_version_id'])['status']);
+        $this->assertSame(75000, $pricing->quoteDetail($maker, $linearQuote['quote_id'])['total_amount']);
         try { $pricing->simulateDraft($maker, $tariff['tariff_version_id'], $input, 1); $this->fail('Published simulation must use runtime.'); } catch (ApiException $e) { $this->assertSame(ApiErrorCode::ValidationError, $e->errorCode); }
     }
 

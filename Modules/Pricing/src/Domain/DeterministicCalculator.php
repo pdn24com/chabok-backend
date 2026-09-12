@@ -26,7 +26,7 @@ final class DeterministicCalculator
             $rawAmount = match ($method) {
                 'FIXED' => (int) ($rule['fixed_amount'] ?? 0),
                 'PER_UNIT' => $this->money($quantity * (float) ($rule['unit_rate'] ?? 0)),
-                'SLAB' => $this->money(($rule['fixed_amount'] ?? null) !== null ? (float) $rule['fixed_amount'] : $quantity * (float) ($rule['unit_rate'] ?? 0)),
+                'SLAB' => isset($rule['incremental_step_kg']) ? $this->incrementalAmount($quantity, $from ?? 0, (float) $rule['incremental_step_kg'], (int) $rule['fixed_amount'], (float) $rule['unit_rate']) : $this->money(($rule['fixed_amount'] ?? null) !== null ? (float) $rule['fixed_amount'] : $quantity * (float) ($rule['unit_rate'] ?? 0)),
                 'TIERED' => $this->tierAmount($quantity, $from ?? 0.0, $to, (float) ($rule['unit_rate'] ?? 0)),
                 'PERCENT' => $this->percentAmount($rule, $lines, $facts),
                 'MIN_MAX' => $this->minMaxAmount($rule, $lines, $facts, $quantity),
@@ -48,6 +48,7 @@ final class DeterministicCalculator
                 'taxable' => (bool) ($rule['taxable'] ?? true),
                 'explanation' => [
                     'range_from' => $from, 'range_to' => $to,
+                    'incremental_step_kg' => $rule['incremental_step_kg'] ?? null, 'base_amount' => $rule['fixed_amount'] ?? null,
                     'declared_value_basis' => $rule['basis'] === 'DECLARED_VALUE' ? (int) $quantity : null,
                     'percentage_bps' => $rule['percentage_bps'], 'raw_amount' => $rawAmount,
                     'amount_rounding_mode' => (string) ($rule['amount_rounding_mode'] ?? 'NONE'),
@@ -81,6 +82,15 @@ final class DeterministicCalculator
             'PARCEL_COUNT' => $facts['parcel_count'] ?? 0, 'DECLARED_VALUE' => $facts['declared_value_amount'] ?? 0,
             'COD_AMOUNT' => $facts['cod_amount'] ?? 0, default => 1,
         };
+    }
+
+    private function incrementalAmount(float $quantity, float $from, float $step, int $base, float $increment): int
+    {
+        // Weight precision is four decimal places; integer arithmetic avoids phantom steps.
+        $excess = max(0, (int) round($quantity * 10000) - (int) round($from * 10000));
+        $scaledStep = max(1, (int) round($step * 10000));
+        $units = intdiv($excess + $scaledStep - 1, $scaledStep);
+        return $base + $this->money($units * $increment);
     }
 
     private function tierAmount(float $quantity, float $from, ?float $to, float $rate): int

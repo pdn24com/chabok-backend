@@ -25,6 +25,17 @@ final class FreightMatrices
             $bands = $matrix['bands'];
             if ($publishing && $bands === []) $error('PRICING_MATRIX_EMPTY', $path.'.bands');
             usort($bands, static fn ($a, $b) => (float) $a['from'] <=> (float) $b['from']);
+            $tail = $matrix['linear_tail'] ?? null;
+            if ($tail !== null) {
+                $last = $bands === [] ? null : $bands[array_key_last($bands)];
+                $step = (float) ($tail['step_kg'] ?? 0);
+                if ($last === null || (float) $tail['from'] !== (float) $last['to'] || ! is_finite($step) || $step <= 0 || abs($step * 10000 - round($step * 10000)) > 0.00001) $error('PRICING_LINEAR_TAIL_INVALID', $path.'.linear_tail');
+                foreach ($tail['cells'] as $cell) {
+                    $base = array_values(array_filter($last['cells'] ?? [], static fn ($c) => $c['zone_id'] === $cell['zone_id']));
+                    if ($cell['state'] === 'RATE' && (($base[0]['state'] ?? null) !== 'RATE')) $error('PRICING_LINEAR_BASE_REQUIRED', $path.'.linear_tail.cells');
+                }
+                $bands[] = [...$tail, 'to' => (float) $tail['from'] + max(0.0001, $step)];
+            }
             $previousEnd = null;
             foreach ($bands as $bi => $band) {
                 $bp = $path.'.bands.'.$bi;
@@ -67,6 +78,27 @@ final class FreightMatrices
                 'range_from' => $band['from'], 'range_to' => $band['to'], 'fixed_amount' => $cell['amount'],
                 'priority' => 10, 'conditions' => [], 'basis_charge_codes' => [],
             ];
+        }
+        foreach ($matrices as $matrix) {
+            $tail = $matrix['linear_tail'] ?? null;
+            if ($tail === null) continue;
+            $bands = $matrix['bands'];
+            usort($bands, static fn ($a, $b) => (float) $a['to'] <=> (float) $b['to']);
+            $last = $bands[array_key_last($bands)];
+            foreach ($tail['cells'] as $cell) {
+                if ($cell['state'] !== 'RATE') continue;
+                $base = array_values(array_filter($last['cells'], static fn ($c) => $c['zone_id'] === $cell['zone_id']))[0];
+                $rules[] = [
+                    'rate_rule_id' => $cell['id'], 'matrix_cell_id' => $cell['id'],
+                    'service_offering_version_id' => $matrix['service_offering_version_id'],
+                    'service_option_version_id' => $matrix['service_option_version_id'] ?? null,
+                    'origin_zone_id' => $matrix['origin_zone_id'] ?? null, 'destination_zone_id' => $cell['zone_id'],
+                    'charge_type_id' => $chargeTypeId, 'calculation_method' => 'SLAB', 'basis' => 'BILLABLE_WEIGHT',
+                    'range_from' => $tail['from'], 'range_to' => null, 'fixed_amount' => $base['amount'],
+                    'unit_rate' => $cell['amount'], 'incremental_step_kg' => $tail['step_kg'],
+                    'priority' => 10, 'conditions' => [], 'basis_charge_codes' => [],
+                ];
+            }
         }
         return $rules;
     }
