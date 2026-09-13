@@ -248,12 +248,18 @@ final readonly class PricingService
         $version = $this->tariffVersion($actor, $versionId);
         $zones = $this->zoneVersion($actor, $version['zone_set_version_id'])['zones'];
         $errors = $this->matrices->validate($version['freight_matrices'] ?? [], array_column($zones, 'pricing_zone_id'), $version['zone_policy'], true);
-        if ($version['zone_policy'] === 'HIGHER_ZONE_RANK' && ! $this->matrices->ranksValid($zones)) $errors[] = ['code' => 'PRICING_ZONE_RANK_INCOMPLETE', 'field' => 'zone_set_version_id'];
+        try {
+            $effectiveZoneVersionId = $this->resolveEffectiveZoneSetVersion($version['zone_set_version_id'], CarbonImmutable::now());
+            $effectiveZones = $this->zoneVersion($actor, $effectiveZoneVersionId)['zones'];
+            if ($version['zone_policy'] === 'HIGHER_ZONE_RANK' && ! $this->matrices->ranksValid($effectiveZones)) $errors[] = ['code' => 'PRICING_ZONE_RANK_INCOMPLETE', 'field' => 'zone_set_version_id'];
+        } catch (ApiException $exception) {
+            if (! in_array($exception->errorCode, [ApiErrorCode::PricingZoneUnresolved, ApiErrorCode::PricingZoneAmbiguous], true)) throw $exception;
+            $errors[] = ['code' => 'PRICING_ZONE_VERSION_NOT_PUBLISHED', 'field' => 'zone_set_version_id'];
+        }
         if (! $version['valid_from']) $errors[] = ['code' => 'PRICING_VALID_FROM_REQUIRED', 'field' => 'valid_from'];
         if ($version['valid_from'] && $version['valid_to'] && $version['valid_to'] <= $version['valid_from']) $errors[] = ['code' => 'PRICING_EFFECTIVE_INTERVAL_INVALID', 'field' => 'valid_to'];
         if ($this->hasVersionOverlap('tariff_versions', 'tariff_family_id', $version)) $errors[] = ['code' => 'PRICING_EFFECTIVE_INTERVAL_OVERLAP', 'field' => 'valid_from'];
         if ($version['rules'] === []) $errors[] = ['code' => 'PRICING_RULE_NOT_FOUND', 'field' => 'rules'];
-        if (! DB::table('pricing_zone_set_versions')->where('zone_set_version_id', $version['zone_set_version_id'])->where('status', 'PUBLISHED')->exists()) $errors[] = ['code' => 'PRICING_ZONE_VERSION_NOT_PUBLISHED', 'field' => 'zone_set_version_id'];
         foreach ($version['rules'] as $rule) {
             if (! DB::table('service_offering_versions')->where('service_offering_version_id', $rule['service_offering_version_id'])->where('status', 'PUBLISHED')->exists()) $errors[] = ['code' => 'PRICING_SERVICE_VERSION_NOT_PUBLISHED', 'field' => 'rules'];
             if ($rule['service_option_version_id'] !== null && ! DB::table('service_offering_option_rules')->where(['service_offering_version_id' => $rule['service_offering_version_id'], 'service_option_version_id' => $rule['service_option_version_id']])->exists()) $errors[] = ['code' => 'PRICING_SERVICE_OPTION_NOT_BOUND', 'field' => 'rules'];

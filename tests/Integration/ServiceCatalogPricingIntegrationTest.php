@@ -323,6 +323,7 @@ final class ServiceCatalogPricingIntegrationTest extends MySqlRedisTestCase
         $this->assertSame($successor['zone_set_version_id'], $successorQuote['zone_set_version_id']);
         $this->assertSame($zoneSet['zone_set_version_id'], $successorQuote['resolution_evidence']['zone_set']['configured_version_id']);
         $this->assertSame($successor['zone_set_version_id'], $successorQuote['resolution_evidence']['zone_set']['resolved_version_id']);
+        $this->assertTrue($pricing->validateTariff($maker, $tariff['tariff_version_id'])['valid'], 'Superseding the configured zone version must not invalidate a tariff with an effective group successor.');
 
         $created = $this->app->make(ConsignmentService::class)->create($maker, $nodeId, [...$draft, 'accepted_quote' => [
             'quote_id' => $quote['quote_id'], 'quote_version' => 1, 'option_id' => $quote['options'][0]['option_id'],
@@ -336,6 +337,8 @@ final class ServiceCatalogPricingIntegrationTest extends MySqlRedisTestCase
         $this->assertSame('MORNING', $created['pickup_window_code']);
         $this->assertNotNull($created['delivery_commitment_at']);
         $this->assertDatabaseHas('pricing_snapshots', ['object_id' => $created['consignment_id'], 'total_amount' => 23900]);
+        $this->assertDatabaseHas('pricing_snapshots', ['object_id' => $created['consignment_id'], 'quote_id' => $internalQuote['quote_id']]);
+        $this->assertDatabaseHas('pricing_quotes', ['quote_id' => $internalQuote['quote_id'], 'tariff_version_id' => $tariff['tariff_version_id'], 'zone_set_version_id' => $zoneSet['zone_set_version_id']]);
         $this->assertDatabaseCount('pricing_charge_lines', 4);
         $this->assertDatabaseHas('consignment_pricing_versions', ['consignment_id' => $created['consignment_id'], 'provider_code' => 'INTERNAL', 'total_amount' => 23900]);
 
