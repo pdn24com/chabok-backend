@@ -20,7 +20,7 @@ final readonly class ConsignmentNumberRangeController
         $filters = $request->validate([
             'status' => ['sometimes', 'nullable', 'in:AVAILABLE,EXHAUSTED,DISABLED'],
             'page' => ['sometimes', 'integer', 'min:1'],
-            'page_size' => ['sometimes', 'integer', 'min:1', 'max:100'],
+            'page_size' => ['sometimes', 'integer', 'min:1', 'max:250'],
         ]);
         return ApiResponder::paginated($request, $this->ranges->ranges($this->actor($request), $filters), fn ($row) => $this->ranges->resource($row));
     }
@@ -45,7 +45,7 @@ final readonly class ConsignmentNumberRangeController
 
     public function allocations(Request $request, string $rangeId): JsonResponse
     {
-        $filters = $request->validate(['page' => ['sometimes', 'integer', 'min:1'], 'page_size' => ['sometimes', 'integer', 'min:1', 'max:100']]);
+        $filters = $request->validate(['page' => ['sometimes', 'integer', 'min:1'], 'page_size' => ['sometimes', 'integer', 'min:1', 'max:250']]);
         return ApiResponder::paginated($request, $this->ranges->allocations($this->actor($request), $rangeId, $filters), fn ($row) => $this->ranges->allocationResource($row));
     }
 

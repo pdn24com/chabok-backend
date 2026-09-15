@@ -46,7 +46,7 @@ final readonly class ConsignmentController
         \Modules\Foundation\Application\ListSelections::normalize($request, ['status', 'sla_risk', 'pickup_node_id', 'delivery_node_id', 'pickup_man_id', 'delivery_man_id']);
         $filters = $request->validate([
             'page' => ['sometimes', 'integer', 'min:1'],
-            'page_size' => ['sometimes', 'integer', 'min:1', 'max:100'],
+            'page_size' => ['sometimes', 'integer', 'min:1', 'max:250'],
             'search' => ['sometimes', 'nullable', 'string', 'max:160'],
             'status' => ['sometimes', 'array', 'max:50'],
             'status.*' => ['required', \Illuminate\Validation\Rule::in(app(\Modules\Consignment\Application\OperationalStatusCatalog::class)->codes($this->principal($request)->hqId))],

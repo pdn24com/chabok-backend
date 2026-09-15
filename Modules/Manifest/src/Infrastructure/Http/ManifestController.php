@@ -22,7 +22,7 @@ final readonly class ManifestController
         \Modules\Foundation\Application\ListSelections::normalize($request, ['state', 'manifest_status']);
         $input = $request->validate([
             'page' => ['sometimes', 'integer', 'min:1'],
-            'page_size' => ['sometimes', 'integer', 'min:1', 'max:100'],
+            'page_size' => ['sometimes', 'integer', 'min:1', 'max:250'],
             'search' => ['sometimes', 'nullable', 'string', 'max:160'],
             'state' => ['sometimes', 'array', 'max:50'],
             'state.*' => ['required', 'in:DRAFT,OPEN,CLOSED'],
@@ -105,7 +105,7 @@ final readonly class ManifestController
     {
         $input = $request->validate([
             'page' => ['sometimes', 'integer', 'min:1'],
-            'page_size' => ['sometimes', 'integer', 'min:1', 'max:100'],
+            'page_size' => ['sometimes', 'integer', 'min:1', 'max:250'],
             'search' => ['sometimes', 'nullable', 'string', 'max:160'],
         ]);
 

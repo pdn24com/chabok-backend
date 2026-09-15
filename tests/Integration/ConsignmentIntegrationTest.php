@@ -335,6 +335,13 @@ final class ConsignmentIntegrationTest extends MySqlRedisTestCase
             $request->attributes->set('node_id', $node);
             return $this->app->make(\Modules\Consignment\Infrastructure\Http\ConsignmentController::class)->index($request)->getData(true);
         };
+        foreach ([15, 50, 100, 250] as $size) {
+            $page = $requestList(['page_size' => $size]);
+            self::assertSame($size, $page['meta']['pagination']['page_size']);
+            self::assertCount(3, $page['data']);
+        }
+        try { $requestList(['page_size' => 251]); self::fail('Oversized page accepted'); }
+        catch (\Illuminate\Validation\ValidationException $error) { self::assertArrayHasKey('page_size', $error->errors()); }
         $filters = ['status'=>'PU,IR,PU','pickup_node_id'=>$node.','.(string) Str::uuid(), 'created_from'=>'2026-09-10T00:00:00Z', 'created_to'=>'2026-09-11T23:59:59Z', 'page_size'=>1];
         $first = $requestList($filters);
         $second = $requestList([...$filters,'page'=>2]);
@@ -355,6 +362,21 @@ final class ConsignmentIntegrationTest extends MySqlRedisTestCase
         self::assertSame(0,$service->list($otherPrincipal,$otherNode,['status'=>['PU','IR'],'pickup_node_id'=>[$node,$otherNode]])->total());
         try { $service->list($principal,$otherNode,['status'=>['PU','IR']]); self::fail('Foreign selected node accepted'); }
         catch (ApiException $error) { self::assertSame(ApiErrorCode::ScopeAccessDenied,$error->errorCode); }
+        // More than 250 persisted rows proves each size changes actual API results.
+        $template = (array) DB::table('consignments')->where('hq_id', $tenant['hq_id'])->first();
+        for ($index = 0; $index < 260; $index++) {
+            DB::table('consignments')->insert([...$template,
+                'consignment_id' => (string) Str::uuid(), 'consignment_number' => 'GRID-'.$index,
+            ]);
+        }
+        foreach ([15, 50, 100, 250] as $size) {
+            $first = $requestList(['search' => 'GRID-', 'page_size' => $size, 'page' => 1]);
+            $second = $requestList(['search' => 'GRID-', 'page_size' => $size, 'page' => 2]);
+            self::assertSame(260, $first['meta']['pagination']['total']);
+            self::assertCount($size, $first['data']);
+            self::assertCount(min($size, 260 - $size), $second['data']);
+            self::assertSame([], array_values(array_intersect(array_column($first['data'], 'consignment_id'), array_column($second['data'], 'consignment_id'))));
+        }
     }
 
     public function test_list_filters_use_frozen_risk_threshold_and_scoped_agents(): void

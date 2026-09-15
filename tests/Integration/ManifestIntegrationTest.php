@@ -46,6 +46,13 @@ final class ManifestIntegrationTest extends MySqlRedisTestCase
             $request->attributes->set('node_id',$node);
             return $this->app->make(\Modules\Manifest\Infrastructure\Http\ManifestController::class)->index($request)->getData(true);
         };
+        foreach ([15, 50, 100, 250] as $size) {
+            $page = $requestList(['page_size' => $size]);
+            self::assertSame($size, $page['meta']['pagination']['page_size']);
+            self::assertCount(3, $page['data']);
+        }
+        try { $requestList(['page_size' => 251]); self::fail('Oversized page accepted'); }
+        catch (\Illuminate\Validation\ValidationException $error) { self::assertArrayHasKey('page_size', $error->errors()); }
         $filters = ['manifest_status'=>'IR,OF,IR','state'=>'DRAFT,OPEN','page_size'=>1];
         $first=$requestList($filters);$second=$requestList([...$filters,'page'=>2]);
         self::assertSame(2,$first['meta']['pagination']['total']);
@@ -68,6 +75,21 @@ final class ManifestIntegrationTest extends MySqlRedisTestCase
         self::assertSame(0,$service->list($otherPrincipal,$otherNode,['state'=>['DRAFT','OPEN']])->total());
         try { $service->list($principal,$otherNode,['state'=>['DRAFT','OPEN']]); self::fail('Foreign selected node accepted'); }
         catch (ApiException $error) { self::assertSame(ApiErrorCode::ScopeAccessDenied,$error->errorCode); }
+        // More than 250 persisted rows proves each size changes actual API results.
+        $template = (array) DB::table('manifests')->where('hq_id', $tenant['hq_id'])->first();
+        for ($index = 0; $index < 260; $index++) {
+            DB::table('manifests')->insert([...$template,
+                'manifest_id' => (string) Str::uuid(), 'manifest_number' => 'GRID-'.$index,
+            ]);
+        }
+        foreach ([15, 50, 100, 250] as $size) {
+            $first = $requestList(['search' => 'GRID-', 'page_size' => $size, 'page' => 1]);
+            $second = $requestList(['search' => 'GRID-', 'page_size' => $size, 'page' => 2]);
+            self::assertSame(260, $first['meta']['pagination']['total']);
+            self::assertCount($size, $first['data']);
+            self::assertCount(min($size, 260 - $size), $second['data']);
+            self::assertSame([], array_values(array_intersect(array_column($first['data'], 'manifest_id'), array_column($second['data'], 'manifest_id'))));
+        }
     }
 
     public function test_partial_success_confirmation_is_atomic_audited_and_retry_safe(): void
