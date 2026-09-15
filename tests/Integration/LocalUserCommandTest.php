@@ -185,6 +185,7 @@ final class LocalUserCommandTest extends MySqlRedisTestCase
             'manifest_id' => $manifestId,
             'hq_id' => $hqId,
             'manifest_number' => 'MNF-LOCAL-FIXTURE-00001',
+            'context_key' => hash('sha256', 'local-protected-fixture'),
             'node_id' => $nodeId,
             'manifest_status' => 'IR',
             'assigned_driver_id' => null,

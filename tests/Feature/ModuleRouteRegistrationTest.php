@@ -19,6 +19,25 @@ final class ModuleRouteRegistrationTest extends TestCase
             ->all();
 
         $expected = [
+            'GET /api/v1/admin/consignment-number-ranges',
+            'GET /api/v1/admin/consignment-number-ranges/{rangeId}',
+            'GET /api/v1/admin/consignment-number-ranges/{rangeId}/allocations',
+            'GET /api/v1/admin/pricing/service-tariffs/references',
+            'GET /api/v1/admin/service-catalog/commitment-zone-groups',
+            'GET /api/v1/admin/service-catalog/records/{resource}/{identityId}',
+            'GET /api/v1/operational-statuses',
+            'PATCH /api/v1/admin/service-catalog/records/{resource}/{identityId}/status',
+            'PATCH /api/v1/operational-statuses/{id}',
+            'POST /api/v1/admin/consignment-number-ranges',
+            'POST /api/v1/admin/consignment-number-ranges/validate',
+            'POST /api/v1/admin/consignment-number-ranges/{rangeId}/disable',
+            'POST /api/v1/admin/pricing/matrix-workbooks/preview',
+            'POST /api/v1/admin/pricing/matrix-workbooks/sample',
+            'POST /api/v1/admin/pricing/tariff-versions/{versionId}/simulate',
+            'POST /api/v1/admin/service-catalog/records/{resource}',
+            'POST /api/v1/operational-statuses',
+            'PUT /api/v1/admin/service-catalog/records/{resource}/{identityId}',
+
             'DELETE /api/v1/iam/users/{userId}/role-assignments/{assignmentId}',
             'DELETE /api/v1/me/sessions/{sessionId}',
             'GET /api/v1/admin/pricing/audit',

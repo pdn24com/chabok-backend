@@ -54,7 +54,9 @@ final class DeterministicPricingCalculatorTest extends TestCase
 
         self::assertSame(60000, $result['lines'][0]['amount']);
         self::assertSame([
-            'range_from' => null, 'range_to' => null, 'declared_value_basis' => 290000000,
+            'service_tariff_version_id' => null, 'incremental_step' => null,
+            'range_from' => null, 'range_to' => null, 'incremental_step_kg' => null, 'base_amount' => null,
+            'declared_value_basis' => 290000000,
             'percentage_bps' => 2, 'raw_amount' => 58000,
             'amount_rounding_mode' => 'CEIL', 'amount_rounding_step' => 10000,
             'final_amount' => 60000,
