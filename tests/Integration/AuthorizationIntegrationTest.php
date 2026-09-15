@@ -294,6 +294,19 @@ final class AuthorizationIntegrationTest extends MySqlRedisTestCase
             ->assertOk();
     }
 
+    public function test_platform_can_manage_global_operational_status_catalog_via_api(): void
+    {
+        $platform=$this->platformUser('status-platform'); $this->platformAssignment($platform['user_id']);
+        $login=$this->login('status-platform');
+        $input=['scope'=>'GLOBAL','code'=>'GLOBAL_NEW','title_fa'=>'وضعیت سراسری','tone'=>'info','is_active'=>true,'is_terminal'=>false,'sort_order'=>200];
+        $created=$this->withToken($login['token'])->withHeader('Idempotency-Key',(string)Str::uuid())->postJson('/api/v1/operational-statuses',$input)->assertCreated()->assertJsonPath('data.hq_id',null)->assertJsonPath('data.can_manage',true);
+        $id=$created->json('data.status_id');
+        unset($input['scope'],$input['code']);
+        $this->withToken($login['token'])->patchJson('/api/v1/operational-statuses/'.$id,[...$input,'expected_version'=>1,'title_fa'=>'عنوان جدید'])->assertOk()->assertJsonPath('data.version',2);
+        $this->withToken($login['token'])->patchJson('/api/v1/operational-statuses/'.$id,[...$input,'expected_version'=>1])->assertConflict();
+        $this->withToken($login['token'])->getJson('/api/v1/operational-statuses')->assertOk()->assertJsonFragment(['code'=>'GLOBAL_NEW']);
+    }
+
     public function test_all_authorization_routes_return_contract_envelopes(): void
     {
         $tenant = $this->tenant();

@@ -13,6 +13,20 @@ use Modules\Pricing\Application\PricingService;
 final readonly class PricingController
 {
     public function __construct(private PricingService $pricing) {}
+    public function serviceTariffReferences(Request $request): JsonResponse { return ApiResponder::success($request,$this->pricing->serviceTariffReferences($this->principal($request))); }
+
+    public function matrixWorkbookSample(Request $request): JsonResponse
+    {
+        $input=$request->validate(['zone_titles'=>['required','array','min:1','max:100'],'zone_titles.*'=>['required','string','max:200']]);
+        return ApiResponder::success($request,$this->pricing->matrixWorkbook($this->principal($request),$input,true));
+    }
+
+    public function matrixWorkbookPreview(Request $request): JsonResponse
+    {
+        $input=$request->validate(['content_base64'=>['required','string','max:6990508'],'matrix'=>['required','array'],'matrix.id'=>['required','uuid'],'matrix.service_offering_version_id'=>['nullable','uuid'],'matrix.service_option_version_id'=>['nullable','uuid'],'matrix.origin_zone_id'=>['nullable','uuid'],'matrix.zone_ids'=>['required','array','min:1','max:100'],'matrix.zone_ids.*'=>['required','uuid','distinct']]);
+        $input['matrix']=['id'=>$input['matrix']['id'],'service_offering_version_id'=>$input['matrix']['service_offering_version_id']??null,'service_option_version_id'=>$input['matrix']['service_option_version_id']??null,'origin_zone_id'=>$input['matrix']['origin_zone_id']??null,'zone_ids'=>$input['matrix']['zone_ids']];
+        return ApiResponder::success($request,$this->pricing->matrixWorkbook($this->principal($request),$input,false));
+    }
 
     public function quote(Request $request): JsonResponse
     {
@@ -71,15 +85,16 @@ final readonly class PricingController
     /** @return array<string,mixed> */
     private function zoneSetRules(bool $create): array
     {
-        $rules = ['zones.*.members.*.geometry' => ['required_if:zones.*.members.*.member_type,POLYGON', 'nullable', 'array'], 'valid_from' => ['nullable', 'date'], 'valid_to' => ['nullable', 'date'], 'zones' => ['required', 'array', 'min:1'], 'zones.*.pricing_zone_id' => ['nullable', 'uuid', 'distinct'], 'zones.*.rank' => ['nullable', 'integer', 'min:1', 'distinct'], 'zones.*.code' => ['required', 'regex:/^[A-Z][A-Z0-9_]{1,79}$/'], 'zones.*.title' => ['required', 'string', 'max:200'], 'zones.*.remote_area' => ['sometimes', 'boolean'], 'zones.*.members' => ['required', 'array', 'min:1'], 'zones.*.members.*.member_type' => ['required', 'in:EXPLICIT_OVERRIDE,POSTAL_RANGE,CITY,PROVINCE,POLYGON'], 'zones.*.members.*.reference_value' => ['required_unless:zones.*.members.*.member_type,CITY,PROVINCE,POLYGON', 'nullable', 'string', 'max:200'], 'zones.*.members.*.city_id' => ['required_if:zones.*.members.*.member_type,CITY', 'nullable', 'uuid'], 'zones.*.members.*.province_id' => ['required_if:zones.*.members.*.member_type,PROVINCE', 'nullable', 'uuid'], 'zones.*.members.*.range_end' => ['nullable', 'string', 'max:200']];
-        if ($create) $rules += ['code' => ['required', 'regex:/^[A-Z][A-Z0-9_]{1,79}$/'], 'purpose' => ['required', 'in:SALES,PURCHASE,COMMISSION,INTERNAL_TRANSFER'], 'title' => ['required', 'string', 'max:200']];
+        $rules = ['zones.*.members.*.geometry' => ['required_if:zones.*.members.*.member_type,POLYGON', 'nullable', 'array'], 'valid_from' => ['nullable', 'date'], 'valid_to' => ['nullable', 'date'], 'zones' => ['required', 'array', 'min:1'], 'zones.*.pricing_zone_id' => ['nullable', 'uuid', 'distinct'], 'zones.*.rank' => ['nullable', 'integer', 'min:1', 'distinct'], 'zones.*.code' => ['required', 'regex:/^[A-Z][A-Z0-9_]{0,79}$/'], 'zones.*.title' => ['required', 'string', 'max:200'], 'zones.*.remote_area' => ['sometimes', 'boolean'], 'zones.*.members' => ['required', 'array', 'min:1'], 'zones.*.members.*.member_type' => ['required', 'in:EXPLICIT_OVERRIDE,POSTAL_RANGE,CITY,PROVINCE,POLYGON'], 'zones.*.members.*.reference_value' => ['required_unless:zones.*.members.*.member_type,CITY,PROVINCE,POLYGON', 'nullable', 'string', 'max:200'], 'zones.*.members.*.city_id' => ['required_if:zones.*.members.*.member_type,CITY', 'nullable', 'uuid'], 'zones.*.members.*.province_id' => ['required_if:zones.*.members.*.member_type,PROVINCE', 'nullable', 'uuid'], 'zones.*.members.*.range_end' => ['nullable', 'string', 'max:200']];
+        if ($create) $rules += ['code' => ['required', 'regex:/^(?:[0-9]{6}|[A-Z][A-Z0-9_]{1,79})$/'], 'purpose' => ['required', 'in:SALES,PURCHASE,COMMISSION,INTERNAL_TRANSFER'], 'title' => ['required', 'string', 'max:200']];
         return $rules;
     }
     /** @return array<string,mixed> */
     private function tariffRules(bool $create): array
     {
-        $rules = $this->matrixRules() + ['zone_set_version_id' => ['required', 'uuid'], 'valid_from' => ['nullable', 'date'], 'valid_to' => ['nullable', 'date'], 'volumetric_divisor' => ['numeric', 'gt:0'], 'weight_rounding_step_kg' => ['numeric', 'gt:0'], 'rounding_mode' => ['in:HALF_UP,HALF_EVEN,CEILING,FLOOR,STEP_UP'], 'rules' => ['present', 'array', 'max:10000'], 'rules.*.service_offering_version_id' => ['required', 'uuid'], 'rules.*.service_option_version_id' => ['nullable', 'uuid'], 'rules.*.charge_type_id' => ['required', 'uuid'], 'rules.*.origin_zone_id' => ['nullable', 'uuid'], 'rules.*.destination_zone_id' => ['nullable', 'uuid'], 'rules.*.calculation_method' => ['required', 'in:FIXED,PER_UNIT,SLAB,TIERED,PERCENT,MIN_MAX'], 'rules.*.basis' => ['sometimes', 'in:FLAT,SHIPMENT,ACTUAL_WEIGHT,BILLABLE_WEIGHT,PARCEL_COUNT,DECLARED_VALUE,COD_AMOUNT'], 'rules.*.range_from' => ['nullable', 'numeric', 'min:0'], 'rules.*.range_to' => ['nullable', 'numeric', 'gt:rules.*.range_from'], 'rules.*.fixed_amount' => ['nullable', 'integer', 'min:0'], 'rules.*.unit_rate' => ['nullable', 'numeric', 'min:0'], 'rules.*.percentage_bps' => ['nullable', 'integer', 'min:0', 'max:10000'], 'rules.*.minimum_amount' => ['nullable', 'integer', 'min:0'], 'rules.*.maximum_amount' => ['nullable', 'integer', 'min:0'], 'rules.*.amount_rounding_mode' => ['sometimes', 'in:NONE,CEIL,FLOOR,HALF_UP'], 'rules.*.amount_rounding_step' => ['nullable', 'integer', 'min:1'], 'rules.*.basis_charge_codes' => ['nullable', 'array'], 'rules.*.basis_charge_codes.*' => ['string', 'max:80'], 'rules.*.conditions' => ['nullable', 'array'], 'rules.*.priority' => ['sometimes', 'integer', 'min:1', 'max:65535']];
-        if ($create) $rules += ['code' => ['required', 'regex:/^[A-Z][A-Z0-9_]{1,79}$/'], 'purpose' => ['required', 'in:SALES,PURCHASE,COMMISSION,INTERNAL_TRANSFER'], 'currency' => ['required', 'in:IRR'], 'title' => ['required', 'string', 'max:200'], 'scope_type' => ['in:PLATFORM,TENANT,SEGMENT,CUSTOMER,CONTRACT'], 'scope_value' => ['nullable', 'string', 'max:120'], 'priority' => ['integer', 'min:1', 'max:65535']];
+        $rules = $this->matrixRules() + ['zone_set_version_id' => ['nullable', 'uuid'], 'valid_from' => ['nullable', 'date'], 'valid_to' => ['nullable', 'date'], 'volumetric_divisor' => ['numeric', 'gt:0'], 'weight_rounding_step_kg' => ['numeric', 'gt:0'], 'rounding_mode' => ['in:HALF_UP,HALF_EVEN,CEILING,FLOOR,STEP_UP'], 'rules' => ['present', 'array', 'max:10000'], 'rules.*.service_offering_version_id' => ['required', 'uuid'], 'rules.*.service_option_version_id' => ['nullable', 'uuid'], 'rules.*.charge_type_id' => ['required', 'uuid'], 'rules.*.origin_zone_id' => ['nullable', 'uuid'], 'rules.*.destination_zone_id' => ['nullable', 'uuid'], 'rules.*.calculation_method' => ['required', 'in:FIXED,PER_UNIT,SLAB,TIERED,PERCENT,MIN_MAX'], 'rules.*.basis' => ['sometimes', 'in:FLAT,SHIPMENT,ACTUAL_WEIGHT,BILLABLE_WEIGHT,PARCEL_COUNT,DECLARED_VALUE,COD_AMOUNT'], 'rules.*.range_from' => ['nullable', 'numeric', 'min:0'], 'rules.*.range_to' => ['nullable', 'numeric', 'gt:rules.*.range_from'], 'rules.*.fixed_amount' => ['nullable', 'integer', 'min:0'], 'rules.*.unit_rate' => ['nullable', 'numeric', 'min:0'], 'rules.*.percentage_bps' => ['nullable', 'integer', 'min:0', 'max:10000'], 'rules.*.minimum_amount' => ['nullable', 'integer', 'min:0'], 'rules.*.maximum_amount' => ['nullable', 'integer', 'min:0'], 'rules.*.amount_rounding_mode' => ['sometimes', 'in:NONE,CEIL,FLOOR,HALF_UP'], 'rules.*.amount_rounding_step' => ['nullable', 'integer', 'min:1'], 'rules.*.basis_charge_codes' => ['nullable', 'array'], 'rules.*.basis_charge_codes.*' => ['string', 'max:80'], 'rules.*.conditions' => ['nullable', 'array'], 'rules.*.priority' => ['sometimes', 'integer', 'min:1', 'max:65535']];
+        if ($create) $rules += ['code' => ['nullable', 'regex:/^[0-9]{1,9}$/'], 'purpose' => ['required', 'in:SALES,PURCHASE,COMMISSION,INTERNAL_TRANSFER'], 'currency' => ['required', 'in:IRR'], 'title' => ['required', 'string', 'max:200'], 'scope_type' => ['in:PLATFORM,TENANT,SEGMENT,CUSTOMER,CONTRACT'], 'scope_value' => ['nullable', 'string', 'max:120'], 'priority' => ['integer', 'min:1', 'max:65535']];
+        $rules += ['tariff_kind'=>['sometimes','in:FREIGHT,SERVICE'],'service_charge_type_id'=>['nullable','uuid'],'matrix_basis'=>['sometimes','in:ACTUAL_WEIGHT,BILLABLE_WEIGHT,DECLARED_VALUE,COD_AMOUNT,PARCEL_COUNT'],'is_default'=>['sometimes','boolean'],'service_tariff_family_ids'=>['sometimes','array','max:30'],'service_tariff_family_ids.*'=>['uuid','distinct']];
         return $rules;
     }
     private function matrixRules(): array
@@ -88,7 +103,7 @@ final readonly class PricingController
             'zone_policy' => ['sometimes', 'in:DIRECTIONAL,HIGHER_ZONE_RANK'],
             'freight_matrices' => ['sometimes', 'array', 'max:100'],
             'freight_matrices.*.id' => ['required', 'uuid', 'distinct'],
-            'freight_matrices.*.service_offering_version_id' => ['required', 'uuid'],
+            'freight_matrices.*.service_offering_version_id' => ['nullable', 'uuid'],
             'freight_matrices.*.service_option_version_id' => ['nullable', 'uuid'],
             'freight_matrices.*.origin_zone_id' => ['nullable', 'uuid'],
             'freight_matrices.*.zone_ids' => ['required', 'array', 'min:1', 'max:100'],

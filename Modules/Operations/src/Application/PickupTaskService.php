@@ -80,6 +80,21 @@ final readonly class PickupTaskService
         $this->transactions->run(function () use ($actor, $nodeId, $id, $expected, $correlationId): void {
             $task = $this->locked($actor, $nodeId, $id); $this->version($task, $expected);
             if (! in_array($task->status, ['ASSIGNED', 'IN_PROGRESS'], true)) throw new ApiException(ApiErrorCode::ValidationError, 422, 'The Pickup Task cannot be completed in its current state.');
+            $consignment=DB::table('consignments')->where(['hq_id'=>$actor->hqId,'consignment_id'=>$task->consignment_id])->lockForUpdate()->first();
+            $snapshot=json_decode($consignment->commitment_snapshot??'null',true);
+            $completedAt=now()->toISOString();
+            $resolution=$snapshot ? (new \Modules\ServiceCatalog\Application\FrozenCommitmentCompletion())->pickupCompleted($snapshot,$completedAt) : null;
+            if($resolution) {
+                $end=$resolution['ends_at']??$resolution['computed_at']??null;
+                $start=$resolution['starts_at']??$resolution['computed_at']??null;
+                DB::table('consignments')->where(['hq_id'=>$actor->hqId,'consignment_id'=>$task->consignment_id])->update([
+                    'delivery_commitment_at'=>$end ? \Carbon\CarbonImmutable::parse($end)->utc()->format('Y-m-d H:i:s.u') : null,
+                    'delivery_commitment_end_at'=>$end ? \Carbon\CarbonImmutable::parse($end)->utc()->format('Y-m-d H:i:s.u') : null,
+                    'delivery_commitment_start_at'=>$start ? \Carbon\CarbonImmutable::parse($start)->utc()->format('Y-m-d H:i:s.u') : null,
+                    'delivery_commitment_resolution'=>json_encode(['pickup_completed_at'=>$completedAt,'result'=>$resolution],JSON_THROW_ON_ERROR),
+                ]);
+                $this->audit->write($actor->hqId,$actor->userId,'CONSIGNMENT_COMMITMENT_RESOLVED','CONSIGNMENT',(string)$task->consignment_id,$correlationId,after:['pickup_completed_at'=>$completedAt,'delivery'=>$resolution],sourceClient:'BRANCH_PANEL');
+            }
             $this->lifecycle->transition($actor, (string) $task->consignment_id, 'PD', 'PU', 'PICKUP_COMPLETED', null, 'PICKUP_DRIVER', (string) $task->assigned_driver_id, $correlationId, (string) $task->assigned_driver_id);
             DB::table('pickup_tasks')->where('pickup_task_id', $id)->update(['status' => 'COMPLETED', 'version' => $expected + 1, 'completed_at' => now(), 'updated_at' => now()]);
             $this->record($actor, 'PICKUP_TASK_COMPLETED', $id, (string) $task->consignment_id, 'COMPLETED', $correlationId);

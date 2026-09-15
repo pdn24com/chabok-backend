@@ -24,7 +24,7 @@ final readonly class ManifestController
             'page_size' => ['sometimes', 'integer', 'min:1', 'max:100'],
             'search' => ['sometimes', 'nullable', 'string', 'max:160'],
             'state' => ['sometimes', 'nullable', 'in:DRAFT,OPEN,CLOSED'],
-            'manifest_status' => ['sometimes', 'nullable', 'in:PD,PU,NPU,IR,ROU,OF,OS,CI,OD,OK,NOK'],
+            'manifest_status' => ['sometimes', 'nullable', \Illuminate\Validation\Rule::in(app(\Modules\Consignment\Application\OperationalStatusCatalog::class)->codes($this->actor($request)->hqId,true))],
         ]);
 
         return ApiResponder::paginated(
@@ -39,7 +39,7 @@ final readonly class ManifestController
         StrictPayload::assertOnly($request, ['expected_version', 'manifest_status', 'context_key', 'target_node_id', 'assigned_driver_id', 'assigned_vehicle_id']);
         $input = $request->validate([
             'expected_version' => ['required', 'integer', 'in:0'],
-            'manifest_status' => ['required', 'in:PD,PU,NPU,IR,ROU,OF,OS,CI,OD,OK,NOK'],
+            'manifest_status' => ['required', \Illuminate\Validation\Rule::in(app(\Modules\Consignment\Application\OperationalStatusCatalog::class)->codes($this->actor($request)->hqId,true))],
             'context_key' => ['required', 'string', 'min:1', 'max:200'],
             'target_node_id' => ['sometimes', 'uuid'],
             'assigned_driver_id' => ['sometimes', 'nullable', 'uuid'],
@@ -79,7 +79,7 @@ final readonly class ManifestController
         StrictPayload::assertOnly($request, ['expected_version', 'manifest_status', 'context_key', 'target_node_id', 'assigned_driver_id', 'assigned_vehicle_id']);
         $input = $request->validate([
             'expected_version' => ['required', 'integer', 'min:1'],
-            'manifest_status' => ['sometimes', 'in:PD,PU,NPU,IR,ROU,OF,OS,CI,OD,OK,NOK'],
+            'manifest_status' => ['sometimes', \Illuminate\Validation\Rule::in(app(\Modules\Consignment\Application\OperationalStatusCatalog::class)->codes($this->actor($request)->hqId,true))],
             'context_key' => ['sometimes', 'string', 'min:1', 'max:200'],
             'target_node_id' => ['sometimes', 'uuid'],
             'assigned_driver_id' => ['sometimes', 'nullable', 'uuid'],

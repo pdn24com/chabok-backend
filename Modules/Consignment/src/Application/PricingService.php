@@ -184,6 +184,11 @@ final readonly class PricingService
      */
     private function normalized(array $input): array
     {
+        // These are server-resolved evidence, not editable quote inputs. The new
+        // resolved commitment is fingerprinted separately with the provider result.
+        foreach (['commitment_schedule_version_id', 'pickup_commitment_start_at', 'pickup_commitment_end_at', 'delivery_commitment_start_at', 'delivery_commitment_end_at', 'commitment_snapshot', 'delivery_commitment_resolution'] as $field) {
+            $input[$field] = null;
+        }
         foreach (['sender', 'receiver'] as $party) {
             $contact = $this->geography->canonicalizeContact((array) ($input[$party] ?? []), true);
             unset($contact['city_reference']);
@@ -202,7 +207,7 @@ final readonly class PricingService
             'pickup_service_date', 'pickup_window_code', 'delivery_window_code',
             'commitment_schedule_version_id', 'pickup_commitment_start_at',
             'pickup_commitment_end_at', 'delivery_commitment_start_at',
-            'delivery_commitment_end_at', 'commitment_snapshot',
+            'delivery_commitment_end_at', 'commitment_snapshot', 'delivery_commitment_resolution',
         ] as $field) {
             $input[$field] ??= null;
         }

@@ -26,7 +26,7 @@ final class DeterministicCalculator
             $rawAmount = match ($method) {
                 'FIXED' => (int) ($rule['fixed_amount'] ?? 0),
                 'PER_UNIT' => $this->money($quantity * (float) ($rule['unit_rate'] ?? 0)),
-                'SLAB' => isset($rule['incremental_step_kg']) ? $this->incrementalAmount($quantity, $from ?? 0, (float) $rule['incremental_step_kg'], (int) $rule['fixed_amount'], (float) $rule['unit_rate']) : $this->money(($rule['fixed_amount'] ?? null) !== null ? (float) $rule['fixed_amount'] : $quantity * (float) ($rule['unit_rate'] ?? 0)),
+                'SLAB' => isset($rule['incremental_step']) || isset($rule['incremental_step_kg']) ? $this->incrementalAmount($quantity, $from ?? 0, (float) ($rule['incremental_step'] ?? $rule['incremental_step_kg']), (int) $rule['fixed_amount'], (float) $rule['unit_rate']) : $this->money(($rule['fixed_amount'] ?? null) !== null ? (float) $rule['fixed_amount'] : $quantity * (float) ($rule['unit_rate'] ?? 0)),
                 'TIERED' => $this->tierAmount($quantity, $from ?? 0.0, $to, (float) ($rule['unit_rate'] ?? 0)),
                 'PERCENT' => $this->percentAmount($rule, $lines, $facts),
                 'MIN_MAX' => $this->minMaxAmount($rule, $lines, $facts, $quantity),
@@ -47,6 +47,8 @@ final class DeterministicCalculator
                 'amount' => max(0, $amount), 'accounting_mapping_key' => $rule['accounting_mapping_key'],
                 'taxable' => (bool) ($rule['taxable'] ?? true),
                 'explanation' => [
+                    'service_tariff_version_id' => $rule['service_tariff_version_id'] ?? null,
+                    'incremental_step' => $rule['incremental_step'] ?? null,
                     'range_from' => $from, 'range_to' => $to,
                     'incremental_step_kg' => $rule['incremental_step_kg'] ?? null, 'base_amount' => $rule['fixed_amount'] ?? null,
                     'declared_value_basis' => $rule['basis'] === 'DECLARED_VALUE' ? (int) $quantity : null,

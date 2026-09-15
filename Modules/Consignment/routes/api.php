@@ -30,3 +30,9 @@ Route::prefix('api/v1/consignments')
         Route::patch('/{consignmentId}', [ConsignmentController::class, 'update'])
             ->whereUuid('consignmentId')->name('consignments.update');
     });
+
+Route::prefix('api/v1/operational-statuses')->middleware(['api','access.auth','password.changed'])->group(function (): void {
+    Route::get('/', [\Modules\Consignment\Infrastructure\Http\OperationalStatusController::class,'index']);
+    Route::post('/', [\Modules\Consignment\Infrastructure\Http\OperationalStatusController::class,'store'])->middleware('idempotent:operational-status.create');
+    Route::patch('/{id}', [\Modules\Consignment\Infrastructure\Http\OperationalStatusController::class,'update'])->whereUuid('id');
+});

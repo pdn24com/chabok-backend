@@ -31,6 +31,7 @@ final readonly class ConsignmentService
         private ConsignmentPolicy $policy,
         private ConsignmentNumberAllocator $numbers,
         private GeographyResolver $geography,
+        private EditPricingImpact $editImpact,
     ) {}
 
     /** @param array<string, mixed> $filters */
@@ -87,6 +88,20 @@ final readonly class ConsignmentService
         );
     }
 
+    public function filterOptions(AuthenticatedPrincipal $actor, string $nodeId): array
+    {
+        $this->assertAccess($actor, $nodeId, 'consignment.view');
+        $options = [];
+        foreach (['pickup', 'delivery'] as $role) {
+            $options[$role.'_agents'] = DB::table('consignments as c')
+                ->join('drivers as d', fn ($join) => $join->on('d.driver_id', '=', 'c.'.$role.'_man_id')->on('d.hq_id', '=', 'c.hq_id'))
+                ->where('c.hq_id', $actor->hqId)
+                ->where(fn (Builder $query) => $this->applyNodeVisibility($query, $nodeId))
+                ->distinct()->orderBy('d.display_name')->get(['d.driver_id as value', 'd.display_name as label'])->all();
+        }
+        return $options;
+    }
+
     /**
      * Counts are tenant- and selected-node-scoped and honor non-status filters.
      *
@@ -106,13 +121,13 @@ final readonly class ConsignmentService
         $this->applyFilters($query, $filters);
         $row = (array) $query->selectRaw(
             "COUNT(*) AS total,
-            SUM(CASE WHEN c.current_status IN ('CFM','PD') THEN 1 ELSE 0 END) AS new_routed,
+            SUM(CASE WHEN EXISTS (SELECT 1 FROM operational_statuses st WHERE st.code=c.current_status AND (st.hq_id IS NULL OR st.hq_id=c.hq_id) AND st.status_group='NEW_ROUTED') THEN 1 ELSE 0 END) AS new_routed,
             SUM(CASE WHEN c.pickup_man_id IS NULL AND c.delivery_man_id IS NULL THEN 1 ELSE 0 END) AS unassigned,
             SUM(CASE WHEN c.pickup_man_id IS NOT NULL OR c.delivery_man_id IS NOT NULL THEN 1 ELSE 0 END) AS assigned,
-            SUM(CASE WHEN c.current_status IN ('PU','IR','ROU','OF','OS','CI','OD') THEN 1 ELSE 0 END) AS in_operation,
-            SUM(CASE WHEN c.current_status IN ('NPU','NOK','RH','RCH') THEN 1 ELSE 0 END) AS exception,
-            SUM(CASE WHEN c.current_status = 'OK' THEN 1 ELSE 0 END) AS completed,
-            SUM(CASE WHEN c.current_status IN ('RO','AA') THEN 1 ELSE 0 END) AS cancelled",
+            SUM(CASE WHEN EXISTS (SELECT 1 FROM operational_statuses st WHERE st.code=c.current_status AND (st.hq_id IS NULL OR st.hq_id=c.hq_id) AND st.status_group='IN_OPERATION') THEN 1 ELSE 0 END) AS in_operation,
+            SUM(CASE WHEN EXISTS (SELECT 1 FROM operational_statuses st WHERE st.code=c.current_status AND (st.hq_id IS NULL OR st.hq_id=c.hq_id) AND st.status_group='EXCEPTION') THEN 1 ELSE 0 END) AS exception,
+            SUM(CASE WHEN EXISTS (SELECT 1 FROM operational_statuses st WHERE st.code=c.current_status AND (st.hq_id IS NULL OR st.hq_id=c.hq_id) AND st.status_group='COMPLETED') THEN 1 ELSE 0 END) AS completed,
+            SUM(CASE WHEN EXISTS (SELECT 1 FROM operational_statuses st WHERE st.code=c.current_status AND (st.hq_id IS NULL OR st.hq_id=c.hq_id) AND st.status_group='CANCELLED') THEN 1 ELSE 0 END) AS cancelled",
         )->first();
 
         return [
@@ -346,11 +361,31 @@ final readonly class ConsignmentService
                 );
             }
             $this->policy->assertEditable((string) $row->current_status, (array) config('chabok.consignment.editable_statuses'));
-            $draft = array_replace_recursive($this->draftFromRow((array) $row), $changes);
+            $parcelUpdates = [];
+            if (isset($changes['parcels'])) {
+                $existing = DB::table('parcels')->where('hq_id', $actor->hqId)->where('consignment_id', $consignmentId)->orderBy('parcel_number')->lockForUpdate()->get();
+                $incoming = collect($changes['parcels'])->keyBy('parcel_id');
+                if ($incoming->count() !== count($changes['parcels']) || $incoming->count() !== $existing->count()
+                    || $existing->contains(fn ($parcel) => !$incoming->has($parcel->parcel_id))) {
+                    throw new ApiException(ApiErrorCode::ValidationError, 422, 'Parcel references must match the existing consignment.');
+                }
+                foreach ($existing as $parcel) {
+                    $fields = array_intersect_key($incoming[$parcel->parcel_id], array_flip(['content_description', 'weight_kg', 'width_cm', 'length_cm', 'height_cm']));
+                    $dimensions = array_filter([$fields['width_cm'] ?? null, $fields['length_cm'] ?? null, $fields['height_cm'] ?? null], fn ($value) => $value !== null);
+                    if (count($dimensions) !== 0 && (count($dimensions) !== 3 || min($dimensions) <= 0)) {
+                        throw new ApiException(ApiErrorCode::ValidationError, 422, 'Parcel dimensions must all be positive or absent.');
+                    }
+                    $parcelUpdates[$parcel->parcel_id] = $fields;
+                }
+                $changes['parcels'] = array_values($parcelUpdates);
+            }
+            $beforeDraft = $this->draftFromRow((array) $row);
+            $draft = array_replace_recursive($beforeDraft, $changes);
             foreach (['sender', 'receiver'] as $party) {
                 $draft[$party] = $this->geography->canonicalizeContact((array) $draft[$party], false);
             }
             $this->policy->assertCommercialConsistency($draft);
+            $pricingChanged = $this->editImpact->changed($beforeDraft, $draft, $this->editImpact->contactFields((array) $row));
             $accepted = $acceptedInput === null ? null : $this->pricing->accept(
                 $actor,
                 $nodeId,
@@ -369,6 +404,9 @@ final readonly class ConsignmentService
                 $draft = $this->withAcceptedCommitment($draft, $accepted['commitment'] ?? null);
             }
             $newVersion = $expectedVersion + 1;
+            foreach ($parcelUpdates as $parcelId => $fields) {
+                DB::table('parcels')->where('hq_id', $actor->hqId)->where('consignment_id', $consignmentId)->where('parcel_id', $parcelId)->update([...$fields, 'updated_at' => now()]);
+            }
             DB::table('consignments')->where([
                 'hq_id' => $actor->hqId,
                 'consignment_id' => $consignmentId,
@@ -377,7 +415,7 @@ final readonly class ConsignmentService
                 ...$this->contactColumns('sender', (array) $draft['sender']),
                 ...$this->contactColumns('receiver', (array) $draft['receiver']),
                 ...$this->commercialColumns($draft),
-                ...($accepted === null ? ['commercial_pricing_state' => 'STALE'] : []),
+                ...($accepted === null && $pricingChanged ? ['commercial_pricing_state' => 'STALE'] : []),
                 'version' => $newVersion,
                 'updated_at' => now(),
             ]);
@@ -396,7 +434,7 @@ final readonly class ConsignmentService
                 $consignmentId,
                 $correlationId,
                 before: ['version' => $expectedVersion, 'status' => $row->current_status],
-                after: ['version' => $newVersion, 'status' => $row->current_status],
+                after: ['version' => $newVersion, 'status' => $row->current_status, 'changed_fields' => array_keys($changes), 'parcel_ids' => array_keys($parcelUpdates)],
                 safeNote: $changeReason.($note ? ': '.$note : ''),
                 sourceClient: 'BRANCH_PANEL',
             );
@@ -406,7 +444,7 @@ final readonly class ConsignmentService
                 'status' => (string) $row->current_status,
                 'pricing_version_id' => $pricingVersionId,
             ], static fn ($value) => $value !== null));
-            $this->outbox->write($actor->hqId, 'CONSIGNMENT', $consignmentId, $accepted === null ? 'consignment.pricing.stale' : 'consignment.pricing.accepted', $correlationId, array_filter([
+            if ($accepted !== null || $pricingChanged) $this->outbox->write($actor->hqId, 'CONSIGNMENT', $consignmentId, $accepted === null ? 'consignment.pricing.stale' : 'consignment.pricing.accepted', $correlationId, array_filter([
                 'consignment_id' => $consignmentId,
                 'version' => (string) $newVersion,
                 'pricing_version_id' => $pricingVersionId,
@@ -730,26 +768,30 @@ final readonly class ConsignmentService
 
             return $leftKey <=> $rightKey;
         });
+        $catalogSnapshot = empty($row['catalog_snapshot']) ? [] : json_decode((string) $row['catalog_snapshot'], true);
         $base = $this->listItem($row);
         $editable = in_array('consignment.edit', $context['permissions'], true)
             && in_array($row['current_status'], (array) config('chabok.consignment.editable_statuses'), true);
 
         return [
             ...$base,
+            'non_pricing_contact_fields' => $this->editImpact->contactFields($row),
             'sender' => $this->contactFromRow('sender', $row),
             'receiver' => $this->contactFromRow('receiver', $row),
             'service_type_id' => (string) $row['service_type_id'],
             'shipping_method_id' => (string) $row['shipping_method_id'],
             'service_offering_id' => $row['service_offering_id'] ? (string) $row['service_offering_id'] : null,
             'service_offering_version_id' => $row['service_offering_version_id'] ? (string) $row['service_offering_version_id'] : null,
-            'service_offering_title' => $offeringEvidence === null ? null : $this->historicalLabel($offeringEvidence->offering_labels),
-            'service_type_title' => $offeringEvidence === null ? null : $this->historicalLabel($offeringEvidence->service_type_labels),
-            'shipping_method_title' => $offeringEvidence === null ? null : $this->historicalLabel($offeringEvidence->shipping_method_labels),
+            'service_offering_title' => !empty($catalogSnapshot['labels']) ? $this->historicalLabel(json_encode($catalogSnapshot['labels'])) : ($offeringEvidence === null ? null : $this->historicalLabel($offeringEvidence->offering_labels)),
+            'service_type_title' => !empty($catalogSnapshot['service_type_labels']) ? $this->historicalLabel(json_encode($catalogSnapshot['service_type_labels'])) : ($offeringEvidence === null ? null : $this->historicalLabel($offeringEvidence->service_type_labels)),
+            'shipping_method_title' => !empty($catalogSnapshot['shipping_method_labels']) ? $this->historicalLabel(json_encode($catalogSnapshot['shipping_method_labels'])) : ($offeringEvidence === null ? null : $this->historicalLabel($offeringEvidence->shipping_method_labels)),
+            'catalog_snapshot' => $catalogSnapshot ?: null,
             'selected_service_option_versions' => $row['selected_service_option_versions'] ? json_decode((string) $row['selected_service_option_versions'], true) : [],
             'commitment_schedule_version_id' => $row['commitment_schedule_version_id'] ? (string) $row['commitment_schedule_version_id'] : null,
             'pickup_service_date' => $row['pickup_service_date'],
             'pickup_window_code' => $row['pickup_window_code'],
             'delivery_window_code' => $row['delivery_window_code'],
+            'delivery_commitment_resolution' => empty($row['delivery_commitment_resolution']) ? null : json_decode((string)$row['delivery_commitment_resolution'],true),
             'commitment_snapshot' => $row['commitment_snapshot'] ? json_decode((string) $row['commitment_snapshot'], true) : null,
             'commercial_pricing_state' => (string) $row['commercial_pricing_state'],
             'active_pricing_snapshot_id' => $row['active_pricing_snapshot_id'] ? (string) $row['active_pricing_snapshot_id'] : null,
@@ -834,6 +876,8 @@ final readonly class ConsignmentService
             'status' => 'current_status',
             'pickup_node_id' => 'pickup_node_id',
             'delivery_node_id' => 'delivery_node_id',
+            'pickup_man_id' => 'pickup_man_id',
+            'delivery_man_id' => 'delivery_man_id',
             'service_type_id' => 'service_type_id',
             'shipping_method_id' => 'shipping_method_id',
         ] as $input => $column) {
@@ -850,28 +894,29 @@ final readonly class ConsignmentService
                     $query->whereNotNull('c.pickup_man_id')->orWhereNotNull('c.delivery_man_id');
                 });
             } else {
-                $query->whereIn('c.current_status', $this->statusGroup($group));
+                $query->whereExists(fn ($q) => $q->selectRaw('1')->from('operational_statuses as st')->whereColumn('st.code','c.current_status')->where(fn ($q)=>$q->whereNull('st.hq_id')->orWhereColumn('st.hq_id','c.hq_id'))->where('st.status_group',$group));
             }
         }
         if (($filters['created_from'] ?? null) !== null) {
-            $query->where('c.created_at', '>=', $filters['created_from']);
+            $query->where('c.created_at', '>=', CarbonImmutable::parse($filters['created_from'])->utc()->format('Y-m-d H:i:s.u'));
+        }
+        if (!empty($filters['sla_risk'])) {
+            $pickup = "c.current_status IN ('D00','CFM','PD','NPU') AND c.pickup_commitment_at IS NOT NULL";
+            $deadline = "CASE WHEN {$pickup} THEN c.pickup_commitment_at ELSE c.delivery_commitment_at END";
+            $minutes = "CASE WHEN {$pickup} THEN COALESCE(JSON_UNQUOTE(JSON_EXTRACT(c.commitment_snapshot, '$.pickup.risk_threshold_minutes')), JSON_UNQUOTE(JSON_EXTRACT(c.commitment_snapshot, '$.pickup.selected.risk_threshold_minutes')), 120) ELSE COALESCE(JSON_UNQUOTE(JSON_EXTRACT(c.commitment_snapshot, '$.delivery.risk_threshold_minutes')), JSON_UNQUOTE(JSON_EXTRACT(c.commitment_snapshot, '$.delivery.selected.risk_threshold_minutes')), 120) END";
+            $now = CarbonImmutable::now()->utc()->format('Y-m-d H:i:s');
+            $query->whereExists(fn ($q) => $q->selectRaw('1')->from('operational_statuses as st')->whereColumn('st.code','c.current_status')->where(fn ($q)=>$q->whereNull('st.hq_id')->orWhereColumn('st.hq_id','c.hq_id'))->where('st.is_terminal',false));
+            match ($filters['sla_risk']) {
+                'OVERDUE' => $query->whereRaw("({$deadline}) < ?", [$now]),
+                'AT_RISK' => $query->whereRaw("({$deadline}) >= ? AND ({$deadline}) <= TIMESTAMPADD(MINUTE, CAST(({$minutes}) AS UNSIGNED), ?)", [$now, $now]),
+                'ON_TIME' => $query->whereRaw("({$deadline}) > TIMESTAMPADD(MINUTE, CAST(({$minutes}) AS UNSIGNED), ?)", [$now]),
+                'NO_COMMITMENT' => $query->whereRaw("({$deadline}) IS NULL"),
+                default => null,
+            };
         }
         if (($filters['created_to'] ?? null) !== null) {
-            $query->where('c.created_at', '<=', $filters['created_to']);
+            $query->where('c.created_at', '<=', CarbonImmutable::parse($filters['created_to'])->utc()->format('Y-m-d H:i:s.u'));
         }
-    }
-
-    /** @return list<string> */
-    private function statusGroup(string $group): array
-    {
-        return match ($group) {
-            'NEW_ROUTED' => ['CFM', 'PD'],
-            'IN_OPERATION' => ['PU', 'IR', 'ROU', 'OF', 'OS', 'OD'],
-            'EXCEPTION' => ['NPU', 'NOK', 'RH', 'RCH'],
-            'COMPLETED' => ['OK'],
-            'CANCELLED' => ['RO', 'AA'],
-            default => [],
-        };
     }
 
     /** @return array{string, string} */
@@ -1035,6 +1080,7 @@ final readonly class ConsignmentService
         DB::table('consignments')->where(['hq_id' => $hqId, 'consignment_id' => $consignmentId])->update([
             'service_offering_id' => $accepted['service_offering_id'] ?? DB::raw('service_offering_id'),
             'service_offering_version_id' => $accepted['service_offering_version_id'] ?? DB::raw('service_offering_version_id'),
+            'catalog_snapshot' => isset($accepted['catalog_snapshot']) ? json_encode($accepted['catalog_snapshot'], JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE) : null,
             'commercial_pricing_state' => 'LOCKED',
             'active_pricing_snapshot_id' => $snapshotId,
             'pricing_relevant_fingerprint' => $accepted['input_fingerprint'],
@@ -1059,6 +1105,7 @@ final readonly class ConsignmentService
         if (CarbonImmutable::parse((string) $quote->expires_at)->isPast()) {
             throw new ApiException(ApiErrorCode::PricingQuoteExpired, 422, 'The internal pricing quote has expired.');
         }
+        \Modules\ServiceCatalog\Application\CurrentCatalog::assertQuoteCurrent($quote);
         $snapshotId = (string) Str::uuid();
         $now = now();
         DB::table('pricing_snapshots')->insert([
@@ -1156,6 +1203,7 @@ final readonly class ConsignmentService
             'delivery_commitment_at' => $row['delivery_commitment_at'] ? $this->time($row['delivery_commitment_at']) : null,
             'delivery_commitment_start_at' => $row['delivery_commitment_start_at'] ? $this->time($row['delivery_commitment_start_at']) : null,
             'delivery_commitment_end_at' => $row['delivery_commitment_end_at'] ? $this->time($row['delivery_commitment_end_at']) : null,
+            'delivery_commitment_resolution' => empty($row['delivery_commitment_resolution']) ? null : json_decode((string)$row['delivery_commitment_resolution'],true),
             'commitment_snapshot' => $row['commitment_snapshot'] ? json_decode((string) $row['commitment_snapshot'], true) : null,
             'weight_kg' => (float) $row['weight_kg'],
             'width_cm' => $row['width_cm'] === null ? null : (float) $row['width_cm'],
@@ -1195,7 +1243,7 @@ final readonly class ConsignmentService
         $input['delivery_window_code'] = $selectedDelivery['window_code'] ?? null;
         $input['pickup_commitment_start_at'] = $pickup['starts_at'] ?? null;
         $input['pickup_commitment_end_at'] = $pickup['ends_at'] ?? null;
-        $input['pickup_commitment_at'] = $pickup['ends_at'] ?? null;
+        $input['pickup_commitment_at'] = $pickup['ends_at'] ?? $pickup['computed_at'] ?? null;
         $input['delivery_commitment_start_at'] = $selectedDelivery['starts_at'] ?? $computedDelivery;
         $input['delivery_commitment_end_at'] = $selectedDelivery['ends_at'] ?? $computedDelivery;
         $input['delivery_commitment_at'] = $selectedDelivery['ends_at'] ?? $computedDelivery;
@@ -1225,8 +1273,8 @@ final readonly class ConsignmentService
         ];
     }
 
-    private function databaseTime(mixed $value): ?CarbonImmutable
+    private function databaseTime(mixed $value): ?string
     {
-        return $value === null ? null : CarbonImmutable::parse((string) $value)->utc();
+        return $value === null ? null : CarbonImmutable::parse((string) $value)->utc()->format('Y-m-d H:i:s.u');
     }
 }

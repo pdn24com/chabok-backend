@@ -50,10 +50,11 @@ final readonly class CommitmentScheduleService
     {
         $this->assertAccess($actor, 'service_catalog.view');
         $includeVersionIds = array_values(array_unique(array_map('strval', $includeVersionIds)));
+        $includeVersionIds = array_map(fn ($id) => DB::table('commitment_schedule_versions')->where('commitment_schedule_id', $id)->orderByDesc('version_number')->value('commitment_schedule_version_id') ?? $id, $includeVersionIds);
         return DB::table('commitment_schedule_versions as v')
             ->join('commitment_schedules as s', 's.commitment_schedule_id', '=', 'v.commitment_schedule_id')
             ->where('s.hq_id', $actor->hqId)
-            ->where(fn ($available) => $available->where('v.status', 'PUBLISHED')->when($includeVersionIds !== [], fn ($query) => $query->orWhereIn('v.commitment_schedule_version_id', $includeVersionIds)))
+            ->where(fn ($available) => $available->where(fn ($active) => $active->where('v.status', 'PUBLISHED')->where('s.status', 'ACTIVE'))->when($includeVersionIds !== [], fn ($query) => $query->orWhereIn('v.commitment_schedule_version_id', $includeVersionIds)))
             ->orderBy('s.code')->get(['v.*', 's.code', 's.title'])
             ->map(fn ($row) => $this->versionDetail($actor, (string) $row->commitment_schedule_version_id))->all();
     }
@@ -62,13 +63,14 @@ final readonly class CommitmentScheduleService
     public function create(AuthenticatedPrincipal $actor, array $input, string $correlationId): array
     {
         $this->assertAccess($actor, 'service_catalog.manage_draft');
+        if(isset($input['commitment_policy'])) app(SchedulePolicy::class)->validate($input['commitment_policy'],$input['windows'] ?? [],(string)$actor->hqId);
         return $this->transactions->run(function () use ($actor, $input, $correlationId): array {
             $identityId = (string) Str::uuid();
             $versionId = (string) Str::uuid();
             $now = now();
             DB::table('commitment_schedules')->insert([
                 'commitment_schedule_id' => $identityId, 'hq_id' => $actor->hqId,
-                'owner_key' => $actor->hqId, 'code' => Str::upper((string) $input['code']),
+                'owner_key' => $actor->hqId, 'code' => !empty($input['code']) ? Str::upper((string) $input['code']) : CatalogCode::generate('commitment_schedules', (string) $actor->hqId),
                 'title' => $input['title'], 'status' => 'ACTIVE', 'created_by' => $actor->userId,
                 'created_at' => $now, 'updated_at' => $now,
             ]);
@@ -122,6 +124,7 @@ final readonly class CommitmentScheduleService
     public function update(AuthenticatedPrincipal $actor, string $versionId, array $input, string $correlationId): array
     {
         $this->assertAccess($actor, 'service_catalog.manage_draft');
+        if(isset($input['commitment_policy'])) app(SchedulePolicy::class)->validate($input['commitment_policy'],$input['windows'] ?? [],(string)$actor->hqId);
         return $this->transactions->run(function () use ($actor, $versionId, $input, $correlationId): array {
             $row = DB::table('commitment_schedule_versions')->where(['commitment_schedule_version_id' => $versionId, 'hq_id' => $actor->hqId])->lockForUpdate()->first();
             if ($row === null) throw new ApiException(ApiErrorCode::ResourceNotFound, 404, 'Resource not found.');
@@ -138,12 +141,12 @@ final readonly class CommitmentScheduleService
     }
 
     /** @return array<string,mixed> */
-    public function validate(AuthenticatedPrincipal $actor, string $versionId): array
+    public function validate(AuthenticatedPrincipal $actor, string $versionId, bool $automatic = false): array
     {
         $this->assertAccess($actor, 'service_catalog.manage_draft');
         $version = $this->versionDetail($actor, $versionId); $errors = [];
-        if ($version['windows'] === []) $errors[] = ['code' => 'COMMITMENT_WINDOW_REQUIRED', 'field' => 'windows'];
-        if (! collect($version['windows'])->contains(fn ($window) => $window['window_type'] === 'PICKUP')) $errors[] = ['code' => 'PICKUP_WINDOW_REQUIRED', 'field' => 'windows'];
+        if (empty($version['commitment_policy']) && $version['windows'] === []) $errors[] = ['code' => 'COMMITMENT_WINDOW_REQUIRED', 'field' => 'windows'];
+        if (empty($version['commitment_policy']) && ! collect($version['windows'])->contains(fn ($window) => $window['window_type'] === 'PICKUP')) $errors[] = ['code' => 'PICKUP_WINDOW_REQUIRED', 'field' => 'windows'];
         foreach ($version['windows'] as $index => $window) {
             if ($window['start_time'] >= $window['end_time']) $errors[] = ['code' => 'COMMITMENT_WINDOW_INTERVAL_INVALID', 'field' => "windows.{$index}.end_time"];
             if ($window['applicable_weekdays'] === []) $errors[] = ['code' => 'COMMITMENT_WEEKDAY_REQUIRED', 'field' => "windows.{$index}.applicable_weekdays"];
@@ -153,7 +156,7 @@ final readonly class CommitmentScheduleService
         $overlap = DB::table('commitment_schedule_versions')->where('commitment_schedule_id', $version['commitment_schedule_id'])->where('commitment_schedule_version_id', '!=', $versionId)->whereIn('status', ['APPROVED', 'PUBLISHED'])
             ->when($version['valid_from'], fn ($q) => $q->where(fn ($nested) => $nested->whereNull('valid_to')->orWhere('valid_to', '>', $version['valid_from'])))
             ->when($version['valid_to'], fn ($q) => $q->where(fn ($nested) => $nested->whereNull('valid_from')->orWhere('valid_from', '<', $version['valid_to'])))->exists();
-        if ($overlap) $errors[] = ['code' => 'COMMITMENT_EFFECTIVE_INTERVAL_OVERLAP', 'field' => 'valid_from'];
+        if ($overlap && !$automatic) $errors[] = ['code' => 'COMMITMENT_EFFECTIVE_INTERVAL_OVERLAP', 'field' => 'valid_from'];
         return ['valid' => $errors === [], 'errors' => $errors];
     }
 
@@ -196,14 +199,24 @@ final readonly class CommitmentScheduleService
         $this->assertAccess($actor, 'service_catalog.resolve', true);
         $now = CarbonImmutable::parse($at ?? now()->toISOString());
         $versionIds = DB::table('commitment_schedule_versions as v')->join('commitment_schedule_scopes as s', 's.commitment_schedule_version_id', '=', 'v.commitment_schedule_version_id')
+            ->join('commitment_schedules as identity', 'identity.commitment_schedule_id', '=', 'v.commitment_schedule_id')->where('identity.status', 'ACTIVE')
             ->where(['v.hq_id' => $actor->hqId, 'v.status' => 'PUBLISHED'])
             ->where(fn ($q) => $q->where(fn ($scope) => $scope->where('s.scope_type', 'HQ'))->orWhere(fn ($scope) => $scope->where('s.scope_type', 'NODE')->where('s.node_id', $nodeId)))
-            ->where(fn ($q) => $q->whereNull('v.valid_from')->orWhere('v.valid_from', '<=', $now->utc()))
-            ->where(fn ($q) => $q->whereNull('v.valid_to')->orWhere('v.valid_to', '>', $now->utc()))
             ->distinct()->pluck('v.commitment_schedule_version_id');
         $results = [];
         foreach ($versionIds as $versionId) {
             $version = (array) DB::table('commitment_schedule_versions')->where('commitment_schedule_version_id', $versionId)->first();
+            if(!empty($version['commitment_policy'])) {
+                $policy=json_decode($version['commitment_policy'],true);
+                if($policy['pickup']['mode']!=='SELECTABLE_WINDOW') continue;
+                $configured=DB::table('commitment_schedule_windows')->where('commitment_schedule_version_id',$versionId)->get()->map(fn($w)=>$this->decodeWindow((array)$w))->all();
+                for($offset=0;$offset<14;$offset++) {
+                    try { $resolved=(new CommitmentClock())->resolve($policy['pickup'],$configured,['acceptance_at'=>$now->toISOString(),'pickup_service_date'=>$now->setTimezone($version['timezone'])->addDays($offset)->toDateString()],$version['timezone'],(bool)$policy['include_holidays'],false,'PICKUP'); }
+                    catch(ApiException $error) { if(($error->details['reason_code']??null)==='SLA_CALENDAR_UNAVAILABLE') break; throw $error; }
+                    if(!empty($resolved['windows'])) { foreach($resolved['windows'] as $window) $results[]=['commitment_schedule_version_id'=>$versionId,...$window]; break; }
+                }
+                continue;
+            }
             foreach (DB::table('commitment_schedule_windows')->where(['commitment_schedule_version_id' => $versionId, 'window_type' => 'PICKUP', 'active' => true])->orderBy('start_time')->get() as $window) {
                 $instance = $this->nextWindow((array) $window, (string) $version['timezone'], $now);
                 if ($instance !== null) $results[] = ['commitment_schedule_version_id' => $versionId, ...$instance];
@@ -218,8 +231,13 @@ final readonly class CommitmentScheduleService
     {
         $binding = DB::table('service_offering_commitment_bindings')->where('service_offering_version_id', $offeringVersionId)->first();
         if ($binding === null) return null;
-        $version = DB::table('commitment_schedule_versions')->where(['commitment_schedule_version_id' => $binding->commitment_schedule_version_id, 'status' => 'PUBLISHED'])->first();
+        $owner = DB::table('service_offering_versions')->where('service_offering_version_id', $offeringVersionId)->value('hq_id');
+        $version = (object) CurrentCatalog::resolve('commitment-schedules', (string) $binding->commitment_schedule_version_id, $owner);
         if ($version === null) throw new ApiException(ApiErrorCode::ValidationError, 422, 'The bound commitment schedule is not published.', details: ['reason_code' => 'COMMITMENT_SCHEDULE_NOT_PUBLISHED']);
+        $scopes=DB::table('commitment_schedule_scopes')->where('commitment_schedule_version_id',$version->commitment_schedule_version_id)->get();
+        if (!$scopes->contains(fn($scope)=>$scope->scope_type==='HQ' || in_array($scope->node_id,$context['schedule_node_ids']??[],true)))
+            throw new ApiException(ApiErrorCode::ScopeAccessDenied,403,'برنامه تعهد برای محدوده دسترسی شما قابل استفاده نیست.',details:['reason_code'=>'COMMITMENT_SCOPE_UNAVAILABLE']);
+        if (!empty($version->commitment_policy)) return $this->resolvePolicy($version, $context, $requireSelection, (string) $owner);
         $serviceDate = (string) ($context['pickup_service_date'] ?? CarbonImmutable::now((string) $version->timezone)->toDateString());
         $pickup = ['mode' => (string) $binding->pickup_mode];
         if ($binding->pickup_mode === 'SELECTABLE_WINDOW') {
@@ -257,6 +275,24 @@ final readonly class CommitmentScheduleService
     }
 
     /** @return list<array<string,mixed>> */
+    private function resolvePolicy(object $version, array $context, bool $requireSelection, string $hqId): array
+    {
+        $policy=json_decode($version->commitment_policy,true,512,JSON_THROW_ON_ERROR);
+        $windows=DB::table('commitment_schedule_windows')->where('commitment_schedule_version_id',$version->commitment_schedule_version_id)->get()->map(fn($w)=>$this->decodeWindow((array)$w))->all();
+        $selectedRule=null; $zone=null; $delivery=$policy['delivery'];
+        if(!empty($policy['zone_set_id'])) {
+            $zone=app(\Modules\ServiceCatalog\Application\Contracts\CommitmentZoneResolver::class)->destination($hqId,$policy['zone_set_id'],(array)($context['receiver']??$context['destination']??[]));
+            foreach($policy['destination_rules'] as $rule) if(($zone['zone']['code']??null)===$rule['destination_zone_code']) { $selectedRule=$rule['id']; $delivery=$rule['policy']; }
+        }
+        if($delivery === null) return ['eligible'=>false,'reason_code'=>'DELIVERY_COMMITMENT_UNCONFIGURED','schedule_version_id'=>$version->commitment_schedule_version_id,'destination_zone'=>$zone];
+        $clock=new CommitmentClock(); $timezone=(string)$version->timezone;
+        $pickup=$clock->resolve($policy['pickup'],$windows,$context,$timezone,(bool)$policy['include_holidays'],$requireSelection,'PICKUP');
+        $context['pickup_starts_at']=$pickup['starts_at']??$pickup['computed_at']??null;
+        $context['pickup_ends_at']=$pickup['ends_at']??$pickup['computed_at']??null;
+        $result=$clock->resolve($delivery,$windows,$context,$timezone,(bool)$policy['include_holidays'],$requireSelection,'DELIVERY');
+        return ['eligible'=>true,'reason_code'=>null,'schedule_version_id'=>$version->commitment_schedule_version_id,'timezone'=>$timezone,'accepted_at'=>$context['acceptance_at']??now()->toISOString(),'requested_delivery_window_code'=>$context['delivery_window_code']??null,'policy'=>$policy,'effective_delivery_policy'=>$delivery,'selected_rule_id'=>$selectedRule,'destination_zone'=>$zone,'pickup'=>$pickup,'delivery'=>$result,'windows_snapshot'=>$windows];
+    }
+
     private function pickupWindowOptions(string $versionId, string $timezone, ?string $serviceDate): array
     {
         $now = CarbonImmutable::now($timezone);
@@ -282,9 +318,15 @@ final readonly class CommitmentScheduleService
     /** @return array<string,mixed> */
     public function versionDetail(AuthenticatedPrincipal $actor, string $versionId): array
     {
-        $row = DB::table('commitment_schedule_versions as v')->join('commitment_schedules as s', 's.commitment_schedule_id', '=', 'v.commitment_schedule_id')->where(['v.commitment_schedule_version_id' => $versionId, 's.hq_id' => $actor->hqId])->select(['v.*', 's.code', 's.title'])->first();
+        $row = DB::table('commitment_schedule_versions as v')->join('commitment_schedules as s', 's.commitment_schedule_id', '=', 'v.commitment_schedule_id')->where(['v.commitment_schedule_version_id' => $versionId, 's.hq_id' => $actor->hqId])->select(['v.*', 's.code', 's.title', 's.status as identity_status'])->first();
         if ($row === null) throw new ApiException(ApiErrorCode::ResourceNotFound, 404, 'Resource not found.');
         $result = (array) $row;
+        $result['commitment_policy'] = empty($row->commitment_policy) ? null : json_decode($row->commitment_policy, true);
+        if ($result['commitment_policy'] === null) {
+            $bindings = DB::table('service_offering_commitment_bindings as b')->join('commitment_schedule_versions as v','v.commitment_schedule_version_id','=','b.commitment_schedule_version_id')->where('v.commitment_schedule_id',$row->commitment_schedule_id)->get();
+            $policies=[]; foreach($bindings as $binding) { $policy=SchedulePolicy::fromBinding((array)$binding); $policies[json_encode($policy)]=$policy; }
+            $result['legacy_policy_candidates']=array_values($policies);
+        }
         $result['windows'] = DB::table('commitment_schedule_windows')->where('commitment_schedule_version_id', $versionId)->orderBy('window_type')->orderBy('start_time')->get()->map(fn ($window) => $this->decodeWindow((array) $window))->all();
         $result['scopes'] = DB::table('commitment_schedule_scopes')->where('commitment_schedule_version_id', $versionId)->get()->map(fn ($scope) => (array) $scope)->all();
         return $result;
@@ -293,7 +335,12 @@ final readonly class CommitmentScheduleService
     /** @param array<string,mixed> $input @return array<string,mixed> */
     private function versionColumns(array $input): array
     {
-        return ['timezone' => $input['timezone'] ?? 'Asia/Tehran', 'calendar_code' => $input['calendar_code'] ?? 'IR_STANDARD', 'valid_from' => $this->databaseTimestamp($input['valid_from'] ?? null), 'valid_to' => $this->databaseTimestamp($input['valid_to'] ?? null)];
+        $extra=[];
+        if (isset($input['commitment_policy'])) {
+            $extra['commitment_policy']=json_encode($input['commitment_policy'],JSON_THROW_ON_ERROR);
+            $input['timezone']=config('service_commitments.timezone','Asia/Tehran');
+        }
+        return [...$extra, 'timezone' => $input['timezone'] ?? 'Asia/Tehran', 'calendar_code' => $input['calendar_code'] ?? 'IR_STANDARD', 'valid_from' => $this->databaseTimestamp($input['valid_from'] ?? null), 'valid_to' => $this->databaseTimestamp($input['valid_to'] ?? null)];
     }
 
     /** @param array<string,mixed> $input */
@@ -304,6 +351,7 @@ final readonly class CommitmentScheduleService
         foreach ((array) ($input['windows'] ?? []) as $window) DB::table('commitment_schedule_windows')->insert([
             'commitment_schedule_window_id' => (string) Str::uuid(), 'commitment_schedule_version_id' => $versionId,
             'window_code' => Str::upper((string) $window['window_code']), 'window_type' => $window['window_type'], 'label_fa' => $window['label_fa'],
+            'risk_threshold_minutes' => $window['risk_threshold_minutes'] ?? 120,
             'start_time' => $window['start_time'], 'end_time' => $window['end_time'], 'booking_cutoff_time' => $window['booking_cutoff_time'],
             'applicable_weekdays' => json_encode(array_values((array) $window['applicable_weekdays']), JSON_THROW_ON_ERROR),
             'day_offset' => $window['day_offset'] ?? 0, 'active' => $window['active'] ?? true,
@@ -350,7 +398,7 @@ final readonly class CommitmentScheduleService
     /** @param array<string,mixed> $window @return array<string,mixed> */
     private function instancePayload(array $window, CarbonImmutable $date, string $timezone, CarbonImmutable $cutoff): array
     {
-        return ['window_code' => (string) $window['window_code'], 'window_type' => (string) $window['window_type'], 'label_fa' => (string) $window['label_fa'], 'service_date' => $date->toDateString(), 'starts_at' => CarbonImmutable::parse($date->toDateString().' '.$window['start_time'], $timezone)->utc()->toISOString(), 'ends_at' => CarbonImmutable::parse($date->toDateString().' '.$window['end_time'], $timezone)->utc()->toISOString(), 'booking_cutoff_at' => $cutoff->utc()->toISOString(), 'timezone' => $timezone, 'day_offset' => (int) $window['day_offset']];
+        return ['risk_threshold_minutes' => (int) ($window['risk_threshold_minutes'] ?? 120), 'window_code' => (string) $window['window_code'], 'window_type' => (string) $window['window_type'], 'label_fa' => (string) $window['label_fa'], 'service_date' => $date->toDateString(), 'starts_at' => CarbonImmutable::parse($date->toDateString().' '.$window['start_time'], $timezone)->utc()->toISOString(), 'ends_at' => CarbonImmutable::parse($date->toDateString().' '.$window['end_time'], $timezone)->utc()->toISOString(), 'booking_cutoff_at' => $cutoff->utc()->toISOString(), 'timezone' => $timezone, 'day_offset' => (int) $window['day_offset']];
     }
 
     private function databaseTimestamp(mixed $value): ?string

@@ -25,6 +25,7 @@ final class AuthorizationCatalog
             'consignment.cancel' => 'Consignment',
             'consignment.number_range.view' => 'Consignment',
             'consignment.number_range.manage' => 'Consignment',
+            'operational_status.manage' => 'Consignment',
             'parcel.view' => 'Parcel',
             'manifest.view' => 'Manifest',
             'manifest.create' => 'Manifest',
@@ -89,7 +90,8 @@ final class AuthorizationCatalog
     {
         return [
             'platform_super_admin' => ['title' => 'Platform Super Admin', 'kind' => 'SYSTEM', 'cloneable' => false],
-            'hq_admin' => ['title' => 'HQ Admin', 'kind' => 'SYSTEM', 'cloneable' => false],
+            'hq_admin' => [
+                'operational_status.manage','title' => 'HQ Admin', 'kind' => 'SYSTEM', 'cloneable' => false],
             'branch_manager' => ['title' => 'Branch Manager', 'kind' => 'SYSTEM', 'cloneable' => false],
             'branch_operator' => ['title' => 'Branch Operator', 'kind' => 'SYSTEM', 'cloneable' => false],
             'hub_operator' => ['title' => 'Hub Operator', 'kind' => 'SYSTEM', 'cloneable' => false],

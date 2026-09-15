@@ -14,6 +14,9 @@ Route::prefix('api/v1')->middleware(['api', 'access.auth', 'password.changed'])-
         Route::post('/tariff-versions/{versionId}/simulate', [PricingController::class, 'simulateDraft'])->whereUuid('versionId');
         Route::get('/audit', [PricingController::class, 'audit']);
         Route::get('/tariff-families', [PricingController::class, 'tariffs']);
+        Route::get('/service-tariffs/references', [PricingController::class, 'serviceTariffReferences']);
+        Route::post('/matrix-workbooks/sample', [PricingController::class, 'matrixWorkbookSample']);
+        Route::post('/matrix-workbooks/preview', [PricingController::class, 'matrixWorkbookPreview']);
         Route::get('/charge-types', [PricingController::class, 'chargeTypes']);
         Route::post('/charge-types', [PricingController::class, 'chargeType']);
         Route::get('/zone-sets', [PricingController::class, 'zoneSets']);

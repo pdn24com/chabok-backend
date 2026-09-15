@@ -47,10 +47,13 @@ final readonly class ConsignmentController
             'page' => ['sometimes', 'integer', 'min:1'],
             'page_size' => ['sometimes', 'integer', 'min:1', 'max:100'],
             'search' => ['sometimes', 'nullable', 'string', 'max:160'],
-            'status' => ['sometimes', 'nullable', 'in:D00,CFM,PD,PU,IR,ROU,OF,OS,OD,OK,NPU,NOK,RH,RCH,RO,AA'],
+            'status' => ['sometimes', 'nullable', \Illuminate\Validation\Rule::in(app(\Modules\Consignment\Application\OperationalStatusCatalog::class)->codes($this->principal($request)->hqId))],
             'status_group' => ['sometimes', 'nullable', 'in:NEW_ROUTED,UNASSIGNED,ASSIGNED,IN_OPERATION,EXCEPTION,COMPLETED,CANCELLED'],
+            'sla_risk' => ['sometimes', 'nullable', 'in:OVERDUE,AT_RISK,ON_TIME,NO_COMMITMENT'],
             'pickup_node_id' => ['sometimes', 'nullable', 'uuid'],
             'delivery_node_id' => ['sometimes', 'nullable', 'uuid'],
+            'pickup_man_id' => ['sometimes', 'nullable', 'uuid'],
+            'delivery_man_id' => ['sometimes', 'nullable', 'uuid'],
             'service_type_id' => ['sometimes', 'nullable', 'uuid'],
             'shipping_method_id' => ['sometimes', 'nullable', 'uuid'],
             'created_from' => ['sometimes', 'nullable', 'date'],
@@ -72,7 +75,7 @@ final readonly class ConsignmentController
             $request,
             $paginator,
             fn ($row): array => $this->consignments->listItem((array) $row),
-            ['status_counts' => $statusCounts],
+            ['status_counts' => $statusCounts, 'filter_options' => $this->consignments->filterOptions($this->principal($request), $this->nodeId($request))],
         );
     }
 
@@ -139,16 +142,28 @@ final readonly class ConsignmentController
             'pickup_commitment_at', 'delivery_commitment_at', 'weight_kg', 'width_cm', 'length_cm',
             'height_cm', 'declared_value_amount', 'insurance_enabled',
             'insurance_value_amount', 'cod_enabled', 'cod_amount',
-            'accepted_quote',
+            'accepted_quote', 'payer', 'payment_method', 'parcels',
         ];
         StrictPayload::assertOnly($request, $allowed);
         $this->assertContactOnly($request->input('sender'), 'sender');
         $this->assertContactOnly($request->input('receiver'), 'receiver');
         $this->assertAcceptedQuoteOnly($request->input('accepted_quote'));
+        if (is_array($request->input('parcels'))) {
+            StrictPayload::assertItemsOnly($request->input('parcels'), [...self::PARCEL_FIELDS, 'parcel_id'], 'parcels');
+        }
         $input = $request->validate([
             'expected_version' => ['required', 'integer', 'min:1'],
             'change_reason' => ['required', 'string', 'max:160'],
             'note' => ['sometimes', 'nullable', 'string', 'max:1000'],
+            'payer' => ['sometimes', 'in:SENDER,RECEIVER,VENDOR'],
+            'payment_method' => ['sometimes', 'in:CASH,CREDIT,COD'],
+            'parcels' => ['sometimes', 'array', 'min:1', 'max:100'],
+            'parcels.*.parcel_id' => ['required', 'uuid', 'distinct'],
+            'parcels.*.content_description' => ['present', 'nullable', 'string', 'max:500'],
+            'parcels.*.weight_kg' => ['present', 'nullable', 'numeric', 'gt:0'],
+            'parcels.*.width_cm' => ['present', 'nullable', 'numeric', 'gt:0'],
+            'parcels.*.length_cm' => ['present', 'nullable', 'numeric', 'gt:0'],
+            'parcels.*.height_cm' => ['present', 'nullable', 'numeric', 'gt:0'],
             ...$this->contactRules('sender', false),
             ...$this->contactRules('receiver', false),
             'service_type_id' => ['sometimes', 'uuid'],

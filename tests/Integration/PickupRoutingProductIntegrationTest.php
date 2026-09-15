@@ -111,6 +111,10 @@ final class PickupRoutingProductIntegrationTest extends MySqlRedisTestCase
         $this->authorization->accessibleNodeIds = $fixture['nodes'];
         $driverId = $this->driver($fixture);
         $consignmentId = $this->consignment($fixture, 'PICKUP-FLOW');
+        $policy=\Modules\ServiceCatalog\Application\SchedulePolicy::fromBinding(['pickup_mode'=>'NONE','delivery_mode'=>'COMPUTED','duration_value'=>24,'duration_unit'=>'HOUR','duration_anchor'=>'PICKUP_COMPLETED']);
+        $frozen=['policy'=>$policy,'effective_delivery_policy'=>$policy['delivery'],'timezone'=>'Asia/Tehran','delivery'=>['awaiting_operation'=>true],'windows_snapshot'=>[],'accepted_at'=>now()->toISOString()];
+        DB::table('consignments')->where('consignment_id',$consignmentId)->update(['commitment_snapshot'=>json_encode($frozen)]);
+        $originalSnapshot=DB::table('consignments')->where('consignment_id',$consignmentId)->value('commitment_snapshot');
         $service = $this->app->make(PickupTaskService::class);
 
         $task = $service->create($fixture['actor'], $fixture['nodes'][0], $consignmentId, $this->cid('pickup-create'));
@@ -125,6 +129,12 @@ final class PickupRoutingProductIntegrationTest extends MySqlRedisTestCase
         $task = $service->complete($fixture['actor'], $fixture['nodes'][0], $task['pickup_task_id'], 2, $this->cid('pickup-complete'));
         self::assertSame('COMPLETED', $task['status']);
         self::assertSame('PU', DB::table('consignments')->where('consignment_id', $consignmentId)->value('current_status'));
+        $stored=DB::table('consignments')->where('consignment_id',$consignmentId)->first();
+        $resolution=json_decode($stored->delivery_commitment_resolution,true);
+        self::assertSame($originalSnapshot,$stored->commitment_snapshot);
+        self::assertSame(\Carbon\CarbonImmutable::parse($resolution['pickup_completed_at'])->addHours(24)->toISOString(),$resolution['result']['computed_at']);
+        self::assertSame($resolution['result']['computed_at'],\Carbon\CarbonImmutable::parse($stored->delivery_commitment_at,'UTC')->toISOString());
+        self::assertTrue(DB::table('audit_events')->where('action_key','CONSIGNMENT_COMMITMENT_RESOLVED')->where('target_id',$consignmentId)->exists());
 
         $this->authorization->entitlements = ['LiveOperations'];
         $this->expectApi(ApiErrorCode::EntitlementDisabled, fn () => $service->list($fixture['actor'], $fixture['nodes'][0]));

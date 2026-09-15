@@ -113,6 +113,20 @@ final class ConsignmentIntegrationTest extends MySqlRedisTestCase
 
         $editedDraft = $draft;
         $editedDraft['receiver']['address_text'] = 'Updated safe address';
+        $editedDraft['sender']['contact_name'] = 'Corrected sender';
+        $editedDraft['payer'] = 'RECEIVER';
+        $editedDraft['payment_method'] = 'CREDIT';
+        $editedDraft['parcels'][0]['weight_kg'] = 3;
+        $editedDraft['parcels'][0]['content_description'] = 'Edited parcel content';
+        $parcelChanges = array_map(fn ($parcel, $index) => [...array_fill_keys(['content_description', 'weight_kg', 'width_cm', 'length_cm', 'height_cm'], null), ...$parcel, 'parcel_id' => $created['parcels'][$index]['parcel_id']], $editedDraft['parcels'], array_keys($editedDraft['parcels']));
+        $invalidParcels = $parcelChanges;
+        $invalidParcels[0]['parcel_id'] = (string) Str::uuid();
+        try {
+            $this->app->make(ConsignmentService::class)->edit($principal, $node, $created['consignment_id'], ['expected_version' => 1, 'change_reason' => 'Invalid parcel', 'parcels' => $invalidParcels], (string) Str::uuid());
+            $this->fail('Foreign parcel IDs must be rejected.');
+        } catch (ApiException $error) {
+            $this->assertSame(422, $error->httpStatus);
+        }
         $editQuote = $pricing->calculate(
             $principal,
             $node,
@@ -128,6 +142,10 @@ final class ConsignmentIntegrationTest extends MySqlRedisTestCase
             [
                 'expected_version' => 1,
                 'change_reason' => 'Receiver correction',
+                'sender' => $editedDraft['sender'],
+                'payer' => $editedDraft['payer'],
+                'payment_method' => $editedDraft['payment_method'],
+                'parcels' => $parcelChanges,
                 'receiver' => $editedDraft['receiver'],
                 'accepted_quote' => [
                     'quote_id' => $editQuote['quote_id'],
@@ -139,6 +157,13 @@ final class ConsignmentIntegrationTest extends MySqlRedisTestCase
         );
         $this->assertSame(2, $edited['version']);
         $this->assertSame('Updated safe address', $edited['receiver']['address_text']);
+        $this->assertSame('Corrected sender', $edited['sender']['contact_name']);
+        $this->assertSame('RECEIVER', $edited['payer']);
+        $this->assertSame('CREDIT', $edited['payment_method']);
+        $this->assertSame(3.0, $edited['parcels'][0]['weight_kg']);
+        $this->assertSame('Edited parcel content', $edited['parcels'][0]['content_description']);
+        $this->assertSame($created['parcels'][0]['parcel_id'], $edited['parcels'][0]['parcel_id']);
+        $this->assertSame($created['parcels'][0]['current_status'], $edited['parcels'][0]['current_status']);
         $this->assertCount(2, $edited['accepted_pricing_versions']);
         $this->assertCount(2, $edited['parcels']);
 
@@ -250,6 +275,70 @@ final class ConsignmentIntegrationTest extends MySqlRedisTestCase
         }
     }
 
+    public function test_operational_status_catalog_is_tenant_scoped_versioned_and_preserves_history(): void
+    {
+        [, $user, $node, $actor] = $this->branchContext('STATUS-A','status-admin-a');
+        $catalog=$this->app->make(\Modules\Consignment\Application\OperationalStatusCatalog::class);
+        $input=['code'=>'CUSTOM_A','scope'=>'TENANT','title_fa'=>'وضعیت اختصاصی','title_en'=>null,'partial_title_fa'=>null,'partial_title_en'=>null,'tone'=>'brand','status_group'=>'IN_OPERATION','is_terminal'=>false,'is_active'=>true,'sort_order'=>100];
+        try { $catalog->save($actor,null,$input,(string)Str::uuid()); self::fail('Read-only catalogue access must not permit writes'); } catch(ApiException $e) { self::assertSame(403,$e->httpStatus); }
+        $permission=DB::table('permissions')->where('permission_code','operational_status.manage')->value('permission_id');
+        $role=DB::table('user_role_assignments')->where('user_id',$user['user_id'])->value('role_id');
+        DB::table('role_permissions')->insert(['role_permission_id'=>(string)Str::uuid(),'role_id'=>$role,'permission_id'=>$permission,'created_at'=>now()]);
+        $this->app->make(\Modules\Authorization\Application\AuthorizationService::class)->invalidateUser($user['user_id']);
+        $created=$catalog->save($actor,null,$input,(string)Str::uuid());
+        self::assertTrue($created['can_manage']); self::assertSame(1,$created['version']);
+        [, , $otherNode, $other] = $this->branchContext('STATUS-B','status-admin-b');
+        self::assertNotContains('CUSTOM_A',array_column($catalog->entries($other),'code'));
+        try { $catalog->save($other,$created['status_id'],[...$input,'expected_version'=>1],(string)Str::uuid()); self::fail(); } catch(ApiException $e) { self::assertSame(403,$e->httpStatus); }
+        foreach (['GLOBAL','TENANT'] as $scope) {
+            try { $catalog->save($actor,null,[...$input,'scope'=>$scope,'code'=>'CFM'],(string)Str::uuid()); self::fail(); } catch(ApiException $e) { self::assertContains($e->httpStatus,[403,409]); }
+        }
+        $updated=$catalog->save($actor,$created['status_id'],[...$input,'expected_version'=>1,'title_fa'=>'عنوان جدید','is_active'=>false],(string)Str::uuid());
+        self::assertSame(2,$updated['version']); self::assertFalse($updated['is_active']);
+        self::assertSame(2,$catalog->save($actor,$created['status_id'],[...$input,'expected_version'=>2,'title_fa'=>'عنوان جدید','is_active'=>false],(string)Str::uuid())['version']);
+        self::assertSame(2,DB::table('operational_status_revisions')->where('status_id',$created['status_id'])->count());
+        try { $catalog->save($actor,$created['status_id'],[...$input,'expected_version'=>1],(string)Str::uuid()); self::fail(); } catch(ApiException $e) { self::assertSame(409,$e->httpStatus); }
+        $otherStatus=$catalog->save($other,null,[...$input,'code'=>'OTHER_ONLY'],(string)Str::uuid());
+        self::assertNotContains('OTHER_ONLY',array_column($catalog->entries($actor),'code'));
+        $draft=$this->draft(); $quote=$this->app->make(PricingService::class)->calculate($actor,$node,'CREATE',$draft,null,null);
+        $consignment=$this->app->make(ConsignmentService::class)->create($actor,$node,[...$draft,'accepted_quote'=>['quote_id'=>$quote['quote_id'],'quote_version'=>1,'option_id'=>$quote['options'][0]['option_id']]],(string)Str::uuid());
+        $events=DB::table('consignment_status_events')->where('consignment_id',$consignment['consignment_id'])->get()->all();
+        DB::table('consignments')->where('consignment_id',$consignment['consignment_id'])->update(['current_status'=>'CUSTOM_A']);
+        self::assertSame(1,$this->app->make(ConsignmentService::class)->list($actor,$node,['status'=>'CUSTOM_A'])->total());
+        try { DB::table('consignments')->where('consignment_id',$consignment['consignment_id'])->update(['current_status'=>'OTHER_ONLY']); self::fail(); } catch(\Illuminate\Database\QueryException $e) { self::assertStringContainsString('Unknown operational status for tenant',$e->getMessage()); }
+        self::assertEquals($events,DB::table('consignment_status_events')->where('consignment_id',$consignment['consignment_id'])->get()->all());
+    }
+
+    public function test_list_filters_use_frozen_risk_threshold_and_scoped_agents(): void
+    {
+        [$tenant, , $node, $principal] = $this->branchContext('FILTER-SLA', 'filter-manager');
+        $service = $this->app->make(ConsignmentService::class);
+        $draft = $this->draft();
+        $quote = $this->app->make(PricingService::class)->calculate($principal, $node, 'CREATE', $draft, null, null);
+        $created = $service->create($principal, $node, [...$draft, 'accepted_quote' => ['quote_id' => $quote['quote_id'], 'quote_version' => 1, 'option_id' => $quote['options'][0]['option_id']]], (string) Str::uuid());
+        $driver = (string) Str::uuid();
+        DB::table('drivers')->insert(['driver_id'=>$driver,'hq_id'=>$principal->hqId,'driver_code'=>'FILTER-DRIVER','display_name'=>'Filter driver','home_node_id'=>$node,'operational_type'=>'PICKUP','status'=>'ACTIVE','availability_status'=>'AVAILABLE','version'=>1,'created_at'=>now(),'updated_at'=>now()]);
+        $fixed = \Carbon\CarbonImmutable::parse('2026-09-15T10:00:00Z');
+        \Carbon\CarbonImmutable::setTestNow($fixed);
+        try {
+            DB::table('consignments')->where('consignment_id',$created['consignment_id'])->update(['pickup_man_id'=>$driver,'pickup_commitment_at'=>'2026-09-15 11:00:00','commitment_snapshot'=>json_encode(['pickup'=>['risk_threshold_minutes'=>60]])]);
+            self::assertSame(1,$service->list($principal,$node,['sla_risk'=>'AT_RISK'])->total());
+            self::assertSame(0,$service->list($principal,$node,['sla_risk'=>'ON_TIME'])->total());
+            self::assertSame(1,$service->list($principal,$node,['pickup_man_id'=>$driver])->total());
+            self::assertSame(0,$service->list($principal,$node,['delivery_man_id'=>$driver])->total());
+            self::assertSame($driver,$service->filterOptions($principal,$node)['pickup_agents'][0]->value);
+            DB::table('consignments')->where('consignment_id',$created['consignment_id'])->update(['pickup_commitment_at'=>'2026-09-15 11:00:01']);
+            self::assertSame(1,$service->list($principal,$node,['sla_risk'=>'ON_TIME'])->total());
+            DB::table('consignments')->where('consignment_id',$created['consignment_id'])->update(['pickup_commitment_at'=>'2026-09-15 09:59:59']);
+            self::assertSame(1,$service->list($principal,$node,['sla_risk'=>'OVERDUE'])->total());
+            DB::table('consignments')->where('consignment_id',$created['consignment_id'])->update(['current_status'=>'OK']);
+            self::assertSame(0,$service->list($principal,$node,['sla_risk'=>'OVERDUE'])->total());
+            [, , $otherNode, $otherPrincipal] = $this->branchContext('FILTER-OTHER', 'other-filter-manager');
+            self::assertSame([], $service->filterOptions($otherPrincipal,$otherNode)['pickup_agents']);
+            self::assertSame(0,$service->list($otherPrincipal,$otherNode,['pickup_man_id'=>$driver])->total());
+        } finally { \Carbon\CarbonImmutable::setTestNow(); }
+    }
+
     public function test_pricing_relevant_edit_without_a_quote_marks_pricing_stale_without_changing_status(): void
     {
         [, , $node, $principal] = $this->branchContext('CONSIGN-STALE', 'manager-stale');
@@ -262,8 +351,8 @@ final class ConsignmentIntegrationTest extends MySqlRedisTestCase
 
         $edited = $this->app->make(ConsignmentService::class)->edit($principal, $node, $created['consignment_id'], [
             'expected_version' => 1,
-            'change_reason' => 'Destination correction pending repricing',
-            'receiver' => [...$draft['receiver'], 'city' => 'Karaj'],
+            'change_reason' => 'Weight correction pending repricing',
+            'weight_kg' => $draft['weight_kg'] + 1,
         ], (string) Str::uuid());
 
         $this->assertSame('CFM', $edited['current_status']);
