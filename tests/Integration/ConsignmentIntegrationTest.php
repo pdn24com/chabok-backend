@@ -309,6 +309,54 @@ final class ConsignmentIntegrationTest extends MySqlRedisTestCase
         self::assertEquals($events,DB::table('consignment_status_events')->where('consignment_id',$consignment['consignment_id'])->get()->all());
     }
 
+    public function test_multi_selection_consignment_list_contract_scope_and_columns(): void
+    {
+        [$tenant, , $node, $principal] = $this->branchContext('MULTI-C', 'multi-c');
+        $service = $this->app->make(ConsignmentService::class);
+        $ids = [];
+        foreach (['PU', 'IR', 'OF'] as $index => $status) {
+            $draft = $this->draft();
+            $quote = $this->app->make(PricingService::class)->calculate($principal, $node, 'CREATE', $draft, null, null);
+            $created = $service->create($principal, $node, [...$draft, 'accepted_quote' => [
+                'quote_id'=>$quote['quote_id'], 'quote_version'=>1, 'option_id'=>$quote['options'][0]['option_id'],
+            ]], (string) Str::uuid());
+            $ids[] = $created['consignment_id'];
+            DB::table('consignments')->where('consignment_id', $created['consignment_id'])->update([
+                'current_status'=>$status, 'created_at'=>'2026-09-'.(10+$index).' 12:00:00',
+                'delivery_commitment_at'=>$index === 0 ? '2020-01-01 10:00:00' : '2035-01-01 10:00:00',
+            ]);
+        }
+        $driver = (string) Str::uuid();
+        DB::table('drivers')->insert(['driver_id'=>$driver,'hq_id'=>$tenant['hq_id'],'driver_code'=>'MULTI','display_name'=>'Named driver','home_node_id'=>$node,'operational_type'=>'PICKUP','status'=>'ACTIVE','availability_status'=>'AVAILABLE','version'=>1,'created_at'=>now(),'updated_at'=>now()]);
+        DB::table('consignments')->where('consignment_id',$ids[0])->update(['pickup_man_id'=>$driver]);
+        $requestList = function (array $filters) use ($node, $principal): array {
+            $request = \Illuminate\Http\Request::create('/api/v1/consignments', 'GET', $filters);
+            $request->attributes->set('principal', $principal);
+            $request->attributes->set('node_id', $node);
+            return $this->app->make(\Modules\Consignment\Infrastructure\Http\ConsignmentController::class)->index($request)->getData(true);
+        };
+        $filters = ['status'=>'PU,IR,PU','pickup_node_id'=>$node.','.(string) Str::uuid(), 'created_from'=>'2026-09-10T00:00:00Z', 'created_to'=>'2026-09-11T23:59:59Z', 'page_size'=>1];
+        $first = $requestList($filters);
+        $second = $requestList([...$filters,'page'=>2]);
+        self::assertSame(2,$first['meta']['pagination']['total']);
+        self::assertNotSame($first['data'][0]['consignment_id'],$second['data'][0]['consignment_id']);
+        self::assertSame('Named driver',$second['data'][0]['pickup_man_title']);
+        self::assertSame(2,$second['data'][0]['parcel_count']);
+        self::assertSame(1,$requestList(['status'=>'PU'])['meta']['pagination']['total']);
+        self::assertSame(3,$requestList(['status'=>''])['meta']['pagination']['total']);
+        self::assertSame(2,$requestList(['status'=>'PU,IR','sla_risk'=>'OVERDUE,ON_TIME'])['meta']['pagination']['total']);
+        self::assertSame(1,$requestList(['status'=>'PU,IR','pickup_man_id'=>$driver])['meta']['pagination']['total']);
+        self::assertSame(0,$requestList(['status'=>'PU,IR','delivery_node_id'=>(string) Str::uuid()])['meta']['pagination']['total']);
+        foreach (['UNKNOWN', 'PU,,IR', array_fill(0,2,'PU'), implode(',',array_fill(0,51,'PU'))] as $invalid) {
+            try { $requestList(['status'=>$invalid]); self::fail('Invalid selection accepted'); }
+            catch (\Illuminate\Validation\ValidationException $error) { self::assertNotEmpty($error->errors()); }
+        }
+        [, , $otherNode, $otherPrincipal] = $this->branchContext('MULTI-C-OTHER','multi-c-other');
+        self::assertSame(0,$service->list($otherPrincipal,$otherNode,['status'=>['PU','IR'],'pickup_node_id'=>[$node,$otherNode]])->total());
+        try { $service->list($principal,$otherNode,['status'=>['PU','IR']]); self::fail('Foreign selected node accepted'); }
+        catch (ApiException $error) { self::assertSame(ApiErrorCode::ScopeAccessDenied,$error->errorCode); }
+    }
+
     public function test_list_filters_use_frozen_risk_threshold_and_scoped_agents(): void
     {
         [$tenant, , $node, $principal] = $this->branchContext('FILTER-SLA', 'filter-manager');

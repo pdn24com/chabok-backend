@@ -19,12 +19,15 @@ final readonly class ManifestController
 
     public function index(Request $request): JsonResponse
     {
+        \Modules\Foundation\Application\ListSelections::normalize($request, ['state', 'manifest_status']);
         $input = $request->validate([
             'page' => ['sometimes', 'integer', 'min:1'],
             'page_size' => ['sometimes', 'integer', 'min:1', 'max:100'],
             'search' => ['sometimes', 'nullable', 'string', 'max:160'],
-            'state' => ['sometimes', 'nullable', 'in:DRAFT,OPEN,CLOSED'],
-            'manifest_status' => ['sometimes', 'nullable', \Illuminate\Validation\Rule::in(app(\Modules\Consignment\Application\OperationalStatusCatalog::class)->codes($this->actor($request)->hqId,true))],
+            'state' => ['sometimes', 'array', 'max:50'],
+            'state.*' => ['required', 'in:DRAFT,OPEN,CLOSED'],
+            'manifest_status' => ['sometimes', 'array', 'max:50'],
+            'manifest_status.*' => ['required', \Illuminate\Validation\Rule::in(app(\Modules\Consignment\Application\OperationalStatusCatalog::class)->codes($this->actor($request)->hqId,true))],
         ]);
 
         return ApiResponder::paginated(

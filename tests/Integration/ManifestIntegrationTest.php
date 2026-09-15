@@ -27,6 +27,49 @@ final class ManifestIntegrationTest extends MySqlRedisTestCase
         $this->app->make(AuthorizationCatalogSeeder::class)->run();
     }
 
+    public function test_multi_selection_manifest_list_contract_scope_and_batched_columns(): void
+    {
+        [$tenant, $actor, $node, $principal] = $this->context('MULTI-M', 'multi-m');
+        $this->consignment($tenant['hq_id'],$actor['user_id'],$node);
+        $service = $this->app->make(ManifestService::class);
+        foreach (['IR','OF','OD'] as $index => $target) {
+            $record = $service->create($principal,$node,['expected_version'=>0,'manifest_status'=>'IR','context_key'=>'IR:PICKUP:'.$node],(string) Str::uuid());
+            DB::table('manifests')->where('manifest_id',$record['manifest_id'])->update([
+                'manifest_status'=>$target,'state'=>$index === 1 ? 'OPEN' : 'DRAFT',
+                'manifest_type'=>['INBOUND_RECEPTION','OUTBOUND_TRANSFER','DELIVERY_ASSIGNMENT'][$index],
+                'operational_context_type'=>['PICKUP_RECEPTION','OUTBOUND_CONFIRMATION','DELIVERY_ASSIGNMENT'][$index],
+            ]);
+        }
+        $requestList = function (array $filters) use ($node, $principal): array {
+            $request = \Illuminate\Http\Request::create('/api/v1/manifests','GET',$filters);
+            $request->attributes->set('principal',$principal);
+            $request->attributes->set('node_id',$node);
+            return $this->app->make(\Modules\Manifest\Infrastructure\Http\ManifestController::class)->index($request)->getData(true);
+        };
+        $filters = ['manifest_status'=>'IR,OF,IR','state'=>'DRAFT,OPEN','page_size'=>1];
+        $first=$requestList($filters);$second=$requestList([...$filters,'page'=>2]);
+        self::assertSame(2,$first['meta']['pagination']['total']);
+        self::assertNotSame($first['data'][0]['manifest_id'],$second['data'][0]['manifest_id']);
+        self::assertSame(1,$requestList(['manifest_status'=>'IR,OF','state'=>'OPEN'])['meta']['pagination']['total']);
+        self::assertSame(1,$requestList(['manifest_status'=>'IR'])['meta']['pagination']['total']);
+        self::assertSame(3,$requestList(['manifest_status'=>'','state'=>''])['meta']['pagination']['total']);
+        self::assertNotEmpty($first['data'][0]['issuing_node']['node_title']);
+        self::assertSame(0,$first['data'][0]['total_count']);
+        self::assertNull($first['data'][0]['context']['vehicle']);
+        foreach (['INVALID','IR,,OF',['IR'],implode(',',array_fill(0,51,'IR'))] as $invalid) {
+            try { $requestList(['manifest_status'=>$invalid]); self::fail('Invalid selection accepted'); }
+            catch (\Illuminate\Validation\ValidationException $error) { self::assertNotEmpty($error->errors()); }
+        }
+        DB::enableQueryLog();DB::flushQueryLog();
+        $one=$requestList(['page_size'=>1]);$oneQueries=count(DB::getQueryLog());DB::flushQueryLog();
+        $all=$requestList(['page_size'=>3]);$allQueries=count(DB::getQueryLog());DB::disableQueryLog();
+        self::assertLessThanOrEqual($oneQueries+1,$allQueries,'List references must not add per-row queries');
+        [, , $otherNode, $otherPrincipal]=$this->context('MULTI-M-OTHER','multi-m-other');
+        self::assertSame(0,$service->list($otherPrincipal,$otherNode,['state'=>['DRAFT','OPEN']])->total());
+        try { $service->list($principal,$otherNode,['state'=>['DRAFT','OPEN']]); self::fail('Foreign selected node accepted'); }
+        catch (ApiException $error) { self::assertSame(ApiErrorCode::ScopeAccessDenied,$error->errorCode); }
+    }
+
     public function test_partial_success_confirmation_is_atomic_audited_and_retry_safe(): void
     {
         [$tenant, $actor, $node, $principal] = $this->context('MAN-A', 'manifest-manager');

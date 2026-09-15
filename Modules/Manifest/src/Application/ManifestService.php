@@ -51,12 +51,24 @@ final readonly class ManifestService
             $query->where('m.manifest_number', 'like', '%'.addcslashes((string) $filters['search'], '%_\\').'%');
         }
         foreach (['state', 'manifest_status'] as $field) {
-            if (($filters[$field] ?? null) !== null) {
-                $query->where("m.{$field}", $filters[$field]);
+            if (!empty($filters[$field])) {
+                $query->whereIn("m.{$field}", (array) $filters[$field]);
             }
         }
-        return $query->orderByDesc('m.created_at')->orderByDesc('m.manifest_id')
+        $page = $query->orderByDesc('m.created_at')->orderByDesc('m.manifest_id')
             ->paginate((int) ($filters['page_size'] ?? 25), page: (int) ($filters['page'] ?? 1));
+        $contexts = $this->operationalContext->summaries((string) $actor->hqId, $page->items());
+        $counts = DB::table('manifest_parcels')->where('hq_id', $actor->hqId)
+            ->whereIn('manifest_id', collect($page->items())->pluck('manifest_id')->all())
+            ->selectRaw('manifest_id, manifest_parcel_status, COUNT(*) AS total')
+            ->groupBy('manifest_id', 'manifest_parcel_status')->get()->groupBy('manifest_id');
+        foreach ($page->items() as $row) {
+            $row->_list_context = $contexts[$row->manifest_id];
+            $raw = ($counts[$row->manifest_id] ?? collect())->pluck('total', 'manifest_parcel_status');
+            $row->_list_counts = ['pending' => (int) ($raw['PENDING'] ?? 0), 'validated' => (int) ($raw['VALIDATED'] ?? 0),
+                'succeeded' => (int) ($raw['SUCCEEDED'] ?? 0), 'failed' => (int) ($raw['FAILED'] ?? 0), 'skipped' => (int) ($raw['SKIPPED'] ?? 0)];
+        }
+        return $page;
     }
 
     /** @return array<string, mixed> */
@@ -284,8 +296,8 @@ final readonly class ManifestService
     /** @return array<string, mixed> */
     public function listItem(object|array $row): array
     {
-        $r = (array) $row; $counts = $this->counts((string) $r['manifest_id']);
-        $context = $this->operationalContext->summary((object) $r);
+        $r = (array) $row; $counts = $r['_list_counts'] ?? $this->counts((string) $r['manifest_id']);
+        $context = $r['_list_context'] ?? $this->operationalContext->summary((object) $r);
         return [
             'manifest_id' => (string) $r['manifest_id'], 'manifest_number' => (string) $r['manifest_number'],
             'node_id' => (string) $r['node_id'], 'manifest_status' => (string) $r['manifest_status'],

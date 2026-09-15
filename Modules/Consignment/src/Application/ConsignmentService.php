@@ -78,6 +78,11 @@ final readonly class ConsignmentService
                     ->orderByDesc('cpv.version_number')->limit(1),
                 'payable_currency',
             );
+        foreach (['pickup', 'delivery'] as $role) {
+            $query->selectSub(DB::table('drivers as driver')->select('driver.display_name')
+                ->whereColumn('driver.driver_id', 'c.'.$role.'_man_id')
+                ->whereColumn('driver.hq_id', 'c.hq_id')->limit(1), $role.'_man_title');
+        }
         $this->applyFilters($query, $filters);
         [$sortField, $sortDirection] = $this->sort((string) ($filters['sort'] ?? '-created_at'));
         $query->orderBy("c.{$sortField}", $sortDirection)->orderBy('c.consignment_id', $sortDirection);
@@ -472,6 +477,8 @@ final readonly class ConsignmentService
             'delivery_node_title' => $row['delivery_node_title'] ? (string) $row['delivery_node_title'] : null,
             'pickup_man_id' => $row['pickup_man_id'] ? (string) $row['pickup_man_id'] : null,
             'delivery_man_id' => $row['delivery_man_id'] ? (string) $row['delivery_man_id'] : null,
+            'pickup_man_title' => $row['pickup_man_title'] ?? null,
+            'delivery_man_title' => $row['delivery_man_title'] ?? null,
             'current_status' => (string) $row['current_status'],
             'aggregate' => $this->aggregateResource($row),
             'parcel_count' => (int) $row['parcel_count'],
@@ -881,8 +888,8 @@ final readonly class ConsignmentService
             'service_type_id' => 'service_type_id',
             'shipping_method_id' => 'shipping_method_id',
         ] as $input => $column) {
-            if (($filters[$input] ?? null) !== null) {
-                $query->where("c.{$column}", $filters[$input]);
+            if (!empty($filters[$input])) {
+                $query->whereIn("c.{$column}", (array) $filters[$input]);
             }
         }
         if (($filters['status_group'] ?? null) !== null) {
@@ -906,13 +913,19 @@ final readonly class ConsignmentService
             $minutes = "CASE WHEN {$pickup} THEN COALESCE(JSON_UNQUOTE(JSON_EXTRACT(c.commitment_snapshot, '$.pickup.risk_threshold_minutes')), JSON_UNQUOTE(JSON_EXTRACT(c.commitment_snapshot, '$.pickup.selected.risk_threshold_minutes')), 120) ELSE COALESCE(JSON_UNQUOTE(JSON_EXTRACT(c.commitment_snapshot, '$.delivery.risk_threshold_minutes')), JSON_UNQUOTE(JSON_EXTRACT(c.commitment_snapshot, '$.delivery.selected.risk_threshold_minutes')), 120) END";
             $now = CarbonImmutable::now()->utc()->format('Y-m-d H:i:s');
             $query->whereExists(fn ($q) => $q->selectRaw('1')->from('operational_statuses as st')->whereColumn('st.code','c.current_status')->where(fn ($q)=>$q->whereNull('st.hq_id')->orWhereColumn('st.hq_id','c.hq_id'))->where('st.is_terminal',false));
-            match ($filters['sla_risk']) {
-                'OVERDUE' => $query->whereRaw("({$deadline}) < ?", [$now]),
-                'AT_RISK' => $query->whereRaw("({$deadline}) >= ? AND ({$deadline}) <= TIMESTAMPADD(MINUTE, CAST(({$minutes}) AS UNSIGNED), ?)", [$now, $now]),
-                'ON_TIME' => $query->whereRaw("({$deadline}) > TIMESTAMPADD(MINUTE, CAST(({$minutes}) AS UNSIGNED), ?)", [$now]),
-                'NO_COMMITMENT' => $query->whereRaw("({$deadline}) IS NULL"),
+            $query->where(function (Builder $risks) use ($filters, $deadline, $minutes, $now): void {
+                foreach ((array) $filters['sla_risk'] as $risk) {
+                    $risks->orWhere(function (Builder $selection) use ($risk, $deadline, $minutes, $now): void {
+            match ($risk) {
+                'OVERDUE' => $selection->whereRaw("({$deadline}) < ?", [$now]),
+                'AT_RISK' => $selection->whereRaw("({$deadline}) >= ? AND ({$deadline}) <= TIMESTAMPADD(MINUTE, CAST(({$minutes}) AS UNSIGNED), ?)", [$now, $now]),
+                'ON_TIME' => $selection->whereRaw("({$deadline}) > TIMESTAMPADD(MINUTE, CAST(({$minutes}) AS UNSIGNED), ?)", [$now]),
+                'NO_COMMITMENT' => $selection->whereRaw("({$deadline}) IS NULL"),
                 default => null,
             };
+                    });
+                }
+            });
         }
         if (($filters['created_to'] ?? null) !== null) {
             $query->where('c.created_at', '<=', CarbonImmutable::parse($filters['created_to'])->utc()->format('Y-m-d H:i:s.u'));

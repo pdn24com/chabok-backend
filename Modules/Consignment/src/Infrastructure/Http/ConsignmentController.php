@@ -43,17 +43,24 @@ final readonly class ConsignmentController
 
     public function index(Request $request): JsonResponse
     {
+        \Modules\Foundation\Application\ListSelections::normalize($request, ['status', 'sla_risk', 'pickup_node_id', 'delivery_node_id', 'pickup_man_id', 'delivery_man_id']);
         $filters = $request->validate([
             'page' => ['sometimes', 'integer', 'min:1'],
             'page_size' => ['sometimes', 'integer', 'min:1', 'max:100'],
             'search' => ['sometimes', 'nullable', 'string', 'max:160'],
-            'status' => ['sometimes', 'nullable', \Illuminate\Validation\Rule::in(app(\Modules\Consignment\Application\OperationalStatusCatalog::class)->codes($this->principal($request)->hqId))],
+            'status' => ['sometimes', 'array', 'max:50'],
+            'status.*' => ['required', \Illuminate\Validation\Rule::in(app(\Modules\Consignment\Application\OperationalStatusCatalog::class)->codes($this->principal($request)->hqId))],
             'status_group' => ['sometimes', 'nullable', 'in:NEW_ROUTED,UNASSIGNED,ASSIGNED,IN_OPERATION,EXCEPTION,COMPLETED,CANCELLED'],
-            'sla_risk' => ['sometimes', 'nullable', 'in:OVERDUE,AT_RISK,ON_TIME,NO_COMMITMENT'],
-            'pickup_node_id' => ['sometimes', 'nullable', 'uuid'],
-            'delivery_node_id' => ['sometimes', 'nullable', 'uuid'],
-            'pickup_man_id' => ['sometimes', 'nullable', 'uuid'],
-            'delivery_man_id' => ['sometimes', 'nullable', 'uuid'],
+            'sla_risk' => ['sometimes', 'array', 'max:50'],
+            'sla_risk.*' => ['required', 'in:OVERDUE,AT_RISK,ON_TIME,NO_COMMITMENT'],
+            'pickup_node_id' => ['sometimes', 'array', 'max:50'],
+            'pickup_node_id.*' => ['required', 'uuid'],
+            'delivery_node_id' => ['sometimes', 'array', 'max:50'],
+            'delivery_node_id.*' => ['required', 'uuid'],
+            'pickup_man_id' => ['sometimes', 'array', 'max:50'],
+            'pickup_man_id.*' => ['required', 'uuid'],
+            'delivery_man_id' => ['sometimes', 'array', 'max:50'],
+            'delivery_man_id.*' => ['required', 'uuid'],
             'service_type_id' => ['sometimes', 'nullable', 'uuid'],
             'shipping_method_id' => ['sometimes', 'nullable', 'uuid'],
             'created_from' => ['sometimes', 'nullable', 'date'],

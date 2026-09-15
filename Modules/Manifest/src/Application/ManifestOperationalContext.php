@@ -116,8 +116,46 @@ final readonly class ManifestOperationalContext
         })->all();
     }
 
+    /** Load list references in bounded queries, scoped to the already authorized tenant. */
+    public function summaries(string $hq, array $manifests): array
+    {
+        if ($manifests === []) return [];
+        $ids = static fn (array $fields): array => collect($manifests)->flatMap(
+            static fn ($row): array => array_map(static fn ($field) => $row->{$field}, $fields),
+        )->filter()->unique()->values()->all();
+        $references = [];
+        $references['nodes'] = DB::table('nodes')->where('hq_id', $hq)
+            ->whereIn('node_id', $ids(['node_id', 'origin_node_id', 'destination_node_id']))->get()
+            ->mapWithKeys(fn ($row) => [$row->node_id => $this->nodeResource($row)])->all();
+        $references['drivers'] = DB::table('drivers')->where('hq_id', $hq)
+            ->whereIn('driver_id', $ids(['assigned_driver_id']))->get()
+            ->mapWithKeys(fn ($row) => [$row->driver_id => $this->driverResource($row)])->all();
+        $references['vehicles'] = DB::table('vehicles')->where('hq_id', $hq)
+            ->whereIn('vehicle_id', $ids(['assigned_vehicle_id']))->get()
+            ->mapWithKeys(fn ($row) => [$row->vehicle_id => $this->vehicleResource($row)])->all();
+        $references['plans'] = DB::table('route_plans as p')
+            ->join('consignments as c', fn ($j) => $j->on('c.consignment_id', '=', 'p.consignment_id')->on('c.hq_id', '=', 'p.hq_id'))
+            ->join('route_definitions as d', fn ($j) => $j->on('d.route_definition_id', '=', 'p.route_definition_id')->on('d.hq_id', '=', 'p.hq_id'))
+            ->where('p.hq_id', $hq)->whereIn('p.route_plan_id', $ids(['route_plan_id']))
+            ->get(['p.*', 'c.consignment_number', 'd.route_code', 'd.route_title'])
+            ->mapWithKeys(fn ($r) => [$r->route_plan_id => [
+                'route_plan_id'=>(string)$r->route_plan_id, 'consignment_id'=>(string)$r->consignment_id,
+                'consignment_number'=>(string)$r->consignment_number, 'route_definition_id'=>(string)$r->route_definition_id,
+                'route_code'=>(string)$r->route_code, 'route_title'=>(string)$r->route_title,
+                'status'=>(string)$r->status, 'version'=>(int)$r->version,
+            ]])->all();
+        $references['legs'] = DB::table('route_plan_legs')->where('hq_id', $hq)
+            ->whereIn('route_plan_leg_id', $ids(['route_plan_leg_id']))->get()
+            ->mapWithKeys(fn ($r) => [$r->route_plan_leg_id => [
+                'route_plan_leg_id'=>(string)$r->route_plan_leg_id, 'leg_order'=>(int)$r->leg_order,
+                'status'=>(string)$r->status, 'origin_node_id'=>(string)$r->origin_node_id,
+                'destination_node_id'=>(string)$r->destination_node_id,
+            ]])->all();
+        return collect($manifests)->mapWithKeys(fn ($row) => [$row->manifest_id => $this->summary($row, $references)])->all();
+    }
+
     /** @return array<string,mixed> */
-    public function summary(object $manifest): array
+    public function summary(object $manifest, ?array $references = null): array
     {
         $hq = (string) $manifest->hq_id;
         $target = (string) $manifest->manifest_status;
@@ -129,19 +167,19 @@ final readonly class ManifestOperationalContext
 
         return [
             'operational_context_type' => (string) $manifest->operational_context_type,
-            'issuing_node' => $this->nullableNode($hq, $manifest->node_id),
-            'target_node' => $this->nullableNode($hq, $manifest->destination_node_id),
-            'current_node' => $this->nullableNode($hq, $manifest->node_id),
-            'related_node' => $this->nullableNode($hq, $relatedNodeId),
+            'issuing_node' => $references !== null ? ($references['nodes'][$manifest->node_id] ?? null) : $this->nullableNode($hq, $manifest->node_id),
+            'target_node' => $references !== null ? ($references['nodes'][$manifest->destination_node_id] ?? null) : $this->nullableNode($hq, $manifest->destination_node_id),
+            'current_node' => $references !== null ? ($references['nodes'][$manifest->node_id] ?? null) : $this->nullableNode($hq, $manifest->node_id),
+            'related_node' => $references !== null ? ($references['nodes'][$relatedNodeId] ?? null) : $this->nullableNode($hq, $relatedNodeId),
             'related_node_role' => in_array($target, ['IR', 'CI'], true)
                 ? 'SOURCE'
                 : (in_array($target, ['OF', 'OS'], true) ? 'DESTINATION' : 'COUNTERPARTY'),
-            'origin_node' => $this->nullableNode($hq, $manifest->origin_node_id),
-            'destination_node' => $this->nullableNode($hq, $manifest->destination_node_id),
-            'route_plan' => $this->routePlan($hq, $manifest->route_plan_id),
-            'route_leg' => $this->routeLeg($hq, $manifest->route_plan_leg_id),
-            'driver' => $this->driver($hq, $manifest->assigned_driver_id),
-            'vehicle' => $this->vehicle($hq, $manifest->assigned_vehicle_id),
+            'origin_node' => $references !== null ? ($references['nodes'][$manifest->origin_node_id] ?? null) : $this->nullableNode($hq, $manifest->origin_node_id),
+            'destination_node' => $references !== null ? ($references['nodes'][$manifest->destination_node_id] ?? null) : $this->nullableNode($hq, $manifest->destination_node_id),
+            'route_plan' => $references !== null ? ($references['plans'][$manifest->route_plan_id] ?? null) : $this->routePlan($hq, $manifest->route_plan_id),
+            'route_leg' => $references !== null ? ($references['legs'][$manifest->route_plan_leg_id] ?? null) : $this->routeLeg($hq, $manifest->route_plan_leg_id),
+            'driver' => $references !== null ? ($references['drivers'][$manifest->assigned_driver_id] ?? null) : $this->driver($hq, $manifest->assigned_driver_id),
+            'vehicle' => $references !== null ? ($references['vehicles'][$manifest->assigned_vehicle_id] ?? null) : $this->vehicle($hq, $manifest->assigned_vehicle_id),
         ];
     }
 
