@@ -15,6 +15,8 @@ Route::prefix('api/v1')
 Route::prefix('api/v1/iam')
     ->middleware(['api', 'access.auth', 'node.access', 'password.changed'])
     ->group(function (): void {
+        Route::post('/roles', [AuthorizationController::class, 'createRole'])
+            ->middleware('idempotent:iam.roles.create')->name('iam.roles.store');
         Route::get('/roles', [AuthorizationController::class, 'roles'])->name('iam.roles.index');
         Route::get('/roles/{roleId}', [AuthorizationController::class, 'role'])
             ->whereUuid('roleId')->name('iam.roles.show');

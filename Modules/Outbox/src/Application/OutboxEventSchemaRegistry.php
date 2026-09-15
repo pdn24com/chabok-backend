@@ -74,6 +74,7 @@ final class OutboxEventSchemaRegistry
                 'recipient_fingerprint' => 'string',
                 'delivery_ciphertext' => 'string',
             ],
+            'iam.role.created' => ['role_id' => 'string'],
             'iam.role.updated' => ['role_id' => 'string'],
             'iam.role.cloned' => ['role_id' => 'string', 'source_role_id' => 'string'],
             'iam.role.permissions_replaced' => ['role_id' => 'string'],

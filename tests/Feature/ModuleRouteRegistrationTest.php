@@ -148,6 +148,7 @@ final class ModuleRouteRegistrationTest extends TestCase
             'POST /api/v1/delivery-tasks/{id}/complete',
             'POST /api/v1/delivery-tasks/{id}/fail',
             'POST /api/v1/delivery-tasks/{id}/retry',
+            'POST /api/v1/iam/roles',
             'POST /api/v1/iam/roles/{roleId}/clone',
             'POST /api/v1/iam/users',
             'POST /api/v1/iam/users/{userId}/activate',

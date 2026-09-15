@@ -189,18 +189,18 @@ final readonly class AuthorizationService implements AuthorizationContextResolve
     /** @return list<array<string, mixed>> */
     public function listRoles(AuthenticatedPrincipal $actor): array
     {
-        $this->assertPermission($actor, 'iam.roles.assign', $this->tenantId($actor));
+        $this->assertRoleReadAccess($actor);
 
         return DB::table('roles')->where(function ($query) use ($actor): void {
             $query->whereNull('hq_id')->orWhere('hq_id', $actor->hqId);
-        })->where('status', 'ACTIVE')->orderBy('role_kind')->orderBy('role_code')->get()
+        })->orderBy('role_kind')->orderBy('role_code')->get()
             ->map(fn ($row): array => $this->rolePayload((string) $row->role_id))->all();
     }
 
     /** @return array<string, mixed> */
     public function getRole(AuthenticatedPrincipal $actor, string $roleId): array
     {
-        $this->assertPermission($actor, 'iam.roles.assign', $this->tenantId($actor));
+        $this->assertRoleReadAccess($actor);
         $this->assertVisibleRole($roleId, $actor->hqId);
 
         return $this->rolePayload($roleId);
@@ -214,12 +214,19 @@ final readonly class AuthorizationService implements AuthorizationContextResolve
         string $correlationId,
     ): array {
         $hqId = $this->tenantId($actor);
-        $this->assertPermission($actor, 'iam.roles.manage', $hqId);
+        $this->assertRoleManagement($actor);
 
         return $this->transactions->run(function () use ($actor, $roleId, $input, $correlationId, $hqId): array {
             $role = DB::table('roles')->where('role_id', $roleId)->lockForUpdate()->first();
             $this->assertMutableRole($role, $hqId);
             $before = $this->rolePayload($roleId);
+            $permissionCodes = $input['permission_codes'] ?? null;
+            unset($input['permission_codes']);
+            $this->assertDelegablePermissions($actor, $permissionCodes ?? $before['permission_codes'], true);
+            if ($permissionCodes !== null) {
+                DB::table('role_permissions')->where('role_id', $roleId)->delete();
+                $this->insertRolePermissions($roleId, $permissionCodes, $actor->userId);
+            }
             DB::table('roles')->where('role_id', $roleId)->update([
                 ...$input,
                 'updated_at' => now(),
@@ -235,6 +242,36 @@ final readonly class AuthorizationService implements AuthorizationContextResolve
         });
     }
 
+    /** @param array<string, mixed> $input */
+    public function createRole(AuthenticatedPrincipal $actor, array $input, string $correlationId): array
+    {
+        $hqId = $this->tenantId($actor);
+        $this->assertRoleManagement($actor);
+        return $this->transactions->run(function () use ($actor, $input, $correlationId, $hqId): array {
+            $this->assertDelegablePermissions($actor, $input['permission_codes'], true);
+            $roleId = (string) Str::uuid();
+            try {
+                DB::table('roles')->insert([
+                    'role_id' => $roleId, 'hq_id' => $hqId, 'owner_key' => $hqId,
+                    'role_code' => $input['role_code'], 'role_title' => $input['role_title'],
+                    'description' => $input['description'] ?? null, 'role_kind' => 'CUSTOM',
+                    'is_cloneable' => true, 'status' => 'ACTIVE', 'created_by' => $actor->userId,
+                    'created_at' => now(), 'updated_at' => now(),
+                ]);
+            } catch (QueryException $exception) {
+                if ($exception->getCode() === '23000') {
+                    throw new ApiException(ApiErrorCode::Conflict, 409, 'The role code is already in use.');
+                }
+                throw $exception;
+            }
+            $this->insertRolePermissions($roleId, $input['permission_codes'], $actor->userId);
+            $payload = $this->rolePayload($roleId);
+            $this->audit->write($hqId, $actor->userId, 'ROLE_CREATED', 'ROLE', $roleId, $correlationId, after: $payload);
+            $this->outbox->write($hqId, 'ROLE', $roleId, 'iam.role.created', $correlationId, ['role_id' => $roleId]);
+            return $payload;
+        });
+    }
+
     /** @param array{role_code: string, role_title: string, description?: string|null} $input */
     public function cloneRole(
         AuthenticatedPrincipal $actor,
@@ -243,7 +280,7 @@ final readonly class AuthorizationService implements AuthorizationContextResolve
         string $correlationId,
     ): array {
         $hqId = $this->tenantId($actor);
-        $this->assertPermission($actor, 'iam.roles.manage', $hqId);
+        $this->assertRoleManagement($actor);
 
         return $this->transactions->run(function () use ($actor, $sourceRoleId, $input, $correlationId, $hqId): array {
             $source = DB::table('roles')->where('role_id', $sourceRoleId)->lockForUpdate()->first();
@@ -253,8 +290,8 @@ final readonly class AuthorizationService implements AuthorizationContextResolve
             if ($source->hq_id !== null && $source->hq_id !== $hqId) {
                 throw new ApiException(ApiErrorCode::TenantAccessDenied, 403, 'Access denied.');
             }
-            $sourcePermissions = $this->permissionCodesForRole($sourceRoleId);
-            $this->assertDelegablePermissions($actor, $sourcePermissions);
+            $sourcePermissions = $input['permission_codes'] ?? $this->permissionCodesForRole($sourceRoleId);
+            $this->assertDelegablePermissions($actor, $sourcePermissions, true);
             $roleId = (string) Str::uuid();
             try {
                 DB::table('roles')->insert([
@@ -296,8 +333,8 @@ final readonly class AuthorizationService implements AuthorizationContextResolve
         string $correlationId,
     ): array {
         $hqId = $this->tenantId($actor);
-        $this->assertPermission($actor, 'iam.roles.manage', $hqId);
-        $this->assertDelegablePermissions($actor, $permissionCodes);
+        $this->assertRoleManagement($actor);
+        $this->assertDelegablePermissions($actor, $permissionCodes, true);
 
         return $this->transactions->run(function () use ($actor, $roleId, $permissionCodes, $correlationId, $hqId): array {
             $role = DB::table('roles')->where('role_id', $roleId)->lockForUpdate()->first();
@@ -319,13 +356,18 @@ final readonly class AuthorizationService implements AuthorizationContextResolve
     /** @return list<array<string, mixed>> */
     public function listPermissions(AuthenticatedPrincipal $actor, ?string $moduleCode): array
     {
-        $this->assertPermission($actor, 'iam.roles.assign', $this->tenantId($actor));
+        $this->assertRoleReadAccess($actor);
 
-        return DB::table('permissions')->where('status', 'ACTIVE')
+        $delegable = $this->delegableCodes($actor, true);
+        $canManage = in_array('iam.roles.manage', $delegable, true);
+
+        return DB::table('permissions')
             ->when($moduleCode !== null, fn ($query) => $query->where('module_code', $moduleCode))
             ->orderBy('permission_code')->get([
                 'permission_id', 'permission_code', 'module_code', 'description', 'status',
-            ])->map(fn ($row): array => (array) $row)->all();
+            ])->map(fn ($row): array => [...(array) $row,
+                'can_grant' => $canManage && in_array($row->permission_code, $delegable, true),
+            ])->all();
     }
 
     /** @param list<array<string, mixed>> $assignments
@@ -554,7 +596,7 @@ final readonly class AuthorizationService implements AuthorizationContextResolve
     {
         return DB::table('role_permissions as rp')
             ->join('permissions as p', 'p.permission_id', '=', 'rp.permission_id')
-            ->where('rp.role_id', $roleId)->where('p.status', 'ACTIVE')
+            ->where('rp.role_id', $roleId)
             ->orderBy('p.permission_code')->pluck('p.permission_code')
             ->map(fn ($code) => (string) $code)->all();
     }
@@ -584,26 +626,48 @@ final readonly class AuthorizationService implements AuthorizationContextResolve
     }
 
     /** @param list<string> $permissionCodes */
-    private function assertDelegablePermissions(AuthenticatedPrincipal $actor, array $permissionCodes): void
+    private function assertDelegablePermissions(AuthenticatedPrincipal $actor, array $permissionCodes, bool $tenantWide = false): void
     {
         $approved = array_keys(AuthorizationCatalog::permissions());
         if (array_diff($permissionCodes, $approved) !== []) {
             throw new ApiException(ApiErrorCode::ValidationError, 422, 'An unknown permission was supplied.');
         }
-        $effective = $this->resolve($actor)['permissions'];
-        $assigned = DB::table('user_role_assignments as ura')
-            ->join('roles as r', 'r.role_id', '=', 'ura.role_id')
+        if (array_diff($permissionCodes, $this->delegableCodes($actor, $tenantWide)) !== []) {
+            throw new ApiException(ApiErrorCode::DelegationDenied, 403, 'Access denied.');
+        }
+    }
+
+    /** @return list<string> */
+    private function delegableCodes(AuthenticatedPrincipal $actor, bool $tenantWide = false): array
+    {
+        return DB::table('user_role_assignments as a')
+            ->join('roles as r', 'r.role_id', '=', 'a.role_id')
             ->join('role_permissions as rp', 'rp.role_id', '=', 'r.role_id')
             ->join('permissions as p', 'p.permission_id', '=', 'rp.permission_id')
-            ->where('ura.user_id', $actor->userId)
-            ->where('ura.status', 'ACTIVE')
-            ->where('r.status', 'ACTIVE')
-            ->where('p.status', 'ACTIVE')
-            ->pluck('p.permission_code')
-            ->map(static fn ($code): string => (string) $code)
-            ->all();
-        if (array_diff($permissionCodes, array_values(array_unique([...$effective, ...$assigned]))) !== []) {
-            throw new ApiException(ApiErrorCode::DelegationDenied, 403, 'Access denied.');
+            ->leftJoin('tenant_module_entitlements as e', function ($join) use ($actor): void {
+                $join->on('e.module_code', '=', 'p.module_code')->where('e.hq_id', $actor->hqId);
+            })
+            ->where('a.user_id', $actor->userId)->where('a.hq_id', $actor->hqId)
+            ->where(fn ($query) => $query->whereNull('r.hq_id')->orWhere('r.hq_id', $actor->hqId))
+            ->where('a.status', 'ACTIVE')->where('r.status', 'ACTIVE')->where('p.status', 'ACTIVE')
+            ->when($tenantWide, fn ($query) => $query->where('e.status', 'ENABLED'))
+            ->when($tenantWide, fn ($query) => $query->where('a.scope_type', 'TENANT')->whereNull('a.scope_id'))
+            ->distinct()->pluck('p.permission_code')->all();
+    }
+
+    private function assertRoleReadAccess(AuthenticatedPrincipal $actor): void
+    {
+        $hqId = $this->tenantId($actor);
+        $code = in_array('iam.roles.manage', $this->resolve($actor)['permissions'], true)
+            ? 'iam.roles.manage' : 'iam.roles.assign';
+        $this->assertPermission($actor, $code, $hqId);
+    }
+
+    private function assertRoleManagement(AuthenticatedPrincipal $actor): void
+    {
+        $this->assertPermission($actor, 'iam.roles.manage', $this->tenantId($actor));
+        if (! in_array('iam.roles.manage', $this->delegableCodes($actor, true), true)) {
+            throw new ApiException(ApiErrorCode::ScopeAccessDenied, 403, 'Access denied.');
         }
     }
 
