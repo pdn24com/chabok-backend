@@ -1,0 +1,9 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Modules\Manifest\Application\UseCases\RejectManifestExceptionOperation;
+
+final readonly class RejectManifestExceptionOperationResult
+{
+}

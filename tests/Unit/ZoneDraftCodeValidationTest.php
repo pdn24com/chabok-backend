@@ -7,22 +7,25 @@ namespace Tests\Unit;
 use Illuminate\Translation\ArrayLoader;
 use Illuminate\Translation\Translator;
 use Illuminate\Validation\Factory;
-use Modules\Pricing\Infrastructure\Http\PricingController;
 use PHPUnit\Framework\TestCase;
-use ReflectionClass;
 
 final class ZoneDraftCodeValidationTest extends TestCase
 {
     public function test_zone_defaults_and_legacy_codes_are_accepted_but_malformed_codes_are_rejected(): void
     {
-        $reflection = new ReflectionClass(PricingController::class);
-        $rules = $reflection->getMethod('zoneSetRules')->invoke($reflection->newInstanceWithoutConstructor(), true);
+        $rules = \Modules\Pricing\Presentation\Http\Requests\PricingRequestRules::zoneSetRules(true);
         $validator = new Factory(new Translator(new ArrayLoader(), 'en'));
-        $input = ['code' => '123456', 'title' => 'Zone group', 'purpose' => 'SALES', 'zones' => [
-            ['code' => 'A', 'title' => 'First zone', 'rank' => 1, 'members' => [
-                ['member_type' => 'PROVINCE', 'province_id' => '00000000-0000-4000-8000-000000000001'],
+        $input = [
+            'code' => '123456',
+            'title' => 'Zone group',
+            'purpose' => 'SALES',
+            'zones' => [[
+                'code' => 'A',
+                'title' => 'First zone',
+                'rank' => 1,
+                'members' => [['member_type' => 'PROVINCE', 'province_id' => '00000000-0000-4000-8000-000000000001']],
             ]],
-        ]];
+        ];
         self::assertTrue($validator->make($input, $rules)->passes());
         $input['code'] = 'ZS_LEGACY';
         $input['zones'][0]['code'] = 'ZONE_OLD';

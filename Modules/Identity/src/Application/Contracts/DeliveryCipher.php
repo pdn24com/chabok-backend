@@ -1,0 +1,10 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Modules\Identity\Application\Contracts;
+
+interface DeliveryCipher
+{
+    public function encrypt(string $plaintext): string;
+}
