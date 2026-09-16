@@ -4,17 +4,21 @@ declare(strict_types=1);
 
 namespace Modules\ServiceCatalog\Application;
 
-use Illuminate\Support\Facades\DB;
+use Modules\ServiceCatalog\Application\Repositories\CatalogCodeRepository;
 
-final class CatalogCode
+final readonly class CatalogCode
 {
-    public static function generate(string $table, string $owner): string
+    public function __construct(private CatalogCodeRepository $codes)
+    {
+    }
+
+    public function generate(string $resource, string $owner): string
     {
         // Callers are in a transaction; serialize automatic allocation per tenant.
-        DB::table('hq_tenants')->where('hq_id', $owner)->lockForUpdate()->first();
+        $this->codes->lockOwner($owner);
         for ($attempt = 0; $attempt < 100; $attempt++) {
             $code = (string) random_int(100000, 999999);
-            if (!DB::table($table)->where('owner_key', $owner)->where('code', $code)->exists()) {
+            if (!$this->codes->exists($resource, $owner, $code)) {
                 return $code;
             }
         }

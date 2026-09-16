@@ -21,16 +21,18 @@ final class PersistenceAndAdministrationTest extends MySqlRedisTestCase
         $ids = [(string) Str::uuid(), (string) Str::uuid(), (string) Str::uuid()];
         foreach ($ids as $index => $id) {
             DB::table('areas')->insert([
-                'area_id' => $id, 'hq_id' => $tenant['hq_id'],
-                'area_title' => "Area {$index}", 'status' => 'ACTIVE',
-                'created_at' => now(), 'updated_at' => now(),
+                'area_id' => $id,
+                'hq_id' => $tenant['hq_id'],
+                'area_title' => "Area {$index}",
+                'status' => 'ACTIVE',
+                'created_at' => now(),
+                'updated_at' => now(),
             ]);
         }
         $service = $this->app->make(AreaHierarchyService::class);
         $service->addEdge($tenant['hq_id'], $ids[0], $ids[1]);
         $service->addEdge($tenant['hq_id'], $ids[1], $ids[2]);
         $this->assertEqualsCanonicalizing([$ids[1], $ids[2]], $service->descendantIds($tenant['hq_id'], $ids[0]));
-
         $this->expectException(\Modules\Foundation\Domain\ApiException::class);
         $service->addEdge($tenant['hq_id'], $ids[2], $ids[0]);
     }
@@ -39,8 +41,7 @@ final class PersistenceAndAdministrationTest extends MySqlRedisTestCase
     {
         $tenant = $this->tenant();
         $this->user($tenant['hq_id'], 'global-id');
-        $store = $this->app->make(\Modules\User\Application\Contracts\UserStore::class);
-
+        $store = $this->app->make(\Modules\User\Application\Repositories\UserRepository::class);
         $this->assertTrue($store->identifiersExist(['global-id']));
         $this->assertFalse($store->identifiersExist(['unused-id']));
     }
@@ -58,7 +59,6 @@ final class PersistenceAndAdministrationTest extends MySqlRedisTestCase
             'scope_id' => null,
             'includes_descendants' => false,
         ]];
-
         $direct = $service->create($principal, [
             'creation_mode' => 'DIRECT_ACTIVE',
             'username' => 'direct-user',
@@ -71,7 +71,6 @@ final class PersistenceAndAdministrationTest extends MySqlRedisTestCase
         $this->assertTrue((bool) $direct['must_change_password']);
         $this->assertArrayNotHasKey('temporary_password', $direct);
         $this->assertDatabaseHas('authentication_credentials', ['user_id' => $direct['user_id']]);
-
         $invited = $service->create($principal, [
             'creation_mode' => 'EMAIL_INVITATION',
             'email' => 'invited@example.com',
@@ -82,26 +81,12 @@ final class PersistenceAndAdministrationTest extends MySqlRedisTestCase
         $this->assertSame('INVITED', $invited['status']);
         $this->assertDatabaseMissing('authentication_credentials', ['user_id' => $invited['user_id']]);
         $this->assertDatabaseHas('user_invitations', ['user_id' => $invited['user_id'], 'channel' => 'EMAIL']);
-
-        $auditAndOutbox = json_encode([
-            DB::table('audit_events')->get(),
-            DB::table('outbox_events')->get(),
-        ], JSON_THROW_ON_ERROR);
+        $auditAndOutbox = json_encode([DB::table('audit_events')->get(), DB::table('outbox_events')->get()], JSON_THROW_ON_ERROR);
         $this->assertStringNotContainsString('Temporary!Pass123', $auditAndOutbox);
-
-        $delivery = json_decode((string) DB::table('outbox_events')
-            ->where('event_type', 'identity.invitation.delivery.requested')
-            ->where('hq_id', $tenant['hq_id'])
-            ->orderByDesc('created_at')
-            ->value('payload'), true, 512, JSON_THROW_ON_ERROR);
+        $delivery = json_decode((string) DB::table('outbox_events')->where('event_type', 'identity.invitation.delivery.requested')->where('hq_id', $tenant['hq_id'])->orderByDesc('created_at')->value('payload'), true, 512, JSON_THROW_ON_ERROR);
         $invitationToken = Crypt::decryptString($delivery['delivery_ciphertext']);
-        $this->postJson('/api/v1/auth/password/activate', [
-            'invitation_token' => $invitationToken,
-            'new_password' => 'Activated!Pass456',
-        ])->assertOk()->assertJsonPath('data.status', 'ACTIVE');
-        $this->assertDatabaseHas('users', [
-            'user_id' => $invited['user_id'], 'status' => 'ACTIVE',
-        ]);
+        $this->postJson('/api/v1/auth/password/activate', ['invitation_token' => $invitationToken, 'new_password' => 'Activated!Pass456'])->assertOk()->assertJsonPath('data.status', 'ACTIVE');
+        $this->assertDatabaseHas('users', ['user_id' => $invited['user_id'], 'status' => 'ACTIVE']);
         $this->assertDatabaseHas('authentication_credentials', ['user_id' => $invited['user_id']]);
     }
 
@@ -113,7 +98,6 @@ final class PersistenceAndAdministrationTest extends MySqlRedisTestCase
         $target = $this->user($tenantB['hq_id'], 'tenant-b-user');
         $this->allowAdministration();
         $principal = new AuthenticatedPrincipal($actor['user_id'], (string) Str::uuid(), $tenantA['hq_id'], false);
-
         try {
             $this->app->make(UserService::class)->get($principal, $target['user_id']);
             $this->fail('Cross-tenant user access should have been denied.');
@@ -128,7 +112,6 @@ final class PersistenceAndAdministrationTest extends MySqlRedisTestCase
         $tenant = $this->tenant();
         $actor = $this->user($tenant['hq_id'], 'closed-admin');
         $principal = new AuthenticatedPrincipal($actor['user_id'], (string) Str::uuid(), $tenant['hq_id'], false);
-
         $this->expectException(\Modules\Foundation\Domain\ApiException::class);
         $this->app->make(UserService::class)->list($principal, 1, 25, null, null);
     }
@@ -153,49 +136,34 @@ final class PersistenceAndAdministrationTest extends MySqlRedisTestCase
                 'includes_descendants' => false,
             ]],
         ];
-
         $correlationId = '88888888-8888-4888-8888-888888888888';
-        $first = $this->withToken($login['token'])
-            ->withHeader('X-Correlation-ID', $correlationId)
-            ->withHeader('Idempotency-Key', $key)
-            ->postJson('/api/v1/iam/users', $payload);
-        $second = $this->withToken($login['token'])
-            ->withHeader('X-Correlation-ID', $correlationId)
-            ->withHeader('Idempotency-Key', $key)
-            ->postJson('/api/v1/iam/users', $payload);
+        $first = $this->withToken($login['token'])->withHeader('X-Correlation-ID', $correlationId)->withHeader('Idempotency-Key', $key)->postJson('/api/v1/iam/users', $payload);
+        $second = $this->withToken($login['token'])->withHeader('X-Correlation-ID', $correlationId)->withHeader('Idempotency-Key', $key)->postJson('/api/v1/iam/users', $payload);
         $first->assertCreated();
         $second->assertCreated()->assertExactJson($first->json());
         $this->assertSame(1, DB::table('users')->where('normalized_username', 'idempotent-user')->count());
-
         $payload['last_name'] = 'Changed';
-        $this->withToken($login['token'])
-            ->withHeader('X-Correlation-ID', $correlationId)
-            ->withHeader('Idempotency-Key', $key)
-            ->postJson('/api/v1/iam/users', $payload)
-            ->assertStatus(409)
-            ->assertJsonPath('error_code', 'IDEMPOTENCY_KEY_REUSED');
+        $this->withToken($login['token'])->withHeader('X-Correlation-ID', $correlationId)->withHeader('Idempotency-Key', $key)->postJson('/api/v1/iam/users', $payload)->assertStatus(409)->assertJsonPath('error_code', 'IDEMPOTENCY_KEY_REUSED');
     }
 
     public function test_user_creation_rolls_back_identity_audit_and_outbox_when_assignment_boundary_fails(): void
     {
         $tenant = $this->tenant();
         $actor = $this->user($tenant['hq_id'], 'rollback-admin');
-        $this->app->instance(UserAdministrationAuthorizer::class, new class implements UserAdministrationAuthorizer {
-            public function assertCan(AuthenticatedPrincipal $actor, string $permission, string $hqId): void {}
+        $this->app->instance(UserAdministrationAuthorizer::class, new class implements UserAdministrationAuthorizer
+        {
+            public function assertCan(AuthenticatedPrincipal $actor, string $permission, string $hqId): void
+            {
+            }
         });
-        $this->app->instance(InitialAssignmentWriter::class, new class implements InitialAssignmentWriter {
-            public function assign(
-                string $hqId,
-                string $userId,
-                string $actorId,
-                array $assignments,
-                string $correlationId,
-            ): void {
+        $this->app->instance(InitialAssignmentWriter::class, new class implements InitialAssignmentWriter
+        {
+            public function assign(string $hqId, string $userId, string $actorId, array $assignments, string $correlationId): void
+            {
                 throw new \LogicException('Simulated assignment boundary failure.');
             }
         });
         $principal = new AuthenticatedPrincipal($actor['user_id'], (string) Str::uuid(), $tenant['hq_id'], false);
-
         try {
             $this->app->make(UserService::class)->create($principal, [
                 'creation_mode' => 'DIRECT_ACTIVE',
@@ -214,7 +182,6 @@ final class PersistenceAndAdministrationTest extends MySqlRedisTestCase
         } catch (\LogicException $exception) {
             $this->assertStringContainsString('assignment boundary failure', $exception->getMessage());
         }
-
         $this->assertDatabaseMissing('users', ['normalized_username' => 'rolled-back-user']);
         $this->assertSame(1, DB::table('authentication_credentials')->count());
         $this->assertDatabaseMissing('audit_events', ['correlation_id' => '66666666-6666-4666-8666-666666666666']);
@@ -229,36 +196,36 @@ final class PersistenceAndAdministrationTest extends MySqlRedisTestCase
         $targetLogin = $this->login('suspend-target');
         $this->allowAdministration();
         $principal = new AuthenticatedPrincipal($actor['user_id'], (string) Str::uuid(), $tenant['hq_id'], false);
-
-        $result = $this->app->make(UserService::class)->transition(
-            $principal,
-            $target['user_id'],
-            'SUSPENDED',
-            '77777777-7777-4777-8777-777777777777',
-        );
-
+        $result = $this->app->make(UserService::class)->transition($principal, $target['user_id'], 'SUSPENDED', '77777777-7777-4777-8777-777777777777');
         $this->assertSame('SUSPENDED', $result['status']);
-        $this->assertDatabaseHas('user_sessions', [
-            'user_id' => $target['user_id'],
-            'revoked_reason' => 'USER_SUSPENDED',
-        ]);
-        $this->withToken($targetLogin['token'])->getJson('/api/v1/me')
-            ->assertStatus(401)
-            ->assertJsonPath('error_code', 'AUTHENTICATION_REQUIRED');
+        $this->assertDatabaseHas('user_sessions', ['user_id' => $target['user_id'], 'revoked_reason' => 'USER_SUSPENDED']);
+        $this->withToken($targetLogin['token'])->getJson('/api/v1/me')->assertStatus(401)->assertJsonPath('error_code', 'AUTHENTICATION_REQUIRED');
     }
 
     private function allowAdministration(): void
     {
         // This boundary test deliberately substitutes authorization; scoped-access behavior has real integration coverage.
-        $this->app->instance(\Modules\User\Application\Contracts\UserScopeAuthorizer::class, new class implements \Modules\User\Application\Contracts\UserScopeAuthorizer {
-            public function visibleUserIds(AuthenticatedPrincipal $actor, ?string $nodeId = null): ?array { return null; }
-            public function assertTarget(AuthenticatedPrincipal $actor, string $userId, string $permission): void {}
+        $this->app->instance(\Modules\User\Application\Contracts\UserScopeAuthorizer::class, new class implements \Modules\User\Application\Contracts\UserScopeAuthorizer
+        {
+            public function visibleUserIds(AuthenticatedPrincipal $actor, ?string $nodeId = null): ?array
+            {
+                return null;
+            }
+            public function assertTarget(AuthenticatedPrincipal $actor, string $userId, string $permission): void
+            {
+            }
         });
-        $this->app->instance(UserAdministrationAuthorizer::class, new class implements UserAdministrationAuthorizer {
-            public function assertCan(AuthenticatedPrincipal $actor, string $permission, string $hqId): void {}
+        $this->app->instance(UserAdministrationAuthorizer::class, new class implements UserAdministrationAuthorizer
+        {
+            public function assertCan(AuthenticatedPrincipal $actor, string $permission, string $hqId): void
+            {
+            }
         });
-        $this->app->instance(InitialAssignmentWriter::class, new class implements InitialAssignmentWriter {
-            public function assign(string $hqId, string $userId, string $actorId, array $assignments, string $correlationId): void {}
+        $this->app->instance(InitialAssignmentWriter::class, new class implements InitialAssignmentWriter
+        {
+            public function assign(string $hqId, string $userId, string $actorId, array $assignments, string $correlationId): void
+            {
+            }
         });
     }
 }

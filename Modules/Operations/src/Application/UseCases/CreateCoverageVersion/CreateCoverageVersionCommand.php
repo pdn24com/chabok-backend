@@ -1,0 +1,19 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Modules\Operations\Application\UseCases\CreateCoverageVersion;
+
+use Modules\Foundation\Domain\AuthenticatedPrincipal;
+
+final readonly class CreateCoverageVersionCommand
+{
+    public function __construct(
+        public AuthenticatedPrincipal $actor,
+        public string $policyId,
+        public array $input,
+        public string $correlationId,
+    )
+    {
+    }
+}

@@ -8,8 +8,13 @@ use Illuminate\Support\ServiceProvider;
 
 final class DashboardServiceProvider extends ServiceProvider
 {
+    public function register(): void
+    {
+        $this->app->singleton(\Modules\Dashboard\Application\Repositories\DashboardRepository::class, \Modules\Dashboard\Infrastructure\Repositories\SqlDashboardRepository::class);
+    }
+
     public function boot(): void
     {
-        $this->loadRoutesFrom(dirname(__DIR__, 3).'/routes/api.php');
+        $this->app->register(RouteServiceProvider::class);
     }
 }

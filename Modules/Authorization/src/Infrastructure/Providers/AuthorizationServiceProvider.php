@@ -22,6 +22,9 @@ final class AuthorizationServiceProvider extends ServiceProvider
 {
     public function register(): void
     {
+        $this->app->singleton(\Modules\Authorization\Application\Repositories\RoleNavigationRepository::class, \Modules\Authorization\Infrastructure\Repositories\EloquentRoleNavigationRepository::class);
+        $this->app->singleton(\Modules\Authorization\Application\Repositories\AuthorizationRepository::class, \Modules\Authorization\Infrastructure\Repositories\EloquentAuthorizationRepository::class);
+        $this->app->singleton(\Modules\Authorization\Application\Contracts\AuthorizationCache::class, \Modules\Authorization\Infrastructure\Adapters\RedisAuthorizationCache::class);
         $this->app->singleton(AuthorizationService::class);
         $this->app->singleton(\Modules\User\Application\Contracts\UserScopeAuthorizer::class, \Modules\Authorization\Infrastructure\Adapters\AuthorizationUserScopeAuthorizer::class);
         $this->app->alias(AuthorizationService::class, AuthorizationContextResolver::class);
@@ -34,7 +37,7 @@ final class AuthorizationServiceProvider extends ServiceProvider
 
     public function boot(): void
     {
-        $this->loadMigrationsFrom(dirname(__DIR__, 3).'/database/migrations');
-        $this->loadRoutesFrom(dirname(__DIR__, 3).'/routes/api.php');
+        $this->loadMigrationsFrom(dirname(__DIR__, 3) . '/database/migrations');
+        $this->app->register(RouteServiceProvider::class);
     }
 }

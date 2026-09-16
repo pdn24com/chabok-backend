@@ -4,15 +4,19 @@ declare(strict_types=1);
 
 namespace Tests\Unit;
 
-use Modules\Consignment\Application\EditPricingImpact;
+use Modules\Consignment\Domain\EditPricingPolicy;
 use PHPUnit\Framework\TestCase;
 
 final class EditPricingImpactTest extends TestCase
 {
     public function test_coordinates_require_pricing_unless_geographic_dependencies_allow_them(): void
     {
-        $policy = new EditPricingImpact();
-        $before = ['sender' => ['city_id' => 'city', 'latitude' => 35.1], 'receiver' => [], 'parcels' => [['weight' => 1, 'content_description' => 'old']]];
+        $policy = new EditPricingPolicy();
+        $before = [
+            'sender' => ['city_id' => 'city', 'latitude' => 35.1],
+            'receiver' => [],
+            'parcels' => [['weight' => 1, 'content_description' => 'old']],
+        ];
         $after = $before;
         $after['sender']['latitude'] = 35.2;
         $after['sender']['province_id'] = 'derived';

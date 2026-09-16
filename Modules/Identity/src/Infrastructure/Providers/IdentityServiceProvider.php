@@ -17,6 +17,11 @@ final class IdentityServiceProvider extends ServiceProvider
 {
     public function register(): void
     {
+        $this->app->register(RepositoryServiceProvider::class);
+        $this->app->singleton(\Modules\Identity\Application\Contracts\SessionRegistry::class, \Modules\Identity\Infrastructure\Security\RedisSessionRegistry::class);
+        $this->app->singleton(\Modules\Identity\Application\Contracts\DeliveryCipher::class, \Modules\Identity\Infrastructure\Security\LaravelDeliveryCipher::class);
+        $this->app->singleton(\Modules\Identity\Application\Contracts\SessionSettings::class, \Modules\Identity\Infrastructure\Security\LaravelSessionSettings::class);
+        $this->app->singleton(\Modules\User\Application\Contracts\UserInvitationReader::class, \Modules\Identity\Infrastructure\Persistence\EloquentUserInvitationReader::class);
         $this->app->singleton(IdentityService::class);
         $this->app->alias(IdentityService::class, IdentityProvisioner::class);
         $this->app->alias(IdentityService::class, UserSessionManager::class);
@@ -26,7 +31,7 @@ final class IdentityServiceProvider extends ServiceProvider
 
     public function boot(): void
     {
-        $this->loadMigrationsFrom(dirname(__DIR__, 3).'/database/migrations');
-        $this->loadRoutesFrom(dirname(__DIR__, 3).'/routes/api.php');
+        $this->loadMigrationsFrom(dirname(__DIR__, 3) . '/database/migrations');
+        $this->app->register(RouteServiceProvider::class);
     }
 }
