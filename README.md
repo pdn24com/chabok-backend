@@ -1,5 +1,20 @@
 # Chabok platform backend
 
+## Stage PHP-FPM runtime
+
+`Dockerfile.fpm` is the Stage runtime image (PHP-FPM plus the existing CLI and
+extensions, with OPcache). The development `Dockerfile` is unchanged. Build it
+through the infrastructure repository's `backend-php` service. HTTP traffic is
+handled by the `backend` Nginx gateway; FPM port 9000 must never be host-published.
+Composer and Artisan Stage commands now target `backend-php`.
+
+Requests run as `www-data`; verify write access to `storage` and `bootstrap/cache`
+before cutover. No source-wide chmod/chown is performed by the image. Initial
+`PHP_FPM_MAX_CHILDREN=4` and `PHP_FPM_MAX_REQUESTS=500` are configurable, not a
+capacity guarantee. OPcache timestamp validation remains enabled for the current
+bind-mounted Stage layout. See sibling infrastructure `STAGE-FPM.md` for the
+scoped cutover, smoke test and rollback procedure. No migrations are introduced.
+
 Laravel modular-monolith backend for the Chabok logistics platform.
 
 Implemented modules include Foundation/IAM, Consignment, Manifest, Dashboard,
