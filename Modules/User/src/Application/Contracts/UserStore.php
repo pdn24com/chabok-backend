@@ -33,5 +33,6 @@ interface UserStore
         int $pageSize,
         ?string $search,
         ?string $status,
+        ?array $visibleUserIds = null,
     ): LengthAwarePaginator;
 }

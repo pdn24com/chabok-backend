@@ -16,5 +16,6 @@ final class OrganizationServiceProvider extends ServiceProvider
     public function boot(): void
     {
         $this->loadMigrationsFrom(dirname(__DIR__, 3).'/database/migrations');
+        $this->loadRoutesFrom(dirname(__DIR__, 3).'/routes/api.php');
     }
 }

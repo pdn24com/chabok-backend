@@ -11,11 +11,16 @@ Route::prefix('api/v1')->middleware(['api', 'access.auth', 'password.changed'])-
     Route::post('/pricing/quotes/{quoteId}/reject', [PricingController::class, 'reject'])->whereUuid('quoteId');
     Route::post('/pricing/snapshots/accept', [PricingController::class, 'accept'])->middleware('idempotent:pricing.snapshots.accept');
     Route::prefix('admin/pricing')->group(function (): void {
+        Route::post('/tariff-versions/{versionId}/simulate', [PricingController::class, 'simulateDraft'])->whereUuid('versionId');
         Route::get('/audit', [PricingController::class, 'audit']);
         Route::get('/tariff-families', [PricingController::class, 'tariffs']);
+        Route::get('/service-tariffs/references', [PricingController::class, 'serviceTariffReferences']);
+        Route::post('/matrix-workbooks/sample', [PricingController::class, 'matrixWorkbookSample']);
+        Route::post('/matrix-workbooks/preview', [PricingController::class, 'matrixWorkbookPreview']);
         Route::get('/charge-types', [PricingController::class, 'chargeTypes']);
         Route::post('/charge-types', [PricingController::class, 'chargeType']);
         Route::get('/zone-sets', [PricingController::class, 'zoneSets']);
+        Route::get('/zone-set-versions/references', [PricingController::class, 'zoneSetVersionReferences']);
         Route::post('/zone-sets', [PricingController::class, 'zoneSet']);
         Route::get('/{kind}/identities/{identityId}/versions', [PricingController::class, 'history'])->whereIn('kind', ['tariffs', 'zone-sets'])->whereUuid('identityId');
         Route::post('/{kind}/identities/{identityId}/versions', [PricingController::class, 'clone'])->whereIn('kind', ['tariffs', 'zone-sets'])->whereUuid('identityId');

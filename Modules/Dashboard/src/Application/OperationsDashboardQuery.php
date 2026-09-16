@@ -28,6 +28,7 @@ final readonly class OperationsDashboardQuery
         }
 
         $context = $this->authorization->resolve($actor);
+        $context['acting_node_id'] = $nodeId;
         $this->assertDashboardAccess($context, $nodeId);
         $node = DB::table('nodes')->where([
             'hq_id' => $actor->hqId,
@@ -42,7 +43,7 @@ final readonly class OperationsDashboardQuery
         $consignmentCapability = $this->capability($context, 'Consignment', 'consignment.view');
         $manifestCapability = $this->capability($context, 'Manifest', 'manifest.view');
         $pickupCapability = $this->capability($context, 'Pickup', 'pickup_request.view');
-        $driverCapability = $this->capability($context, 'Driver', 'driver.view');
+        $driverCapability = $this->capability($context, 'Driver', 'fleet.driver.view');
         $nokCapability = $this->capability($context, 'Exception', 'exception.nok.view');
         $npuCapability = $this->capability($context, 'Exception', 'exception.npu.view');
 
@@ -57,6 +58,12 @@ final readonly class OperationsDashboardQuery
             $nodeId,
             $asOf,
             $manifestCapability,
+        );
+        $drivers = $this->driverSummary(
+            $actor->hqId,
+            $nodeId,
+            $asOf,
+            $driverCapability,
         );
 
         return [
@@ -119,10 +126,10 @@ final readonly class OperationsDashboardQuery
                     'DATA_NOT_PERSISTED',
                     $asOf,
                 ),
-                $this->unavailableMetric(
+                $this->metric(
                     'ACTIVE_DRIVERS',
                     $driverCapability,
-                    'MODULE_NOT_IMPLEMENTED',
+                    $drivers['total'],
                     $asOf,
                 ),
             ],
@@ -141,11 +148,7 @@ final readonly class OperationsDashboardQuery
                 $asOf,
             ),
             'manifests' => $manifests,
-            'drivers' => $this->unavailableDomain(
-                $driverCapability,
-                'MODULE_NOT_IMPLEMENTED',
-                $asOf,
-            ),
+            'drivers' => $drivers,
             'latest_updates' => $this->latestUpdates(
                 $actor->hqId,
                 $nodeId,
@@ -168,7 +171,7 @@ final readonly class OperationsDashboardQuery
                 : ApiErrorCode::PermissionDenied;
             throw new ApiException($code, 403, 'Access denied.');
         }
-        if (! in_array($nodeId, $context['accessible_node_ids'], true)) {
+        if (! in_array($nodeId, \Modules\Foundation\Application\ScopedAccess::nodes($context, 'branch_panel.access'), true)) {
             throw new ApiException(ApiErrorCode::ScopeAccessDenied, 403, 'Access denied.');
         }
     }
@@ -187,7 +190,7 @@ final readonly class OperationsDashboardQuery
         if (! $enabled) {
             return ['available' => false, 'reason' => 'ENTITLEMENT_DISABLED'];
         }
-        if (! in_array($permission, $context['permissions'], true)) {
+        if (! in_array($permission, $context['permissions'], true) || ! in_array($context['acting_node_id'] ?? '', \Modules\Foundation\Application\ScopedAccess::nodes($context, $permission), true)) {
             return ['available' => false, 'reason' => 'PERMISSION_DENIED'];
         }
 
@@ -303,6 +306,50 @@ final readonly class OperationsDashboardQuery
                 'IR' => (int) ($row['target_IR'] ?? 0),
                 'OF' => (int) ($row['target_OF'] ?? 0),
                 'OD' => (int) ($row['target_OD'] ?? 0),
+            ],
+        ];
+    }
+
+    /**
+     * @param array{available: bool, reason: string|null} $capability
+     * @return array<string, mixed>
+     */
+    private function driverSummary(
+        string $hqId,
+        string $nodeId,
+        string $asOf,
+        array $capability,
+    ): array {
+        if (! $capability['available']) {
+            return [
+                'status' => 'UNAVAILABLE',
+                'as_of' => $asOf,
+                'reason_code' => $capability['reason'],
+                'total' => null,
+                'status_counts' => null,
+            ];
+        }
+
+        $row = (array) DB::table('drivers')
+            ->where([
+                'hq_id' => $hqId,
+                'home_node_id' => $nodeId,
+                'status' => 'ACTIVE',
+            ])
+            ->selectRaw(
+                "COUNT(*) AS total,
+                SUM(CASE WHEN availability_status = 'AVAILABLE' THEN 1 ELSE 0 END) AS status_AVAILABLE,
+                SUM(CASE WHEN availability_status = 'ON_MISSION' THEN 1 ELSE 0 END) AS status_ON_MISSION",
+            )->first();
+
+        return [
+            'status' => 'AVAILABLE',
+            'as_of' => $asOf,
+            'reason_code' => null,
+            'total' => (int) ($row['total'] ?? 0),
+            'status_counts' => [
+                'AVAILABLE' => (int) ($row['status_AVAILABLE'] ?? 0),
+                'ON_MISSION' => (int) ($row['status_ON_MISSION'] ?? 0),
             ],
         ];
     }
@@ -536,7 +583,7 @@ final readonly class OperationsDashboardQuery
             ['MANIFESTS', 'Manifest', 'manifest.view', '/manifests', true],
             ['CREATE_MANIFEST', 'Manifest', 'manifest.create', '/manifests/new', true],
             ['PICKUP_REQUESTS', 'Pickup', 'pickup_request.view', null, false],
-            ['DRIVERS', 'Driver', 'driver.view', null, false],
+            ['DRIVERS', 'Driver', 'fleet.driver.view', '/app/administration/fleet/drivers', true],
             ['LIVE_OPERATIONS', 'LiveOperations', 'live_operations.view', null, false],
             ['EXCEPTIONS', 'Exception', 'exception.nok.view', null, false],
         ];

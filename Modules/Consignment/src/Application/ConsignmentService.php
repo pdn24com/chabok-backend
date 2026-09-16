@@ -31,6 +31,7 @@ final readonly class ConsignmentService
         private ConsignmentPolicy $policy,
         private ConsignmentNumberAllocator $numbers,
         private GeographyResolver $geography,
+        private EditPricingImpact $editImpact,
     ) {}
 
     /** @param array<string, mixed> $filters */
@@ -50,20 +51,38 @@ final readonly class ConsignmentService
                     ->on('delivery_node.hq_id', '=', 'c.hq_id');
             })
             ->where('c.hq_id', $actor->hqId)
-            ->where('c.pickup_node_id', $nodeId)
+            ->where(fn (Builder $query) => $this->applyNodeVisibility($query, $nodeId))
             ->select([
                 'c.consignment_id', 'c.consignment_number',
                 'c.receiver_contact_name', 'c.receiver_mobile', 'c.receiver_address_text',
                 'c.pickup_node_id', 'pickup_node.node_title as pickup_node_title',
                 'c.delivery_node_id', 'delivery_node.node_title as delivery_node_title',
                 'c.pickup_man_id', 'c.delivery_man_id', 'c.current_status',
+                'c.aggregate_mode', 'c.parcel_status_counts',
                 'c.version', 'c.created_at', 'c.updated_at',
             ])->selectSub(
                 DB::table('parcels as p')->selectRaw('COUNT(*)')
                     ->whereColumn('p.consignment_id', 'c.consignment_id')
                     ->whereColumn('p.hq_id', 'c.hq_id'),
                 'parcel_count',
+            )->selectSub(
+                DB::table('consignment_pricing_versions as cpv')->select('cpv.total_amount')
+                    ->whereColumn('cpv.consignment_id', 'c.consignment_id')
+                    ->whereColumn('cpv.hq_id', 'c.hq_id')
+                    ->orderByDesc('cpv.version_number')->limit(1),
+                'payable_total_amount',
+            )->selectSub(
+                DB::table('consignment_pricing_versions as cpv')->select('cpv.currency')
+                    ->whereColumn('cpv.consignment_id', 'c.consignment_id')
+                    ->whereColumn('cpv.hq_id', 'c.hq_id')
+                    ->orderByDesc('cpv.version_number')->limit(1),
+                'payable_currency',
             );
+        foreach (['pickup', 'delivery'] as $role) {
+            $query->selectSub(DB::table('drivers as driver')->select('driver.display_name')
+                ->whereColumn('driver.driver_id', 'c.'.$role.'_man_id')
+                ->whereColumn('driver.hq_id', 'c.hq_id')->limit(1), $role.'_man_title');
+        }
         $this->applyFilters($query, $filters);
         [$sortField, $sortDirection] = $this->sort((string) ($filters['sort'] ?? '-created_at'));
         $query->orderBy("c.{$sortField}", $sortDirection)->orderBy('c.consignment_id', $sortDirection);
@@ -72,6 +91,20 @@ final readonly class ConsignmentService
             perPage: (int) ($filters['page_size'] ?? 25),
             page: (int) ($filters['page'] ?? 1),
         );
+    }
+
+    public function filterOptions(AuthenticatedPrincipal $actor, string $nodeId): array
+    {
+        $this->assertAccess($actor, $nodeId, 'consignment.view');
+        $options = [];
+        foreach (['pickup', 'delivery'] as $role) {
+            $options[$role.'_agents'] = DB::table('consignments as c')
+                ->join('drivers as d', fn ($join) => $join->on('d.driver_id', '=', 'c.'.$role.'_man_id')->on('d.hq_id', '=', 'c.hq_id'))
+                ->where('c.hq_id', $actor->hqId)
+                ->where(fn (Builder $query) => $this->applyNodeVisibility($query, $nodeId))
+                ->distinct()->orderBy('d.display_name')->get(['d.driver_id as value', 'd.display_name as label'])->all();
+        }
+        return $options;
     }
 
     /**
@@ -89,17 +122,17 @@ final readonly class ConsignmentService
         unset($filters['status'], $filters['status_group'], $filters['page'], $filters['page_size'], $filters['sort']);
         $query = DB::table('consignments as c')
             ->where('c.hq_id', $actor->hqId)
-            ->where('c.pickup_node_id', $nodeId);
+            ->where(fn (Builder $query) => $this->applyNodeVisibility($query, $nodeId));
         $this->applyFilters($query, $filters);
         $row = (array) $query->selectRaw(
             "COUNT(*) AS total,
-            SUM(CASE WHEN c.current_status IN ('CFM','PD') THEN 1 ELSE 0 END) AS new_routed,
+            SUM(CASE WHEN EXISTS (SELECT 1 FROM operational_statuses st WHERE st.code=c.current_status AND (st.hq_id IS NULL OR st.hq_id=c.hq_id) AND st.status_group='NEW_ROUTED') THEN 1 ELSE 0 END) AS new_routed,
             SUM(CASE WHEN c.pickup_man_id IS NULL AND c.delivery_man_id IS NULL THEN 1 ELSE 0 END) AS unassigned,
             SUM(CASE WHEN c.pickup_man_id IS NOT NULL OR c.delivery_man_id IS NOT NULL THEN 1 ELSE 0 END) AS assigned,
-            SUM(CASE WHEN c.current_status IN ('PU','IR','ROU','OF','OS','OD') THEN 1 ELSE 0 END) AS in_operation,
-            SUM(CASE WHEN c.current_status IN ('NPU','NOK','RH','RCH') THEN 1 ELSE 0 END) AS exception,
-            SUM(CASE WHEN c.current_status = 'OK' THEN 1 ELSE 0 END) AS completed,
-            SUM(CASE WHEN c.current_status IN ('RO','AA') THEN 1 ELSE 0 END) AS cancelled",
+            SUM(CASE WHEN EXISTS (SELECT 1 FROM operational_statuses st WHERE st.code=c.current_status AND (st.hq_id IS NULL OR st.hq_id=c.hq_id) AND st.status_group='IN_OPERATION') THEN 1 ELSE 0 END) AS in_operation,
+            SUM(CASE WHEN EXISTS (SELECT 1 FROM operational_statuses st WHERE st.code=c.current_status AND (st.hq_id IS NULL OR st.hq_id=c.hq_id) AND st.status_group='EXCEPTION') THEN 1 ELSE 0 END) AS exception,
+            SUM(CASE WHEN EXISTS (SELECT 1 FROM operational_statuses st WHERE st.code=c.current_status AND (st.hq_id IS NULL OR st.hq_id=c.hq_id) AND st.status_group='COMPLETED') THEN 1 ELSE 0 END) AS completed,
+            SUM(CASE WHEN EXISTS (SELECT 1 FROM operational_statuses st WHERE st.code=c.current_status AND (st.hq_id IS NULL OR st.hq_id=c.hq_id) AND st.status_group='CANCELLED') THEN 1 ELSE 0 END) AS cancelled",
         )->first();
 
         return [
@@ -147,6 +180,9 @@ final readonly class ConsignmentService
         }
         $this->policy->assertCommercialConsistency($input);
         $this->policy->assertPilotCreate($input);
+        if (($input['delivery_node_id'] ?? null) !== null && ! DB::table('nodes')->where(['hq_id' => $actor->hqId, 'node_id' => $input['delivery_node_id'], 'status' => 'ACTIVE'])->exists()) {
+            throw new ApiException(ApiErrorCode::ValidationError, 422, 'The final delivery node is not active or does not belong to the tenant.');
+        }
         $accepted = $this->pricing->accept($actor, $nodeId, 'CREATE', $input, $acceptedInput);
         if (($accepted['provider_code'] ?? null) === 'INTERNAL') {
             $input['service_type_id'] = $accepted['service_type_id'];
@@ -166,24 +202,28 @@ final readonly class ConsignmentService
             $correlationId,
         ): string {
             $id = (string) Str::uuid();
-            $number = $this->numbers->next();
+            $allocation = $this->numbers->next((string) $actor->hqId);
+            $number = $allocation['consignment_number'];
             $now = now();
+            $parcels = (array) $input['parcels'];
             DB::table('consignments')->insert([
                 'consignment_id' => $id,
                 'hq_id' => $actor->hqId,
                 'consignment_number' => $number,
                 'initiator_id' => $actor->userId,
                 'pickup_node_id' => $nodeId,
-                'delivery_node_id' => null,
+                'delivery_node_id' => $input['delivery_node_id'] ?? null,
                 ...$this->contactColumns('sender', (array) $input['sender']),
                 ...$this->contactColumns('receiver', (array) $input['receiver']),
                 ...$this->commercialColumns($input),
                 'current_status' => 'CFM',
+                'aggregate_mode' => 'FULL',
+                'parcel_status_counts' => json_encode(['CFM' => count($parcels)], JSON_THROW_ON_ERROR),
                 'version' => 1,
                 'created_at' => $now,
                 'updated_at' => $now,
             ]);
-            $parcels = (array) $input['parcels'];
+            $this->numbers->record((string) $actor->hqId, $allocation['range_id'], $id, $number, $actor->userId, $correlationId);
             foreach (array_values($parcels) as $index => $parcelInput) {
                 $parcelId = (string) Str::uuid();
                 DB::table('parcels')->insert([
@@ -192,10 +232,23 @@ final readonly class ConsignmentService
                     'consignment_id' => $id,
                     'parcel_number' => sprintf('%s-%02d', $number, $index + 1),
                     'current_status' => 'CFM',
-                    'content_description' => trim((string) $parcelInput['content_description']),
+                    'current_node_id' => $nodeId,
+                    'current_custody_type' => 'NODE',
+                    'current_custodian_id' => $nodeId,
+                    'content_description' => trim((string) ($parcelInput['content_description'] ?? '')) ?: null,
                     ...$this->parcelPhysical((array) $parcelInput, $input),
                     'created_at' => $now,
                     'updated_at' => $now,
+                ]);
+                DB::table('parcel_custody_events')->insert([
+                    'custody_event_id' => (string) Str::uuid(), 'hq_id' => $actor->hqId,
+                    'event_sequence' => $this->nextSequence('parcel_custody_events', $id),
+                    'consignment_id' => $id, 'parcel_id' => $parcelId,
+                    'from_node_id' => null, 'to_node_id' => $nodeId,
+                    'from_custody_type' => null, 'to_custody_type' => 'NODE',
+                    'from_custodian_id' => null, 'to_custodian_id' => $nodeId,
+                    'command_name' => 'CONSIGNMENT_CREATED', 'initiator_id' => $actor->userId,
+                    'created_at' => $now,
                 ]);
                 $this->insertStatusEvent(
                     (string) $actor->hqId,
@@ -206,6 +259,7 @@ final readonly class ConsignmentService
                     null,
                     'CFM',
                     'CONSIGNMENT_CONFIRMED',
+                    $correlationId,
                 );
             }
             $this->insertStatusEvent(
@@ -217,6 +271,7 @@ final readonly class ConsignmentService
                 null,
                 'CFM',
                 'CONSIGNMENT_CONFIRMED',
+                $correlationId,
             );
             $pricingVersionId = $this->persistPricing(
                 (string) $actor->hqId,
@@ -311,11 +366,31 @@ final readonly class ConsignmentService
                 );
             }
             $this->policy->assertEditable((string) $row->current_status, (array) config('chabok.consignment.editable_statuses'));
-            $draft = array_replace_recursive($this->draftFromRow((array) $row), $changes);
+            $parcelUpdates = [];
+            if (isset($changes['parcels'])) {
+                $existing = DB::table('parcels')->where('hq_id', $actor->hqId)->where('consignment_id', $consignmentId)->orderBy('parcel_number')->lockForUpdate()->get();
+                $incoming = collect($changes['parcels'])->keyBy('parcel_id');
+                if ($incoming->count() !== count($changes['parcels']) || $incoming->count() !== $existing->count()
+                    || $existing->contains(fn ($parcel) => !$incoming->has($parcel->parcel_id))) {
+                    throw new ApiException(ApiErrorCode::ValidationError, 422, 'Parcel references must match the existing consignment.');
+                }
+                foreach ($existing as $parcel) {
+                    $fields = array_intersect_key($incoming[$parcel->parcel_id], array_flip(['content_description', 'weight_kg', 'width_cm', 'length_cm', 'height_cm']));
+                    $dimensions = array_filter([$fields['width_cm'] ?? null, $fields['length_cm'] ?? null, $fields['height_cm'] ?? null], fn ($value) => $value !== null);
+                    if (count($dimensions) !== 0 && (count($dimensions) !== 3 || min($dimensions) <= 0)) {
+                        throw new ApiException(ApiErrorCode::ValidationError, 422, 'Parcel dimensions must all be positive or absent.');
+                    }
+                    $parcelUpdates[$parcel->parcel_id] = $fields;
+                }
+                $changes['parcels'] = array_values($parcelUpdates);
+            }
+            $beforeDraft = $this->draftFromRow((array) $row);
+            $draft = array_replace_recursive($beforeDraft, $changes);
             foreach (['sender', 'receiver'] as $party) {
                 $draft[$party] = $this->geography->canonicalizeContact((array) $draft[$party], false);
             }
             $this->policy->assertCommercialConsistency($draft);
+            $pricingChanged = $this->editImpact->changed($beforeDraft, $draft, $this->editImpact->contactFields((array) $row));
             $accepted = $acceptedInput === null ? null : $this->pricing->accept(
                 $actor,
                 $nodeId,
@@ -334,6 +409,9 @@ final readonly class ConsignmentService
                 $draft = $this->withAcceptedCommitment($draft, $accepted['commitment'] ?? null);
             }
             $newVersion = $expectedVersion + 1;
+            foreach ($parcelUpdates as $parcelId => $fields) {
+                DB::table('parcels')->where('hq_id', $actor->hqId)->where('consignment_id', $consignmentId)->where('parcel_id', $parcelId)->update([...$fields, 'updated_at' => now()]);
+            }
             DB::table('consignments')->where([
                 'hq_id' => $actor->hqId,
                 'consignment_id' => $consignmentId,
@@ -342,7 +420,7 @@ final readonly class ConsignmentService
                 ...$this->contactColumns('sender', (array) $draft['sender']),
                 ...$this->contactColumns('receiver', (array) $draft['receiver']),
                 ...$this->commercialColumns($draft),
-                ...($accepted === null ? ['commercial_pricing_state' => 'STALE'] : []),
+                ...($accepted === null && $pricingChanged ? ['commercial_pricing_state' => 'STALE'] : []),
                 'version' => $newVersion,
                 'updated_at' => now(),
             ]);
@@ -361,7 +439,7 @@ final readonly class ConsignmentService
                 $consignmentId,
                 $correlationId,
                 before: ['version' => $expectedVersion, 'status' => $row->current_status],
-                after: ['version' => $newVersion, 'status' => $row->current_status],
+                after: ['version' => $newVersion, 'status' => $row->current_status, 'changed_fields' => array_keys($changes), 'parcel_ids' => array_keys($parcelUpdates)],
                 safeNote: $changeReason.($note ? ': '.$note : ''),
                 sourceClient: 'BRANCH_PANEL',
             );
@@ -371,7 +449,7 @@ final readonly class ConsignmentService
                 'status' => (string) $row->current_status,
                 'pricing_version_id' => $pricingVersionId,
             ], static fn ($value) => $value !== null));
-            $this->outbox->write($actor->hqId, 'CONSIGNMENT', $consignmentId, $accepted === null ? 'consignment.pricing.stale' : 'consignment.pricing.accepted', $correlationId, array_filter([
+            if ($accepted !== null || $pricingChanged) $this->outbox->write($actor->hqId, 'CONSIGNMENT', $consignmentId, $accepted === null ? 'consignment.pricing.stale' : 'consignment.pricing.accepted', $correlationId, array_filter([
                 'consignment_id' => $consignmentId,
                 'version' => (string) $newVersion,
                 'pricing_version_id' => $pricingVersionId,
@@ -399,8 +477,13 @@ final readonly class ConsignmentService
             'delivery_node_title' => $row['delivery_node_title'] ? (string) $row['delivery_node_title'] : null,
             'pickup_man_id' => $row['pickup_man_id'] ? (string) $row['pickup_man_id'] : null,
             'delivery_man_id' => $row['delivery_man_id'] ? (string) $row['delivery_man_id'] : null,
+            'pickup_man_title' => $row['pickup_man_title'] ?? null,
+            'delivery_man_title' => $row['delivery_man_title'] ?? null,
             'current_status' => (string) $row['current_status'],
+            'aggregate' => $this->aggregateResource($row),
             'parcel_count' => (int) $row['parcel_count'],
+            'payable_total_amount' => $row['payable_total_amount'] === null ? null : (int) $row['payable_total_amount'],
+            'payable_currency' => $row['payable_currency'] === null ? null : (string) $row['payable_currency'],
             'version' => (int) $row['version'],
             'created_at' => $this->time($row['created_at']),
             'updated_at' => $this->time($row['updated_at']),
@@ -426,10 +509,12 @@ final readonly class ConsignmentService
         if (! in_array($permission, $context['permissions'], true)) {
             throw new ApiException(ApiErrorCode::PermissionDenied, 403, 'Access denied.');
         }
-        if (! in_array($nodeId, $context['accessible_node_ids'], true)) {
+        if (! in_array($nodeId, \Modules\Foundation\Application\ScopedAccess::nodes($context, $permission), true)) {
             throw new ApiException(ApiErrorCode::ScopeAccessDenied, 403, 'Access denied.');
         }
 
+        $context['accessible_node_ids'] = \Modules\Foundation\Application\ScopedAccess::nodes($context, $permission);
+        $context['acting_node_id'] = $nodeId;
         return $context;
     }
 
@@ -446,7 +531,12 @@ final readonly class ConsignmentService
                     ->on('delivery_node.hq_id', '=', 'c.hq_id');
             })
             ->where('c.hq_id', $actor->hqId)
-            ->whereIn('c.pickup_node_id', $context['accessible_node_ids'])
+            ->where(function (Builder $query) use ($context): void {
+                foreach ($context['accessible_node_ids'] as $index => $nodeId) {
+                    $method = $index === 0 ? 'where' : 'orWhere';
+                    $query->{$method}(fn (Builder $nodeQuery) => $this->applyNodeVisibility($nodeQuery, (string) $nodeId));
+                }
+            })
             ->select([
                 'c.*',
                 'pickup_node.node_title as pickup_node_title',
@@ -457,6 +547,18 @@ final readonly class ConsignmentService
                     ->whereColumn('p.consignment_id', 'c.consignment_id')
                     ->whereColumn('p.hq_id', 'c.hq_id'),
                 'parcel_count',
+            )->selectSub(
+                DB::table('consignment_pricing_versions as cpv')->select('cpv.total_amount')
+                    ->whereColumn('cpv.consignment_id', 'c.consignment_id')
+                    ->whereColumn('cpv.hq_id', 'c.hq_id')
+                    ->orderByDesc('cpv.version_number')->limit(1),
+                'payable_total_amount',
+            )->selectSub(
+                DB::table('consignment_pricing_versions as cpv')->select('cpv.currency')
+                    ->whereColumn('cpv.consignment_id', 'c.consignment_id')
+                    ->whereColumn('cpv.hq_id', 'c.hq_id')
+                    ->orderByDesc('cpv.version_number')->limit(1),
+                'payable_currency',
             );
     }
 
@@ -468,7 +570,13 @@ final readonly class ConsignmentService
     {
         $hqId = (string) $row['hq_id'];
         $id = (string) $row['consignment_id'];
-        $parcels = in_array('parcel.view', $context['permissions'], true)
+        $offeringEvidence = $row['service_offering_version_id'] === null ? null : DB::table('service_offering_versions as ov')
+            ->join('service_type_versions as stv', 'stv.service_type_version_id', '=', 'ov.service_type_version_id')
+            ->join('shipping_method_versions as smv', 'smv.shipping_method_version_id', '=', 'ov.shipping_method_version_id')
+            ->where('ov.service_offering_version_id', $row['service_offering_version_id'])
+            ->where(fn (Builder $query) => $query->whereNull('ov.hq_id')->orWhere('ov.hq_id', $hqId))
+            ->first(['ov.labels as offering_labels', 'stv.labels as service_type_labels', 'smv.labels as shipping_method_labels']);
+        $parcels = (in_array('parcel.view', $context['permissions'], true) && in_array($context['acting_node_id'], \Modules\Foundation\Application\ScopedAccess::nodes($context, 'parcel.view'), true))
             ? DB::table('parcels')->where(['hq_id' => $hqId, 'consignment_id' => $id])
                 ->orderBy('parcel_number')->get()->map(fn ($parcel): array => [
                     'parcel_id' => (string) $parcel->parcel_id,
@@ -479,6 +587,12 @@ final readonly class ConsignmentService
                     'width_cm' => $parcel->width_cm === null ? null : (float) $parcel->width_cm,
                     'length_cm' => $parcel->length_cm === null ? null : (float) $parcel->length_cm,
                     'height_cm' => $parcel->height_cm === null ? null : (float) $parcel->height_cm,
+                    'current_node_id' => $parcel->current_node_id,
+                    'current_custody_type' => (string) $parcel->current_custody_type,
+                    'current_custodian_id' => $parcel->current_custodian_id,
+                    'active_route_plan_id' => $parcel->active_route_plan_id,
+                    'active_route_plan_leg_id' => $parcel->active_route_plan_leg_id,
+                    'version' => (int) $parcel->version,
                     'created_at' => $this->time($parcel->created_at),
                 ])->all()
             : [];
@@ -520,18 +634,25 @@ final readonly class ConsignmentService
             })->all();
         $statusTimeline = DB::table('consignment_status_events')
             ->where(['hq_id' => $hqId, 'consignment_id' => $id])
-            ->orderBy('created_at')->get()->map(fn ($event): array => [
+            ->orderBy('created_at')->orderByRaw('event_sequence IS NULL')->orderBy('event_sequence')->orderBy('status_event_id')->get()->map(fn ($event): array => [
                 'status_event_id' => (string) $event->status_event_id,
+                'event_sequence' => $event->event_sequence === null ? null : (int) $event->event_sequence,
                 'parcel_id' => $event->parcel_id,
                 'previous_status' => $event->previous_status,
                 'new_status' => (string) $event->new_status,
+                'aggregate_mode' => $event->aggregate_mode,
+                'parcel_status_counts' => $event->parcel_status_counts === null
+                    ? null
+                    : json_decode((string) $event->parcel_status_counts, true),
                 'initiator_id' => (string) $event->initiator_id,
                 'node_id' => $event->node_id,
+                'manifest_id' => $event->manifest_id,
+                'correlation_id' => $event->correlation_id,
                 'reason_code' => $event->reason_code,
                 'note' => $event->note,
                 'created_at' => $this->time($event->created_at),
             ])->all();
-        $auditTimeline = in_array('audit.view', $context['permissions'], true)
+        $auditTimeline = (in_array('audit.view', $context['permissions'], true) && in_array($context['acting_node_id'], \Modules\Foundation\Application\ScopedAccess::nodes($context, 'audit.view'), true))
             ? DB::table('audit_events')->where([
                 'hq_id' => $hqId,
                 'target_type' => 'CONSIGNMENT',
@@ -544,23 +665,142 @@ final readonly class ConsignmentService
                 'created_at' => $this->time($event->created_at),
             ])->all()
             : [];
+        $custodyTimeline = DB::table('parcel_custody_events')->where(['hq_id' => $hqId, 'consignment_id' => $id])
+            ->orderBy('created_at')->orderByRaw('event_sequence IS NULL')->orderBy('event_sequence')->orderBy('custody_event_id')->get()->map(fn ($event): array => [
+                'custody_event_id' => (string) $event->custody_event_id,
+                'event_sequence' => $event->event_sequence === null ? null : (int) $event->event_sequence,
+                'parcel_id' => (string) $event->parcel_id,
+                'from_node_id' => $event->from_node_id, 'to_node_id' => $event->to_node_id,
+                'from_custody_type' => $event->from_custody_type, 'to_custody_type' => (string) $event->to_custody_type,
+                'from_custodian_id' => $event->from_custodian_id, 'to_custodian_id' => $event->to_custodian_id,
+                'command_name' => (string) $event->command_name, 'manifest_id' => $event->manifest_id,
+                'route_plan_id' => $event->route_plan_id, 'route_plan_leg_id' => $event->route_plan_leg_id,
+                'created_at' => $this->time($event->created_at),
+            ])->all();
+        $routePlan = DB::table('route_plans')->where(['hq_id' => $hqId, 'consignment_id' => $id])->orderByDesc('created_at')->first();
+        $routeLegs = $routePlan === null ? [] : DB::table('route_plan_legs as l')
+            ->join('nodes as o', 'o.node_id', '=', 'l.origin_node_id')->join('nodes as d', 'd.node_id', '=', 'l.destination_node_id')
+            ->where('l.route_plan_id', $routePlan->route_plan_id)->orderBy('l.leg_order')->get(['l.*', 'o.node_code as origin_code', 'o.node_title as origin_title', 'd.node_code as destination_code', 'd.node_title as destination_title'])
+            ->map(fn ($leg): array => [
+                'route_plan_leg_id' => (string) $leg->route_plan_leg_id,
+                'source_route_definition_leg_id' => (string) $leg->source_route_definition_leg_id,
+                'source_route_definition_version_leg_id' => (string) $leg->source_route_definition_version_leg_id,
+                'leg_order' => (int) $leg->leg_order,
+                'status' => (string) $leg->status,
+                'origin_node' => ['node_id' => (string) $leg->origin_node_id, 'node_code' => (string) $leg->origin_code, 'node_title' => (string) $leg->origin_title],
+                'destination_node' => ['node_id' => (string) $leg->destination_node_id, 'node_code' => (string) $leg->destination_code, 'node_title' => (string) $leg->destination_title],
+                'routed_at' => $leg->routed_at === null ? null : $this->time($leg->routed_at),
+                'received_at' => $leg->received_at === null ? null : $this->time($leg->received_at),
+            ])->all();
+        $location = $this->aggregateLocation($hqId, $id);
+        $manifestRows = DB::table('manifests as m')
+            ->join('manifest_parcels as mp', 'mp.manifest_id', '=', 'm.manifest_id')
+            ->join('parcels as p', 'p.parcel_id', '=', 'mp.parcel_id')
+            ->where(['m.hq_id' => $hqId, 'p.consignment_id' => $id])
+            ->distinct()->orderBy('m.created_at')
+            ->get([
+                'm.manifest_id', 'm.manifest_number', 'm.manifest_status', 'm.manifest_type',
+                'm.operational_context_type', 'm.context_key', 'm.node_id',
+                'm.origin_node_id', 'm.destination_node_id', 'm.route_plan_id',
+                'm.route_plan_leg_id', 'm.route_definition_version_id',
+                'm.route_definition_version_leg_id', 'm.assigned_driver_id',
+                'm.assigned_vehicle_id', 'm.state', 'm.operation_recorded_at',
+                'm.closed_at', 'm.created_at',
+            ]);
+        $outcomesByManifest = $manifestRows->isEmpty()
+            ? collect()
+            : DB::table('manifest_parcels as mp')
+                ->join('parcels as p', 'p.parcel_id', '=', 'mp.parcel_id')
+                ->where('mp.hq_id', $hqId)
+                ->where('p.consignment_id', $id)
+                ->whereIn('mp.manifest_id', $manifestRows->pluck('manifest_id'))
+                ->orderBy('mp.created_at')->get([
+                    'mp.manifest_id', 'mp.manifest_parcel_id', 'mp.parcel_id',
+                    'mp.manifest_parcel_status', 'mp.failure_code', 'mp.source_status',
+                    'mp.route_plan_id', 'mp.route_plan_leg_id',
+                    'mp.route_definition_version_id', 'mp.route_definition_version_leg_id',
+                    'mp.assigned_driver_id', 'mp.assigned_vehicle_id',
+                    'mp.evidence_recorded_at',
+                ])->groupBy('manifest_id');
+        $relatedManifests = $manifestRows->map(function ($manifest) use ($outcomesByManifest): array {
+                $outcomes = $outcomesByManifest->get($manifest->manifest_id, collect())
+                    ->map(fn ($outcome): array => (array) $outcome)->all();
+
+                return [
+                    ...(array) $manifest,
+                    'parcel_outcomes' => $outcomes,
+                ];
+            })->all();
+        $movementManifests = array_values(array_map(
+            static function (array $manifest): array {
+                $succeeded = collect($manifest['parcel_outcomes'])->first(
+                    static fn (array $outcome): bool => $outcome['manifest_parcel_status'] === 'SUCCEEDED',
+                );
+
+                return [
+                    ...$manifest,
+                    'route_plan_id' => $manifest['route_plan_id'] ?? $succeeded['route_plan_id'],
+                    'route_plan_leg_id' => $manifest['route_plan_leg_id'] ?? $succeeded['route_plan_leg_id'],
+                    'route_definition_version_id' => $manifest['route_definition_version_id'] ?? $succeeded['route_definition_version_id'],
+                    'route_definition_version_leg_id' => $manifest['route_definition_version_leg_id'] ?? $succeeded['route_definition_version_leg_id'],
+                    'event_type' => $manifest['manifest_status'] === 'OS' ? 'DEPARTED' : 'RECEIVED',
+                    'recorded_at' => $manifest['operation_recorded_at'] ?? $manifest['closed_at'],
+                ];
+            },
+            array_filter($relatedManifests, static function (array $manifest): bool {
+                $isMovement = in_array($manifest['manifest_status'], ['OS', 'CI'], true)
+                    || ($manifest['manifest_status'] === 'IR'
+                        && $manifest['operational_context_type'] === 'MOVEMENT_RECEPTION');
+                $hasSucceededParcel = collect($manifest['parcel_outcomes'])->contains(
+                    static fn (array $outcome): bool => $outcome['manifest_parcel_status'] === 'SUCCEEDED',
+                );
+
+                return $isMovement && $manifest['state'] === 'CLOSED' && $hasSucceededParcel;
+            }),
+        ));
+        $routeLegOrder = collect($routeLegs)->mapWithKeys(
+            static fn (array $leg): array => [$leg['route_plan_leg_id'] => $leg['leg_order']],
+        );
+        usort($movementManifests, static function (array $left, array $right) use ($routeLegOrder): int {
+            $leftKey = [
+                (int) $routeLegOrder->get($left['route_plan_leg_id'], PHP_INT_MAX),
+                $left['event_type'] === 'DEPARTED' ? 0 : 1,
+                (string) $left['recorded_at'],
+                (string) $left['manifest_id'],
+            ];
+            $rightKey = [
+                (int) $routeLegOrder->get($right['route_plan_leg_id'], PHP_INT_MAX),
+                $right['event_type'] === 'DEPARTED' ? 0 : 1,
+                (string) $right['recorded_at'],
+                (string) $right['manifest_id'],
+            ];
+
+            return $leftKey <=> $rightKey;
+        });
+        $catalogSnapshot = empty($row['catalog_snapshot']) ? [] : json_decode((string) $row['catalog_snapshot'], true);
         $base = $this->listItem($row);
-        $editable = in_array('consignment.edit', $context['permissions'], true)
+        $editable = (in_array('consignment.edit', $context['permissions'], true) && in_array($context['acting_node_id'], \Modules\Foundation\Application\ScopedAccess::nodes($context, 'consignment.edit'), true))
             && in_array($row['current_status'], (array) config('chabok.consignment.editable_statuses'), true);
 
         return [
             ...$base,
+            'non_pricing_contact_fields' => $this->editImpact->contactFields($row),
             'sender' => $this->contactFromRow('sender', $row),
             'receiver' => $this->contactFromRow('receiver', $row),
             'service_type_id' => (string) $row['service_type_id'],
             'shipping_method_id' => (string) $row['shipping_method_id'],
             'service_offering_id' => $row['service_offering_id'] ? (string) $row['service_offering_id'] : null,
             'service_offering_version_id' => $row['service_offering_version_id'] ? (string) $row['service_offering_version_id'] : null,
+            'service_offering_title' => !empty($catalogSnapshot['labels']) ? $this->historicalLabel(json_encode($catalogSnapshot['labels'])) : ($offeringEvidence === null ? null : $this->historicalLabel($offeringEvidence->offering_labels)),
+            'service_type_title' => !empty($catalogSnapshot['service_type_labels']) ? $this->historicalLabel(json_encode($catalogSnapshot['service_type_labels'])) : ($offeringEvidence === null ? null : $this->historicalLabel($offeringEvidence->service_type_labels)),
+            'shipping_method_title' => !empty($catalogSnapshot['shipping_method_labels']) ? $this->historicalLabel(json_encode($catalogSnapshot['shipping_method_labels'])) : ($offeringEvidence === null ? null : $this->historicalLabel($offeringEvidence->shipping_method_labels)),
+            'catalog_snapshot' => $catalogSnapshot ?: null,
             'selected_service_option_versions' => $row['selected_service_option_versions'] ? json_decode((string) $row['selected_service_option_versions'], true) : [],
             'commitment_schedule_version_id' => $row['commitment_schedule_version_id'] ? (string) $row['commitment_schedule_version_id'] : null,
             'pickup_service_date' => $row['pickup_service_date'],
             'pickup_window_code' => $row['pickup_window_code'],
             'delivery_window_code' => $row['delivery_window_code'],
+            'delivery_commitment_resolution' => empty($row['delivery_commitment_resolution']) ? null : json_decode((string)$row['delivery_commitment_resolution'],true),
             'commitment_snapshot' => $row['commitment_snapshot'] ? json_decode((string) $row['commitment_snapshot'], true) : null,
             'commercial_pricing_state' => (string) $row['commercial_pricing_state'],
             'active_pricing_snapshot_id' => $row['active_pricing_snapshot_id'] ? (string) $row['active_pricing_snapshot_id'] : null,
@@ -585,9 +825,43 @@ final readonly class ConsignmentService
             'accepted_pricing_versions' => $pricing,
             'status_timeline' => $statusTimeline,
             'audit_timeline' => $auditTimeline,
-            'related_manifests' => [],
+            'current_location' => $location,
+            'journey' => [
+                'route_plan' => $routePlan === null ? null : [
+                    'route_plan_id' => (string) $routePlan->route_plan_id,
+                    'route_definition_id' => (string) $routePlan->route_definition_id,
+                    'route_definition_version_id' => (string) $routePlan->route_definition_version_id,
+                    'status' => (string) $routePlan->status,
+                    'version' => (int) $routePlan->version,
+                ],
+                'route_legs' => $routeLegs,
+                'movement_manifests' => $movementManifests,
+                'custody_timeline' => $custodyTimeline,
+            ],
+            'related_manifests' => $relatedManifests,
             'permitted_actions' => $editable ? ['EDIT'] : [],
         ];
+    }
+
+    private function applyNodeVisibility(Builder $query, string $nodeId): void
+    {
+        $query->where('c.pickup_node_id', $nodeId)->orWhere('c.delivery_node_id', $nodeId)
+            ->orWhereExists(fn ($q) => $q->selectRaw('1')->from('parcels as pv')->whereColumn('pv.consignment_id', 'c.consignment_id')->whereColumn('pv.hq_id', 'c.hq_id')->where('pv.current_node_id', $nodeId))
+            ->orWhereExists(fn ($q) => $q->selectRaw('1')->from('parcels as pt')->join('route_plan_legs as rpl', 'rpl.route_plan_leg_id', '=', 'pt.active_route_plan_leg_id')->whereColumn('pt.consignment_id', 'c.consignment_id')->whereColumn('pt.hq_id', 'c.hq_id')->where('rpl.destination_node_id', $nodeId)->where('rpl.status', 'IN_TRANSIT'))
+            ->orWhereExists(fn ($q) => $q->selectRaw('1')->from('pickup_tasks as ptask')->whereColumn('ptask.consignment_id', 'c.consignment_id')->whereColumn('ptask.hq_id', 'c.hq_id')->where('ptask.node_id', $nodeId)->whereIn('ptask.status', ['PENDING', 'ASSIGNED', 'IN_PROGRESS']))
+            ->orWhereExists(fn ($q) => $q->selectRaw('1')->from('delivery_tasks as dtask')->whereColumn('dtask.consignment_id', 'c.consignment_id')->whereColumn('dtask.hq_id', 'c.hq_id')->where('dtask.node_id', $nodeId)->whereIn('dtask.status', ['PENDING', 'ASSIGNED', 'IN_PROGRESS']));
+    }
+
+    /** @return array<string,mixed> */
+    private function aggregateLocation(string $hqId, string $consignmentId): array
+    {
+        $parcels = DB::table('parcels')->where(['hq_id' => $hqId, 'consignment_id' => $consignmentId])->get();
+        $nodes = $parcels->pluck('current_node_id')->unique();
+        $custodies = $parcels->map(fn ($p): string => (string) $p->current_custody_type.'|'.(string) $p->current_custodian_id)->unique();
+        if ($nodes->count() !== 1 || $custodies->count() !== 1) return ['state' => 'MIXED', 'node' => null, 'custody_type' => 'MIXED', 'custodian_id' => null];
+        $nodeId = $nodes->first(); $first = $parcels->first();
+        $node = $nodeId === null ? null : DB::table('nodes')->where(['hq_id' => $hqId, 'node_id' => $nodeId])->first();
+        return ['state' => $nodeId === null ? 'IN_CUSTODY' : 'AT_NODE', 'node' => $node === null ? null : ['node_id' => (string) $node->node_id, 'node_code' => (string) $node->node_code, 'node_title' => (string) $node->node_title], 'custody_type' => (string) $first->current_custody_type, 'custodian_id' => $first->current_custodian_id];
     }
 
     /** @param array<string, mixed> $filters */
@@ -611,11 +885,13 @@ final readonly class ConsignmentService
             'status' => 'current_status',
             'pickup_node_id' => 'pickup_node_id',
             'delivery_node_id' => 'delivery_node_id',
+            'pickup_man_id' => 'pickup_man_id',
+            'delivery_man_id' => 'delivery_man_id',
             'service_type_id' => 'service_type_id',
             'shipping_method_id' => 'shipping_method_id',
         ] as $input => $column) {
-            if (($filters[$input] ?? null) !== null) {
-                $query->where("c.{$column}", $filters[$input]);
+            if (!empty($filters[$input])) {
+                $query->whereIn("c.{$column}", (array) $filters[$input]);
             }
         }
         if (($filters['status_group'] ?? null) !== null) {
@@ -627,28 +903,35 @@ final readonly class ConsignmentService
                     $query->whereNotNull('c.pickup_man_id')->orWhereNotNull('c.delivery_man_id');
                 });
             } else {
-                $query->whereIn('c.current_status', $this->statusGroup($group));
+                $query->whereExists(fn ($q) => $q->selectRaw('1')->from('operational_statuses as st')->whereColumn('st.code','c.current_status')->where(fn ($q)=>$q->whereNull('st.hq_id')->orWhereColumn('st.hq_id','c.hq_id'))->where('st.status_group',$group));
             }
         }
         if (($filters['created_from'] ?? null) !== null) {
-            $query->where('c.created_at', '>=', $filters['created_from']);
+            $query->where('c.created_at', '>=', CarbonImmutable::parse($filters['created_from'])->utc()->format('Y-m-d H:i:s.u'));
+        }
+        if (!empty($filters['sla_risk'])) {
+            $pickup = "c.current_status IN ('D00','CFM','PD','NPU') AND c.pickup_commitment_at IS NOT NULL";
+            $deadline = "CASE WHEN {$pickup} THEN c.pickup_commitment_at ELSE c.delivery_commitment_at END";
+            $minutes = "CASE WHEN {$pickup} THEN COALESCE(JSON_UNQUOTE(JSON_EXTRACT(c.commitment_snapshot, '$.pickup.risk_threshold_minutes')), JSON_UNQUOTE(JSON_EXTRACT(c.commitment_snapshot, '$.pickup.selected.risk_threshold_minutes')), 120) ELSE COALESCE(JSON_UNQUOTE(JSON_EXTRACT(c.commitment_snapshot, '$.delivery.risk_threshold_minutes')), JSON_UNQUOTE(JSON_EXTRACT(c.commitment_snapshot, '$.delivery.selected.risk_threshold_minutes')), 120) END";
+            $now = CarbonImmutable::now()->utc()->format('Y-m-d H:i:s');
+            $query->whereExists(fn ($q) => $q->selectRaw('1')->from('operational_statuses as st')->whereColumn('st.code','c.current_status')->where(fn ($q)=>$q->whereNull('st.hq_id')->orWhereColumn('st.hq_id','c.hq_id'))->where('st.is_terminal',false));
+            $query->where(function (Builder $risks) use ($filters, $deadline, $minutes, $now): void {
+                foreach ((array) $filters['sla_risk'] as $risk) {
+                    $risks->orWhere(function (Builder $selection) use ($risk, $deadline, $minutes, $now): void {
+            match ($risk) {
+                'OVERDUE' => $selection->whereRaw("({$deadline}) < ?", [$now]),
+                'AT_RISK' => $selection->whereRaw("({$deadline}) >= ? AND ({$deadline}) <= TIMESTAMPADD(MINUTE, CAST(({$minutes}) AS UNSIGNED), ?)", [$now, $now]),
+                'ON_TIME' => $selection->whereRaw("({$deadline}) > TIMESTAMPADD(MINUTE, CAST(({$minutes}) AS UNSIGNED), ?)", [$now]),
+                'NO_COMMITMENT' => $selection->whereRaw("({$deadline}) IS NULL"),
+                default => null,
+            };
+                    });
+                }
+            });
         }
         if (($filters['created_to'] ?? null) !== null) {
-            $query->where('c.created_at', '<=', $filters['created_to']);
+            $query->where('c.created_at', '<=', CarbonImmutable::parse($filters['created_to'])->utc()->format('Y-m-d H:i:s.u'));
         }
-    }
-
-    /** @return list<string> */
-    private function statusGroup(string $group): array
-    {
-        return match ($group) {
-            'NEW_ROUTED' => ['CFM', 'PD'],
-            'IN_OPERATION' => ['PU', 'IR', 'ROU', 'OF', 'OS', 'OD'],
-            'EXCEPTION' => ['NPU', 'NOK', 'RH', 'RCH'],
-            'COMPLETED' => ['OK'],
-            'CANCELLED' => ['RO', 'AA'],
-            default => [],
-        };
     }
 
     /** @return array{string, string} */
@@ -812,6 +1095,7 @@ final readonly class ConsignmentService
         DB::table('consignments')->where(['hq_id' => $hqId, 'consignment_id' => $consignmentId])->update([
             'service_offering_id' => $accepted['service_offering_id'] ?? DB::raw('service_offering_id'),
             'service_offering_version_id' => $accepted['service_offering_version_id'] ?? DB::raw('service_offering_version_id'),
+            'catalog_snapshot' => isset($accepted['catalog_snapshot']) ? json_encode($accepted['catalog_snapshot'], JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE) : null,
             'commercial_pricing_state' => 'LOCKED',
             'active_pricing_snapshot_id' => $snapshotId,
             'pricing_relevant_fingerprint' => $accepted['input_fingerprint'],
@@ -836,6 +1120,7 @@ final readonly class ConsignmentService
         if (CarbonImmutable::parse((string) $quote->expires_at)->isPast()) {
             throw new ApiException(ApiErrorCode::PricingQuoteExpired, 422, 'The internal pricing quote has expired.');
         }
+        \Modules\ServiceCatalog\Application\CurrentCatalog::assertQuoteCurrent($quote);
         $snapshotId = (string) Str::uuid();
         $now = now();
         DB::table('pricing_snapshots')->insert([
@@ -877,9 +1162,11 @@ final readonly class ConsignmentService
         ?string $previous,
         string $new,
         string $reason,
+        string $correlationId,
     ): void {
         DB::table('consignment_status_events')->insert([
             'status_event_id' => (string) Str::uuid(),
+            'event_sequence' => $this->nextSequence('consignment_status_events', $consignmentId),
             'hq_id' => $hqId,
             'consignment_id' => $consignmentId,
             'parcel_id' => $parcelId,
@@ -887,9 +1174,25 @@ final readonly class ConsignmentService
             'new_status' => $new,
             'initiator_id' => $actorId,
             'node_id' => $nodeId,
+            'correlation_id' => $correlationId,
             'reason_code' => $reason,
             'created_at' => now(),
         ]);
+    }
+
+    private function historicalLabel(mixed $labels): ?string
+    {
+        $decoded = is_string($labels) ? json_decode($labels, true) : (array) $labels;
+        foreach (['fa', 'en'] as $locale) {
+            $label = trim((string) ($decoded[$locale] ?? ''));
+            if ($label !== '') return $label;
+        }
+        return null;
+    }
+
+    private function nextSequence(string $table, string $consignmentId): int
+    {
+        return ((int) DB::table($table)->where('consignment_id', $consignmentId)->max('event_sequence')) + 1;
     }
 
     /** @param array<string, mixed> $row
@@ -915,6 +1218,7 @@ final readonly class ConsignmentService
             'delivery_commitment_at' => $row['delivery_commitment_at'] ? $this->time($row['delivery_commitment_at']) : null,
             'delivery_commitment_start_at' => $row['delivery_commitment_start_at'] ? $this->time($row['delivery_commitment_start_at']) : null,
             'delivery_commitment_end_at' => $row['delivery_commitment_end_at'] ? $this->time($row['delivery_commitment_end_at']) : null,
+            'delivery_commitment_resolution' => empty($row['delivery_commitment_resolution']) ? null : json_decode((string)$row['delivery_commitment_resolution'],true),
             'commitment_snapshot' => $row['commitment_snapshot'] ? json_decode((string) $row['commitment_snapshot'], true) : null,
             'weight_kg' => (float) $row['weight_kg'],
             'width_cm' => $row['width_cm'] === null ? null : (float) $row['width_cm'],
@@ -949,12 +1253,12 @@ final readonly class ConsignmentService
         $selectedDelivery = is_array($delivery['selected'] ?? null) ? $delivery['selected'] : [];
         $computedDelivery = $delivery['computed_at'] ?? null;
         $input['commitment_schedule_version_id'] = $commitment['schedule_version_id'] ?? null;
-        $input['pickup_service_date'] = $pickup['service_date'] ?? ($input['pickup_service_date'] ?? null);
-        $input['pickup_window_code'] = $pickup['window_code'] ?? ($input['pickup_window_code'] ?? null);
-        $input['delivery_window_code'] = $selectedDelivery['window_code'] ?? ($input['delivery_window_code'] ?? null);
+        $input['pickup_service_date'] = $pickup['service_date'] ?? null;
+        $input['pickup_window_code'] = $pickup['window_code'] ?? null;
+        $input['delivery_window_code'] = $selectedDelivery['window_code'] ?? null;
         $input['pickup_commitment_start_at'] = $pickup['starts_at'] ?? null;
         $input['pickup_commitment_end_at'] = $pickup['ends_at'] ?? null;
-        $input['pickup_commitment_at'] = $pickup['ends_at'] ?? null;
+        $input['pickup_commitment_at'] = $pickup['ends_at'] ?? $pickup['computed_at'] ?? null;
         $input['delivery_commitment_start_at'] = $selectedDelivery['starts_at'] ?? $computedDelivery;
         $input['delivery_commitment_end_at'] = $selectedDelivery['ends_at'] ?? $computedDelivery;
         $input['delivery_commitment_at'] = $selectedDelivery['ends_at'] ?? $computedDelivery;
@@ -967,8 +1271,25 @@ final readonly class ConsignmentService
         return CarbonImmutable::parse((string) $value, 'UTC')->utc()->toISOString();
     }
 
-    private function databaseTime(mixed $value): ?CarbonImmutable
+    /** @param array<string,mixed> $row @return array{status:string,mode:string,parcel_counts:array<string,int>,parcel_total:int,target_count:int} */
+    private function aggregateResource(array $row): array
     {
-        return $value === null ? null : CarbonImmutable::parse((string) $value)->utc();
+        $counts = json_decode((string) ($row['parcel_status_counts'] ?? '{}'), true) ?: [];
+        $counts = array_map(static fn ($count): int => (int) $count, $counts);
+        ksort($counts);
+        $status = (string) $row['current_status'];
+
+        return [
+            'status' => $status,
+            'mode' => (string) ($row['aggregate_mode'] ?? 'FULL'),
+            'parcel_counts' => $counts,
+            'parcel_total' => array_sum($counts),
+            'target_count' => $counts[$status] ?? 0,
+        ];
+    }
+
+    private function databaseTime(mixed $value): ?string
+    {
+        return $value === null ? null : CarbonImmutable::parse((string) $value)->utc()->format('Y-m-d H:i:s.u');
     }
 }

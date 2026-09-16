@@ -23,6 +23,9 @@ final class AuthorizationCatalog
             'consignment.create' => 'Consignment',
             'consignment.edit' => 'Consignment',
             'consignment.cancel' => 'Consignment',
+            'consignment.number_range.view' => 'Consignment',
+            'consignment.number_range.manage' => 'Consignment',
+            'operational_status.manage' => 'Consignment',
             'parcel.view' => 'Parcel',
             'manifest.view' => 'Manifest',
             'manifest.create' => 'Manifest',
@@ -46,6 +49,24 @@ final class AuthorizationCatalog
             'driver.reassign' => 'Driver',
             'live_operations.view' => 'LiveOperations',
             'live_operations.intervene' => 'LiveOperations',
+            'network.area.view' => 'LiveOperations',
+            'network.area.manage' => 'LiveOperations',
+            'network.node.view' => 'LiveOperations',
+            'network.node.manage' => 'LiveOperations',
+            'network.coverage.view' => 'LiveOperations',
+            'network.coverage.manage_draft' => 'LiveOperations',
+            'network.coverage.validate' => 'LiveOperations',
+            'network.coverage.approve' => 'LiveOperations',
+            'network.coverage.publish' => 'LiveOperations',
+            'network.route.view' => 'LiveOperations',
+            'network.route.manage_draft' => 'LiveOperations',
+            'network.route.validate' => 'LiveOperations',
+            'network.route.approve' => 'LiveOperations',
+            'network.route.publish' => 'LiveOperations',
+            'fleet.driver.view' => 'Driver',
+            'fleet.driver.manage' => 'Driver',
+            'fleet.vehicle.view' => 'Driver',
+            'fleet.vehicle.manage' => 'Driver',
             'service_catalog.view' => 'ServiceCatalog',
             'service_catalog.history.view' => 'ServiceCatalog',
             'service_catalog.resolve' => 'ServiceCatalog',
@@ -69,7 +90,8 @@ final class AuthorizationCatalog
     {
         return [
             'platform_super_admin' => ['title' => 'Platform Super Admin', 'kind' => 'SYSTEM', 'cloneable' => false],
-            'hq_admin' => ['title' => 'HQ Admin', 'kind' => 'SYSTEM', 'cloneable' => false],
+            'hq_admin' => [
+                'operational_status.manage','title' => 'HQ Admin', 'kind' => 'SYSTEM', 'cloneable' => false],
             'branch_manager' => ['title' => 'Branch Manager', 'kind' => 'SYSTEM', 'cloneable' => false],
             'branch_operator' => ['title' => 'Branch Operator', 'kind' => 'SYSTEM', 'cloneable' => false],
             'hub_operator' => ['title' => 'Hub Operator', 'kind' => 'SYSTEM', 'cloneable' => false],
@@ -89,12 +111,19 @@ final class AuthorizationCatalog
             'platform_super_admin' => ['iam.entitlements.view'],
             'hq_admin' => [
                 'iam.roles.manage', 'iam.entitlements.view',
+                'consignment.number_range.view', 'consignment.number_range.manage',
                 'service_catalog.view', 'service_catalog.history.view', 'service_catalog.resolve',
                 'service_catalog.manage_draft', 'service_catalog.availability.manage',
                 'service_catalog.approve', 'service_catalog.publish', 'service_catalog.audit.view',
                 'pricing.quote.calculate', 'pricing.quote.view', 'pricing.tariff.view',
                 'pricing.tariff.manage_draft', 'pricing.tariff.approve', 'pricing.tariff.publish',
                 'pricing.audit.view',
+                'network.area.view', 'network.area.manage', 'network.node.view', 'network.node.manage',
+                'network.coverage.view', 'network.coverage.manage_draft', 'network.coverage.validate',
+                'network.coverage.approve', 'network.coverage.publish',
+                'network.route.view', 'network.route.manage_draft', 'network.route.validate',
+                'network.route.approve', 'network.route.publish',
+                'fleet.driver.view', 'fleet.driver.manage', 'fleet.vehicle.view', 'fleet.vehicle.manage',
             ],
             'branch_manager' => [
                 'branch_panel.access', 'node_context.view', 'node_context.switch', 'audit.view',
@@ -137,6 +166,40 @@ final class AuthorizationCatalog
                 'pickup_request.assign', 'pickup_request.reassign',
                 'driver.assign', 'driver.reassign', 'live_operations.intervene',
             ],
+        ];
+    }
+
+    /**
+     * Entitlements required before the new administration permissions are evaluated.
+     *
+     * No new entitlement code is introduced: network configuration is part of
+     * LiveOperations and fleet administration is part of Driver. This method is
+     * the contract used by Wave 1 authorizers; it deliberately does not grant a
+     * permission to any role.
+     *
+     * @return array<string, string>
+     */
+    public static function administrativeEntitlements(): array
+    {
+        return [
+            'network.area.view' => 'LiveOperations',
+            'network.area.manage' => 'LiveOperations',
+            'network.node.view' => 'LiveOperations',
+            'network.node.manage' => 'LiveOperations',
+            'network.coverage.view' => 'LiveOperations',
+            'network.coverage.manage_draft' => 'LiveOperations',
+            'network.coverage.validate' => 'LiveOperations',
+            'network.coverage.approve' => 'LiveOperations',
+            'network.coverage.publish' => 'LiveOperations',
+            'network.route.view' => 'LiveOperations',
+            'network.route.manage_draft' => 'LiveOperations',
+            'network.route.validate' => 'LiveOperations',
+            'network.route.approve' => 'LiveOperations',
+            'network.route.publish' => 'LiveOperations',
+            'fleet.driver.view' => 'Driver',
+            'fleet.driver.manage' => 'Driver',
+            'fleet.vehicle.view' => 'Driver',
+            'fleet.vehicle.manage' => 'Driver',
         ];
     }
 }

@@ -23,6 +23,7 @@ final class AuthorizationServiceProvider extends ServiceProvider
     public function register(): void
     {
         $this->app->singleton(AuthorizationService::class);
+        $this->app->singleton(\Modules\User\Application\Contracts\UserScopeAuthorizer::class, \Modules\Authorization\Infrastructure\Adapters\AuthorizationUserScopeAuthorizer::class);
         $this->app->alias(AuthorizationService::class, AuthorizationContextResolver::class);
         $this->app->singleton(NodeAccessValidator::class, AuthorizationNodeAccessValidator::class);
         $this->app->singleton(PlatformContextValidator::class, AuthorizationPlatformContextValidator::class);

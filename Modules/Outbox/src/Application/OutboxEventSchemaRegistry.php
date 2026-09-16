@@ -74,6 +74,7 @@ final class OutboxEventSchemaRegistry
                 'recipient_fingerprint' => 'string',
                 'delivery_ciphertext' => 'string',
             ],
+            'iam.role.created' => ['role_id' => 'string'],
             'iam.role.updated' => ['role_id' => 'string'],
             'iam.role.cloned' => ['role_id' => 'string', 'source_role_id' => 'string'],
             'iam.role.permissions_replaced' => ['role_id' => 'string'],
@@ -91,6 +92,18 @@ final class OutboxEventSchemaRegistry
                 'action' => 'string',
                 'target_type' => 'string',
                 'target_id' => 'string',
+            ],
+            'network.configuration.changed' => [
+                'action' => 'string',
+                'target_type' => 'string',
+                'target_id' => 'string',
+                'status' => 'optional_string',
+            ],
+            'fleet.configuration.changed' => [
+                'action' => 'string',
+                'target_type' => 'string',
+                'target_id' => 'string',
+                'status' => 'string',
             ],
             'consignment.created' => [
                 'consignment_id' => 'string',
@@ -113,6 +126,14 @@ final class OutboxEventSchemaRegistry
                 'consignment_id' => 'string',
                 'version' => 'string',
             ],
+            'consignment.number-range.created' => [
+                'range_id' => 'string',
+                'status' => 'string',
+            ],
+            'consignment.number-range.disabled' => [
+                'range_id' => 'string',
+                'status' => 'string',
+            ],
             'manifest.created' => [
                 'manifest_id' => 'string',
                 'manifest_status' => 'string',
@@ -122,6 +143,12 @@ final class OutboxEventSchemaRegistry
                 'manifest_id' => 'string',
                 'manifest_status' => 'string',
                 'succeeded_count' => 'string',
+            ],
+            'operations.command.executed' => [
+                'command' => 'string',
+                'resource_id' => 'string',
+                'consignment_id' => 'string',
+                'status' => 'string',
             ],
         ];
     }

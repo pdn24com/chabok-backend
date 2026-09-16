@@ -11,6 +11,13 @@ Route::prefix('api/v1')->middleware(['api', 'access.auth', 'password.changed'])-
     Route::post('/services/{offeringId}/commitments', [ServiceCatalogController::class, 'commitments'])->whereUuid('offeringId');
     Route::get('/services/pickup-windows', [ServiceCatalogController::class, 'pickupWindows']);
     Route::prefix('admin/service-catalog')->group(function (): void {
+        Route::prefix('records/{resource}')->whereIn('resource', ['service-types', 'shipping-methods', 'offerings', 'options', 'commitment-schedules'])->group(function (): void {
+            Route::post('/', [ServiceCatalogController::class, 'saveRecord']);
+            Route::get('/{identityId}', [ServiceCatalogController::class, 'recordDetail'])->whereUuid('identityId');
+            Route::put('/{identityId}', [ServiceCatalogController::class, 'saveRecord'])->whereUuid('identityId');
+            Route::patch('/{identityId}/status', [ServiceCatalogController::class, 'recordStatus'])->whereUuid('identityId');
+        });
+        Route::get('/commitment-zone-groups', [ServiceCatalogController::class, 'commitmentZoneGroups']);
         Route::get('/audit', [ServiceCatalogController::class, 'audit']);
         Route::get('/commitment-schedules/published-versions', [ServiceCatalogController::class, 'publishedSchedules']);
         Route::get('/commitment-schedules', [ServiceCatalogController::class, 'schedules']);

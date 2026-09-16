@@ -10,6 +10,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Modules\Foundation\Application\Contracts\AuditWriter;
 use Modules\Foundation\Application\Contracts\AuthorizationContextResolver;
+use Modules\Foundation\Application\Contracts\CanonicalGeographyResolver;
 use Modules\Foundation\Application\Contracts\OutboxWriter;
 use Modules\Foundation\Application\Contracts\TransactionManager;
 use Modules\Foundation\Domain\ApiErrorCode;
@@ -32,6 +33,7 @@ final readonly class ServiceCatalogService implements ServiceEligibilityResolver
         private AuditWriter $audit,
         private OutboxWriter $outbox,
         private CommitmentScheduleService $commitments,
+        private CanonicalGeographyResolver $geography,
     ) {}
 
     /** @param array<string, mixed> $filters */
@@ -76,15 +78,20 @@ final readonly class ServiceCatalogService implements ServiceEligibilityResolver
     {
         $this->assertAccess($actor, 'service_catalog.view');
         [$identity, $versions, $identityId, $versionId] = $this->map($resource);
+        $includeVersionIds = array_values(array_unique(array_map('strval', (array) ($filters['include_version_ids'] ?? []))));
+        $includeVersionIds = array_map(fn ($id) => DB::table($versions)->where($identityId, $id)->orderByDesc('version_number')->value($versionId) ?? $id, $includeVersionIds);
         $query = DB::table("{$versions} as v")
             ->join("{$identity} as i", "i.{$identityId}", '=', "v.{$identityId}")
-            ->where('v.status', 'PUBLISHED')
             ->where(fn ($q) => $q->whereNull('i.hq_id')->orWhere('i.hq_id', $actor->hqId));
-        if (($filters['search'] ?? '') !== '') {
-            $search = '%'.addcslashes((string) $filters['search'], '%_\\').'%';
-            $query->where(fn ($q) => $q->where('i.code', 'like', $search)->orWhere('v.labels', 'like', $search));
-        }
-        $page = $query->select(['v.*', 'i.code'])
+        $search = ($filters['search'] ?? '') === '' ? null : '%'.addcslashes((string) $filters['search'], '%_\\').'%';
+        $query->where(function ($available) use ($includeVersionIds, $search, $versionId): void {
+            $available->where(function ($published) use ($search): void {
+                $published->where('v.status', 'PUBLISHED')->where('i.status', 'ACTIVE');
+                if ($search !== null) $published->where(fn ($match) => $match->where('i.code', 'like', $search)->orWhere('v.labels', 'like', $search));
+            });
+            if ($includeVersionIds !== []) $available->orWhereIn("v.{$versionId}", $includeVersionIds);
+        });
+        $page = $query->select(['v.*', 'i.code', 'i.status as identity_status'])
             ->orderBy('i.code')
             ->orderByDesc('v.version_number')
             ->paginate(
@@ -122,7 +129,7 @@ final readonly class ServiceCatalogService implements ServiceEligibilityResolver
                 $identityId => $id,
                 'hq_id' => $actor->hqId,
                 'owner_key' => (string) $actor->hqId,
-                'code' => Str::upper((string) $input['code']),
+                'code' => !empty($input['code']) ? Str::upper((string) $input['code']) : CatalogCode::generate($identity, (string) $actor->hqId),
                 'status' => 'ACTIVE',
                 'created_by' => $actor->userId,
                 'created_at' => $now,
@@ -166,9 +173,10 @@ final readonly class ServiceCatalogService implements ServiceEligibilityResolver
                 throw new ApiException(ApiErrorCode::Conflict, 409, 'An unpublished successor already exists.');
             }
             $newId = (string) Str::uuid();
+            $previousId = (string) $previous[$versionId];
             unset($previous[$versionId], $previous['approved_by'], $previous['published_by'], $previous['approved_at'], $previous['published_at'], $previous['content_digest']);
             $previous[$versionId] = $newId;
-            $previous['previous_version_id'] = $previous['service_offering_version_id'] ?? $this->latestVersionId($versions, $versionId, $identityId, $identityIdValue);
+            $previous['previous_version_id'] = $previousId;
             $previous['version_number'] = ((int) $previous['version_number']) + 1;
             $previous['status'] = 'DRAFT';
             $previous['lock_version'] = 1;
@@ -221,7 +229,7 @@ final readonly class ServiceCatalogService implements ServiceEligibilityResolver
     }
 
     /** @return array<string, mixed> */
-    public function validateDraft(AuthenticatedPrincipal $actor, string $resource, string $versionIdValue): array
+    public function validateDraft(AuthenticatedPrincipal $actor, string $resource, string $versionIdValue, bool $automatic = false): array
     {
         $this->assertAccess($actor, 'service_catalog.manage_draft');
         $row = $this->versionDetail($actor, $resource, $versionIdValue);
@@ -258,10 +266,13 @@ final readonly class ServiceCatalogService implements ServiceEligibilityResolver
                 if ($binding['delivery_mode'] === 'COMPUTED' && (empty($binding['duration_value']) || empty($binding['duration_unit']) || empty($binding['duration_anchor']))) {
                     $errors[] = ['code' => 'COMPUTED_DELIVERY_CONFIGURATION_REQUIRED', 'field' => 'commitment_binding'];
                 }
+                if ($binding['delivery_mode'] === 'COMPUTED' && $binding['pickup_mode'] === 'NONE' && in_array($binding['duration_anchor'], ['PICKUP_COMMITMENT_START', 'PICKUP_COMMITMENT_END'], true)) {
+                    $errors[] = ['code' => 'COMPUTED_DELIVERY_ANCHOR_UNAVAILABLE', 'field' => 'commitment_binding.duration_anchor'];
+                }
             }
         }
         $overlap = $this->hasEffectiveOverlap($resource, $row);
-        if ($overlap) {
+        if ($overlap && !$automatic) {
             $errors[] = ['code' => 'SERVICE_EFFECTIVE_INTERVAL_OVERLAP', 'field' => 'valid_from'];
         }
 
@@ -313,16 +324,16 @@ final readonly class ServiceCatalogService implements ServiceEligibilityResolver
     public function resolve(AuthenticatedPrincipal $actor, array $context): array
     {
         $this->assertAccess($actor, 'service_catalog.resolve', runtime: true);
+        $context = $this->canonicalizeCoverageContext($context);
+        $context['schedule_node_ids']=$this->authorization->resolve($actor)['accessible_node_ids']??[];
         $asOf = CarbonImmutable::parse((string) ($context['as_of_timestamp'] ?? now()->toISOString()))->utc();
         $channel = (string) ($context['channel'] ?? 'BRANCH');
         $rows = DB::table('service_offering_versions as v')
             ->join('service_offerings as i', 'i.service_offering_id', '=', 'v.service_offering_id')
             ->join('service_type_versions as stv', 'stv.service_type_version_id', '=', 'v.service_type_version_id')
             ->join('shipping_method_versions as smv', 'smv.shipping_method_version_id', '=', 'v.shipping_method_version_id')
-            ->where('v.status', 'PUBLISHED')
+            ->where('v.status', 'PUBLISHED')->where('i.status', 'ACTIVE')
             ->where(fn ($q) => $q->whereNull('v.hq_id')->orWhere('v.hq_id', $actor->hqId))
-            ->where(fn ($q) => $q->whereNull('v.valid_from')->orWhere('v.valid_from', '<=', $asOf))
-            ->where(fn ($q) => $q->whereNull('v.valid_to')->orWhere('v.valid_to', '>', $asOf))
             ->select(['v.*', 'i.code as offering_code', 'stv.service_type_id', 'smv.shipping_method_id'])
             ->orderBy('i.code')->limit(100)->get();
         $results = [];
@@ -330,9 +341,20 @@ final readonly class ServiceCatalogService implements ServiceEligibilityResolver
             if (! $this->available((string) $row->service_offering_version_id, (string) $actor->hqId, $channel)) {
                 continue;
             }
+            try { $row = (object) $this->runtimeDependencies((array) $row, (string) $actor->hqId); }
+            catch (ApiException $error) { if (($error->details['reason_code'] ?? '') === 'CATALOG_DEPENDENCY_UNAVAILABLE') continue; throw $error; }
             $decision = $this->evaluate((array) $row, $context);
             if ($decision['outcome'] !== 'INELIGIBLE') {
-                $commitment = $this->commitments->resolveForOffering((string) $row->service_offering_version_id, $context);
+                try {
+                    $commitment = $this->commitments->resolveForOffering((string) $row->service_offering_version_id, $context, false);
+                } catch (ApiException $exception) {
+                    $reasonCode = $exception->details['reason_code'] ?? null;
+                    if (in_array($reasonCode, ['PICKUP_WINDOW_INVALID', 'DELIVERY_WINDOW_INVALID', 'CATALOG_DEPENDENCY_UNAVAILABLE', 'COMMITMENT_SCOPE_UNAVAILABLE', 'SLA_CALENDAR_UNAVAILABLE'], true)) {
+                        continue;
+                    }
+
+                    throw $exception;
+                }
                 if ($commitment !== null && $commitment['eligible'] !== true) continue;
                 $results[] = [...$this->decode((array) $row), ...$decision, 'options' => $this->resolvedOptions((string) $row->service_offering_version_id, $context), 'commitment' => $commitment ?? $this->commitment((array) $row, $context)];
             }
@@ -341,32 +363,37 @@ final readonly class ServiceCatalogService implements ServiceEligibilityResolver
         return $results;
     }
 
-    public function validateSelection(AuthenticatedPrincipal $actor, string $offeringId, ?string $versionId, array $context): array
+    public function validateSelection(AuthenticatedPrincipal $actor, string $offeringId, ?string $versionId, array $context, bool $requireCommitmentSelection = true): array
     {
         $this->assertAccess($actor, 'service_catalog.resolve', runtime: true);
+        $context = $this->canonicalizeCoverageContext($context);
+        $context['schedule_node_ids']=$this->authorization->resolve($actor)['accessible_node_ids']??[];
         $query = DB::table('service_offering_versions as v')->join('service_offerings as i', 'i.service_offering_id', '=', 'v.service_offering_id')
             ->join('service_type_versions as stv', 'stv.service_type_version_id', '=', 'v.service_type_version_id')
             ->join('shipping_method_versions as smv', 'smv.shipping_method_version_id', '=', 'v.shipping_method_version_id')
-            ->where('i.service_offering_id', $offeringId)->where('v.status', 'PUBLISHED')
+            ->where('i.service_offering_id', $offeringId)->where('i.status', 'ACTIVE')->where('v.status', 'PUBLISHED')
             ->where(fn ($q) => $q->whereNull('v.hq_id')->orWhere('v.hq_id', $actor->hqId));
         if ($versionId) {
-            $query->where('v.service_offering_version_id', $versionId);
+            if (!in_array($versionId, CurrentCatalog::relatedVersions('offerings', $offeringId), true))
+                throw new ApiException(ApiErrorCode::ValidationError, 422, 'The selected service reference is invalid.');
+            $query->orderByDesc('v.version_number');
         } else {
-            $asOf = CarbonImmutable::parse((string) ($context['as_of_timestamp'] ?? now()->toISOString()))->utc();
-            $query->where(fn ($q) => $q->whereNull('v.valid_from')->orWhere('v.valid_from', '<=', $asOf))
-                ->where(fn ($q) => $q->whereNull('v.valid_to')->orWhere('v.valid_to', '>', $asOf))
-                ->orderByDesc('v.version_number');
+            $query->orderByDesc('v.version_number');
         }
+        $asOf = CarbonImmutable::parse((string) ($context['as_of_timestamp'] ?? now()->toISOString()))->utc();
         $row = $query->select(['v.*', 'i.code as offering_code', 'stv.service_type_id', 'smv.shipping_method_id'])->first();
         if ($row === null) {
             throw new ApiException(ApiErrorCode::ValidationError, 422, 'No effective published Service Offering version exists.', details: ['reason_code' => 'SERVICE_VERSION_NOT_EFFECTIVE']);
         }
+        $row = (object) $this->runtimeDependencies((array) $row, (string) $actor->hqId);
+        if (!$this->available((string) $row->service_offering_version_id, (string) $actor->hqId, (string) ($context['channel'] ?? 'BRANCH')))
+            throw new ApiException(ApiErrorCode::ValidationError, 422, 'The service is unavailable for this channel.', details: ['reason_code' => 'SERVICE_UNAVAILABLE']);
         $decision = $this->evaluate((array) $row, $context);
         if ($decision['outcome'] !== 'ELIGIBLE') {
             throw new ApiException(ApiErrorCode::ValidationError, 422, 'The selected Service Offering is not eligible.', details: $decision);
         }
 
-        $commitment = $this->commitments->resolveForOffering((string) $row->service_offering_version_id, $context);
+        $commitment = $this->commitments->resolveForOffering((string) $row->service_offering_version_id, $context, $requireCommitmentSelection);
         if ($commitment !== null && $commitment['eligible'] !== true) {
             throw new ApiException(ApiErrorCode::ValidationError, 422, 'The selected Pickup commitment is not eligible.', details: ['reason_code' => $commitment['reason_code']]);
         }
@@ -376,7 +403,7 @@ final readonly class ServiceCatalogService implements ServiceEligibilityResolver
     /** @param array<string, mixed> $context @return array<string, mixed> */
     public function commitmentPreview(AuthenticatedPrincipal $actor, string $offeringId, array $context): array
     {
-        $selection = $this->validateSelection($actor, $offeringId, $context['service_offering_version_id'] ?? null, $context);
+        $selection = $this->validateSelection($actor, $offeringId, $context['service_offering_version_id'] ?? null, $context, false);
 
         return (array) $selection['commitment'];
     }
@@ -418,6 +445,7 @@ final readonly class ServiceCatalogService implements ServiceEligibilityResolver
     /** @param array<string, mixed> $input */
     private function replaceOfferingChildren(string $versionId, array $input, ?string $hqId): void
     {
+        $this->assertOfferingReferences($input, $hqId);
         foreach (['service_offering_option_rules', 'service_eligibility_rules', 'service_coverage_references', 'service_availability_bindings', 'service_offering_commitment_bindings'] as $table) {
             DB::table($table)->where('service_offering_version_id', $versionId)->delete();
         }
@@ -440,14 +468,20 @@ final readonly class ServiceCatalogService implements ServiceEligibilityResolver
             DB::table('service_coverage_references')->insert([
                 'coverage_reference_id' => (string) Str::uuid(), 'service_offering_version_id' => $versionId,
                 'direction' => $reference['direction'], 'reference_type' => $reference['reference_type'],
-                'reference_value' => $reference['reference_value'], 'secondary_reference_value' => $reference['secondary_reference_value'] ?? null,
+                'reference_value' => $reference['reference_value'],
+                'secondary_reference_value' => $reference['reference_type'] === 'POSTAL_RANGE' ? ($reference['secondary_reference_value'] ?? null) : null,
                 'priority' => $reference['priority'] ?? 100,
             ]);
         }
         foreach ((array) ($input['availability_bindings'] ?? []) as $binding) {
+            $scopeValue = match ($binding['scope_type']) {
+                'TENANT' => $hqId,
+                'PLATFORM' => null,
+                default => $binding['scope_value'] ?? null,
+            };
             DB::table('service_availability_bindings')->insert([
                 'availability_binding_id' => (string) Str::uuid(), 'service_offering_version_id' => $versionId,
-                'scope_type' => $binding['scope_type'], 'scope_value' => $binding['scope_type'] === 'TENANT' && empty($binding['scope_value']) ? $hqId : ($binding['scope_value'] ?? null),
+                'scope_type' => $binding['scope_type'], 'scope_value' => $scopeValue,
                 'enabled' => $binding['enabled'] ?? true,
             ]);
         }
@@ -462,6 +496,34 @@ final readonly class ServiceCatalogService implements ServiceEligibilityResolver
                 'duration_unit' => $binding['delivery_mode'] === 'COMPUTED' ? ($binding['duration_unit'] ?? null) : null,
                 'duration_anchor' => $binding['delivery_mode'] === 'COMPUTED' ? ($binding['duration_anchor'] ?? null) : null,
             ]);
+        }
+    }
+
+    /** @param array<string,mixed> $input */
+    private function assertOfferingReferences(array $input, ?string $hqId): void
+    {
+        foreach ((array) ($input['availability_bindings'] ?? []) as $binding) {
+            $scopeType = (string) ($binding['scope_type'] ?? '');
+            if (! in_array($scopeType, ['PLATFORM', 'TENANT', 'CHANNEL'], true)) {
+                throw new ApiException(ApiErrorCode::ValidationError, 422, 'The selected availability scope has no authoritative reference directory.');
+            }
+            if ($scopeType === 'CHANNEL' && ! in_array((string) ($binding['scope_value'] ?? ''), ['BRANCH', 'VENDOR', 'DRIVER', 'HQ', 'API', 'TRACKING', 'LEGACY'], true)) {
+                throw new ApiException(ApiErrorCode::ValidationError, 422, 'The availability channel is invalid.');
+            }
+        }
+        foreach ((array) ($input['coverage_references'] ?? []) as $reference) {
+            $type = (string) ($reference['reference_type'] ?? '');
+            $value = (string) ($reference['reference_value'] ?? '');
+            $valid = match ($type) {
+                'COUNTRY' => $value === 'IR',
+                'PROVINCE' => DB::table('provinces')->where(['province_id' => $value, 'is_active' => true])->exists(),
+                'CITY' => DB::table('cities')->where(['city_id' => $value, 'is_active' => true])->exists(),
+                'OPERATIONAL_AREA' => $hqId !== null && DB::table('areas')->where(['area_id' => $value, 'hq_id' => $hqId])->exists(),
+                'PRICING_ZONE_SET' => DB::table('pricing_zone_set_versions as v')->join('pricing_zone_sets as s', 's.pricing_zone_set_id', '=', 'v.pricing_zone_set_id')->where('v.zone_set_version_id', $value)->where(fn ($q) => $q->whereNull('s.hq_id')->orWhere('s.hq_id', $hqId))->exists(),
+                'POSTAL_RANGE' => preg_match('/^\d{10}$/', $value) === 1 && preg_match('/^\d{10}$/', (string) ($reference['secondary_reference_value'] ?? '')) === 1 && strcmp($value, (string) $reference['secondary_reference_value']) <= 0,
+                default => false,
+            };
+            if (! $valid) throw new ApiException(ApiErrorCode::ValidationError, 422, 'The coverage reference is invalid or outside the current tenant.');
         }
     }
 
@@ -483,7 +545,7 @@ final readonly class ServiceCatalogService implements ServiceEligibilityResolver
     }
 
     /** @return array<string, mixed> */
-    private function versionDetail(AuthenticatedPrincipal $actor, string $resource, string $versionIdValue): array
+    public function versionDetail(AuthenticatedPrincipal $actor, string $resource, string $versionIdValue): array
     {
         [$identity, $versions, $identityId, $versionId] = $this->map($resource);
         $row = DB::table("{$versions} as v")->join("{$identity} as i", "i.{$identityId}", '=', "v.{$identityId}")
@@ -581,8 +643,12 @@ final readonly class ServiceCatalogService implements ServiceEligibilityResolver
             };
             if (! $passes) $reasons[] = $rule['reason_code'];
         }
-        $selected = array_values((array) ($context['selected_option_version_ids'] ?? []));
+        $selected = array_map(fn ($id) => CurrentCatalog::resolve('options', (string) $id, $row['hq_id'])['service_option_id'], array_values((array) ($context['selected_option_version_ids'] ?? [])));
         $optionRules = $this->decodedRows('service_offering_option_rules', (string) $row['service_offering_version_id']);
+        foreach ($optionRules as &$rule) {
+            $rule['service_option_version_id'] = DB::table('service_option_versions')->where('service_option_version_id', $rule['service_option_version_id'])->value('service_option_id');
+        }
+        unset($rule);
         $knownOptionVersions = array_column($optionRules, 'service_option_version_id');
         if (array_diff($selected, $knownOptionVersions) !== []) $reasons[] = 'SERVICE_OPTION_NOT_ALLOWED';
         foreach ($optionRules as $rule) {
@@ -599,12 +665,24 @@ final readonly class ServiceCatalogService implements ServiceEligibilityResolver
     private function coverageMatches(array $reference, array $party): bool
     {
         return match ($reference['reference_type']) {
-            'CITY' => isset($party['city']) && mb_strtolower((string) $party['city']) === mb_strtolower((string) $reference['reference_value']),
-            'PROVINCE' => isset($party['state']) && mb_strtolower((string) $party['state']) === mb_strtolower((string) $reference['reference_value']),
+            'CITY' => ($party['city_id'] ?? null) === $reference['reference_value'] || (isset($party['city']) && mb_strtolower((string) $party['city']) === mb_strtolower((string) $reference['reference_value'])),
+            'PROVINCE' => ($party['province_id'] ?? null) === $reference['reference_value'] || (isset($party['state']) && mb_strtolower((string) $party['state']) === mb_strtolower((string) $reference['reference_value'])),
             'COUNTRY' => isset($party['country']) && mb_strtolower((string) $party['country']) === mb_strtolower((string) $reference['reference_value']),
             'POSTAL_RANGE' => isset($party['postal_code']) && strcmp((string) $party['postal_code'], (string) $reference['reference_value']) >= 0 && strcmp((string) $party['postal_code'], (string) $reference['secondary_reference_value']) <= 0,
             default => false,
         };
+    }
+
+    /** @param array<string,mixed> $context @return array<string,mixed> */
+    private function canonicalizeCoverageContext(array $context): array
+    {
+        foreach (['sender', 'receiver'] as $party) {
+            $contact = $this->geography->canonicalizeContact((array) ($context[$party] ?? []), false);
+            $contact['country'] ??= 'IR';
+            $context[$party] = $contact;
+        }
+
+        return $context;
     }
 
     /** @param array<string,mixed> $condition @param array<string,mixed> $context */
@@ -630,11 +708,25 @@ final readonly class ServiceCatalogService implements ServiceEligibilityResolver
     /** @param array<string,mixed> $context @return list<array<string,mixed>> */
     private function resolvedOptions(string $offeringVersionId, array $context): array
     {
-        return DB::table('service_offering_option_rules as r')->join('service_option_versions as v', 'v.service_option_version_id', '=', 'r.service_option_version_id')->join('service_options as i', 'i.service_option_id', '=', 'v.service_option_id')
-            ->where('r.service_offering_version_id', $offeringVersionId)->where('v.status', 'PUBLISHED')->orderBy('i.code')->get(['r.*', 'i.service_option_id', 'i.code', 'v.labels'])->map(function ($row) use ($context): array {
-                $option = $this->decode((array) $row); $conditionMet = $option['compatibility'] !== 'CONDITIONAL' || $this->conditionPasses((array) $option['condition'], $context);
-                return ['service_option_id' => $option['service_option_id'], 'service_option_version_id' => $option['service_option_version_id'], 'code' => $option['code'], 'labels' => $option['labels'], 'compatibility' => $option['compatibility'], 'required' => $option['compatibility'] === 'REQUIRED', 'selectable' => $option['compatibility'] !== 'FORBIDDEN' && $conditionMet, 'reason_code' => $conditionMet ? null : 'SERVICE_OPTION_CONDITION_NOT_MET'];
-            })->all();
+        $results = [];
+        foreach ($this->decodedRows('service_offering_option_rules', $offeringVersionId) as $rule) {
+            $owner = DB::table('service_offering_versions')->where('service_offering_version_id', $offeringVersionId)->value('hq_id');
+            try { $current = CurrentCatalog::resolve('options', (string) $rule['service_option_version_id'], $owner); }
+            catch (ApiException $error) { if ($rule['compatibility'] === 'REQUIRED') throw $error; continue; }
+            $conditionMet = $rule['compatibility'] !== 'CONDITIONAL' || $this->conditionPasses((array) $rule['condition'], $context);
+            $results[] = ['service_option_id' => $current['service_option_id'], 'service_option_version_id' => $current['service_option_version_id'], 'code' => $current['code'], 'labels' => json_decode($current['labels'], true), 'definition' => json_decode($current['definition'], true), 'compatibility' => $rule['compatibility'], 'required' => $rule['compatibility'] === 'REQUIRED', 'selectable' => $rule['compatibility'] !== 'FORBIDDEN' && $conditionMet, 'reason_code' => $conditionMet ? null : 'SERVICE_OPTION_CONDITION_NOT_MET'];
+        }
+        return $results;
+    }
+
+    private function runtimeDependencies(array $row, string $hqId): array
+    {
+        foreach (['service_type_version_id' => 'service-types', 'shipping_method_version_id' => 'shipping-methods'] as $field => $resource) {
+            $dependency = CurrentCatalog::resolve($resource, (string) $row[$field], $hqId);
+            $row[$field] = $dependency[$field];
+            $row[str_replace('_version_id', '_labels', $field)] = json_decode($dependency['labels'], true);
+        }
+        return $row;
     }
 
     private function available(string $versionId, string $hqId, string $channel): bool
@@ -650,7 +742,10 @@ final readonly class ServiceCatalogService implements ServiceEligibilityResolver
         $start = CarbonImmutable::parse((string) ($context['acceptance_at'] ?? now()->toISOString()))->utc();
         $value = max(0, (int) ($policy['duration_value'] ?? 0));
         $end = match ($policy['duration_unit'] ?? 'HOUR') { 'MINUTE' => $start->addMinutes($value), 'DAY' => $start->addDays($value), default => $start->addHours($value) };
-        return ['commitment_type' => $policy['commitment_type'] ?? 'DURATION', 'starts_at' => $start->toISOString(), 'delivery_commitment_at' => $end->toISOString(), 'policy' => $policy];
+        return ['commitment_type' => $policy['commitment_type'] ?? 'DURATION', 'starts_at' => $start->toISOString(), 'delivery_commitment_at' => $end->toISOString(), 'policy' => $policy,
+            'pickup' => ['mode' => 'NONE'],
+            'delivery' => ['mode' => 'COMPUTED', 'computed_at' => $end->toISOString()],
+        ];
     }
 
     private function assertAccess(AuthenticatedPrincipal $actor, string $permission, bool $runtime = false): void

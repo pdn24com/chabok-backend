@@ -1,0 +1,189 @@
+[
+  {
+    "code": "D00",
+    "title_fa": "پیش‌نویس",
+    "title_en": "Draft",
+    "partial_title_fa": null,
+    "partial_title_en": null,
+    "tone": "neutral",
+    "status_group": null,
+    "is_terminal": false,
+    "manifest_enabled": false
+  },
+  {
+    "code": "CFM",
+    "title_fa": "تأییدشده",
+    "title_en": "Confirmed",
+    "partial_title_fa": null,
+    "partial_title_en": null,
+    "tone": "info",
+    "status_group": "NEW_ROUTED",
+    "is_terminal": false,
+    "manifest_enabled": false
+  },
+  {
+    "code": "PD",
+    "title_fa": "تخصیص‌یافته به مأمور جمع‌آوری",
+    "title_en": "Assigned to pickup Driver",
+    "partial_title_fa": "در حال تخصیص به مأمور جمع‌آوری",
+    "partial_title_en": "Partially assigned to pickup Driver",
+    "tone": "info",
+    "status_group": "NEW_ROUTED",
+    "is_terminal": false,
+    "manifest_enabled": true
+  },
+  {
+    "code": "PU",
+    "title_fa": "جمع‌آوری",
+    "title_en": "Picked up",
+    "partial_title_fa": "در حال جمع‌آوری",
+    "partial_title_en": "Partially picked up",
+    "tone": "brand",
+    "status_group": "IN_OPERATION",
+    "is_terminal": false,
+    "manifest_enabled": true
+  },
+  {
+    "code": "NPU",
+    "title_fa": "جمع‌آوری ناموفق",
+    "title_en": "Pickup failed",
+    "partial_title_fa": "جمع‌آوری ناموفق برخی بسته‌ها",
+    "partial_title_en": "Pickup failed for some Parcels",
+    "tone": "danger",
+    "status_group": "EXCEPTION",
+    "is_terminal": false,
+    "manifest_enabled": true
+  },
+  {
+    "code": "IR",
+    "title_fa": "اسکن ورود به گره",
+    "title_en": "Inbound node scan",
+    "partial_title_fa": "در حال پذیرش در گره",
+    "partial_title_en": "Partially received at node",
+    "tone": "brand",
+    "status_group": "IN_OPERATION",
+    "is_terminal": false,
+    "manifest_enabled": true
+  },
+  {
+    "code": "ROU",
+    "title_fa": "مسیریابی و خوشه‌بندی‌شده",
+    "title_en": "Routed and clustered",
+    "partial_title_fa": "در حال مسیریابی و خوشه‌بندی",
+    "partial_title_en": "Partially routed and clustered",
+    "tone": "brand",
+    "status_group": "IN_OPERATION",
+    "is_terminal": false,
+    "manifest_enabled": true
+  },
+  {
+    "code": "OF",
+    "title_fa": "اسکن خروج از گره",
+    "title_en": "Outbound node scan",
+    "partial_title_fa": "در حال اسکن خروج",
+    "partial_title_en": "Partially scanned outbound",
+    "tone": "warning",
+    "status_group": "IN_OPERATION",
+    "is_terminal": false,
+    "manifest_enabled": true
+  },
+  {
+    "code": "OS",
+    "title_fa": "حرکت از مبدأ",
+    "title_en": "Departed origin",
+    "partial_title_fa": "در حال حرکت از مبدأ",
+    "partial_title_en": "Partially departed origin",
+    "tone": "info",
+    "status_group": "IN_OPERATION",
+    "is_terminal": false,
+    "manifest_enabled": true
+  },
+  {
+    "code": "CI",
+    "title_fa": "تخلیه‌شده در گره",
+    "title_en": "Unloaded at node",
+    "partial_title_fa": "در حال تخلیه در گره",
+    "partial_title_en": "Partially unloaded at node",
+    "tone": "warning",
+    "status_group": "IN_OPERATION",
+    "is_terminal": false,
+    "manifest_enabled": true
+  },
+  {
+    "code": "OD",
+    "title_fa": "تحویل‌شده به مأمور توزیع",
+    "title_en": "Assigned to delivery Driver",
+    "partial_title_fa": "در حال تحویل به مأمور توزیع",
+    "partial_title_en": "Partially assigned to delivery Driver",
+    "tone": "info",
+    "status_group": "IN_OPERATION",
+    "is_terminal": false,
+    "manifest_enabled": true
+  },
+  {
+    "code": "OK",
+    "title_fa": "تحویل موفق",
+    "title_en": "Delivered",
+    "partial_title_fa": "در حال تحویل به گیرنده",
+    "partial_title_en": "Partially delivered",
+    "tone": "success",
+    "status_group": "COMPLETED",
+    "is_terminal": true,
+    "manifest_enabled": true
+  },
+  {
+    "code": "NOK",
+    "title_fa": "تحویل ناموفق",
+    "title_en": "Delivery failed",
+    "partial_title_fa": "تحویل ناموفق برخی بسته‌ها",
+    "partial_title_en": "Delivery failed for some Parcels",
+    "tone": "danger",
+    "status_group": "EXCEPTION",
+    "is_terminal": false,
+    "manifest_enabled": true
+  },
+  {
+    "code": "RH",
+    "title_fa": "بازگشت به هاب",
+    "title_en": "Returned to hub",
+    "partial_title_fa": "در حال بازگشت به هاب",
+    "partial_title_en": "Partially returning to hub",
+    "tone": "danger",
+    "status_group": "EXCEPTION",
+    "is_terminal": false,
+    "manifest_enabled": false
+  },
+  {
+    "code": "RCH",
+    "title_fa": "بازگشت به هاب مرکزی",
+    "title_en": "Returned to central hub",
+    "partial_title_fa": "در حال بازگشت به هاب مرکزی",
+    "partial_title_en": "Partially returning to central hub",
+    "tone": "danger",
+    "status_group": "EXCEPTION",
+    "is_terminal": false,
+    "manifest_enabled": false
+  },
+  {
+    "code": "RO",
+    "title_fa": "بازگشت به مبدأ",
+    "title_en": "Returned to origin",
+    "partial_title_fa": "در حال بازگشت به مبدأ",
+    "partial_title_en": "Partially returning to origin",
+    "tone": "neutral",
+    "status_group": "CANCELLED",
+    "is_terminal": true,
+    "manifest_enabled": false
+  },
+  {
+    "code": "AA",
+    "title_fa": "لغوشده",
+    "title_en": "Cancelled",
+    "partial_title_fa": null,
+    "partial_title_en": null,
+    "tone": "ink",
+    "status_group": "CANCELLED",
+    "is_terminal": true,
+    "manifest_enabled": false
+  }
+]

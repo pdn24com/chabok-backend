@@ -19,6 +19,7 @@ Route::prefix('api/v1/iam')
         Route::get('/users', [UserController::class, 'index'])->name('iam.users.index');
         Route::post('/users', [UserController::class, 'store'])
             ->middleware('idempotent:iam.users.create')->name('iam.users.store');
+        Route::post('/users/{userId}/operational-profile', [UserController::class, 'operationalProfile'])->whereUuid('userId')->middleware('idempotent:iam.users.operational-profile')->name('iam.users.operational-profile');
         Route::get('/users/{userId}', [UserController::class, 'show'])->whereUuid('userId')->name('iam.users.show');
         Route::patch('/users/{userId}', [UserController::class, 'update'])->whereUuid('userId')->name('iam.users.update');
         Route::post('/users/{userId}/suspend', [UserController::class, 'suspend'])->whereUuid('userId')->name('iam.users.suspend');

@@ -26,7 +26,7 @@ final class DeterministicCalculator
             $rawAmount = match ($method) {
                 'FIXED' => (int) ($rule['fixed_amount'] ?? 0),
                 'PER_UNIT' => $this->money($quantity * (float) ($rule['unit_rate'] ?? 0)),
-                'SLAB' => $this->money(($rule['fixed_amount'] ?? null) !== null ? (float) $rule['fixed_amount'] : $quantity * (float) ($rule['unit_rate'] ?? 0)),
+                'SLAB' => isset($rule['incremental_step']) || isset($rule['incremental_step_kg']) ? $this->incrementalAmount($quantity, $from ?? 0, (float) ($rule['incremental_step'] ?? $rule['incremental_step_kg']), (int) $rule['fixed_amount'], (float) $rule['unit_rate']) : $this->money(($rule['fixed_amount'] ?? null) !== null ? (float) $rule['fixed_amount'] : $quantity * (float) ($rule['unit_rate'] ?? 0)),
                 'TIERED' => $this->tierAmount($quantity, $from ?? 0.0, $to, (float) ($rule['unit_rate'] ?? 0)),
                 'PERCENT' => $this->percentAmount($rule, $lines, $facts),
                 'MIN_MAX' => $this->minMaxAmount($rule, $lines, $facts, $quantity),
@@ -45,8 +45,12 @@ final class DeterministicCalculator
                 'category' => $rule['category'], 'calculation_method' => $method, 'basis' => $rule['basis'],
                 'quantity' => round($quantity, 4), 'unit_rate' => $rule['unit_rate'] === null ? null : (float) $rule['unit_rate'],
                 'amount' => max(0, $amount), 'accounting_mapping_key' => $rule['accounting_mapping_key'],
+                'taxable' => (bool) ($rule['taxable'] ?? true),
                 'explanation' => [
+                    'service_tariff_version_id' => $rule['service_tariff_version_id'] ?? null,
+                    'incremental_step' => $rule['incremental_step'] ?? null,
                     'range_from' => $from, 'range_to' => $to,
+                    'incremental_step_kg' => $rule['incremental_step_kg'] ?? null, 'base_amount' => $rule['fixed_amount'] ?? null,
                     'declared_value_basis' => $rule['basis'] === 'DECLARED_VALUE' ? (int) $quantity : null,
                     'percentage_bps' => $rule['percentage_bps'], 'raw_amount' => $rawAmount,
                     'amount_rounding_mode' => (string) ($rule['amount_rounding_mode'] ?? 'NONE'),
@@ -82,6 +86,15 @@ final class DeterministicCalculator
         };
     }
 
+    private function incrementalAmount(float $quantity, float $from, float $step, int $base, float $increment): int
+    {
+        // Weight precision is four decimal places; integer arithmetic avoids phantom steps.
+        $excess = max(0, (int) round($quantity * 10000) - (int) round($from * 10000));
+        $scaledStep = max(1, (int) round($step * 10000));
+        $units = intdiv($excess + $scaledStep - 1, $scaledStep);
+        return $base + $this->money($units * $increment);
+    }
+
     private function tierAmount(float $quantity, float $from, ?float $to, float $rate): int
     {
         $units = max(0.0, min($quantity, $to ?? $quantity) - $from);
@@ -92,7 +105,13 @@ final class DeterministicCalculator
     private function percentAmount(array $rule, array $lines, array $facts): int
     {
         $codes = is_string($rule['basis_charge_codes'] ?? null) ? json_decode($rule['basis_charge_codes'], true) : ($rule['basis_charge_codes'] ?? []);
-        $base = $codes ? array_sum(array_map(fn ($line) => in_array($line['charge_code'], $codes, true) ? $line['amount'] : 0, $lines)) : $this->quantity((string) $rule['basis'], $facts);
+        $isTax = $rule['category'] === 'TAX';
+        $base = $codes ? array_sum(array_map(static function ($line) use ($codes, $isTax): int {
+            if (! in_array($line['charge_code'], $codes, true)) return 0;
+            if ($isTax && (! ($line['taxable'] ?? true) || $line['category'] === 'TAX')) return 0;
+            return $isTax && $line['category'] === 'DISCOUNT' ? -$line['amount'] : $line['amount'];
+        }, $lines)) : $this->quantity((string) $rule['basis'], $facts);
+        $base = max(0, $base);
         return $this->money($base * ((int) ($rule['percentage_bps'] ?? 0)) / 10000);
     }
 

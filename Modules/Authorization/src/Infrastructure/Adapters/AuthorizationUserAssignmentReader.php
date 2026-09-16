@@ -30,6 +30,12 @@ final class AuthorizationUserAssignmentReader implements UserAssignmentReader
                 'role_id' => (string) $row->role_id,
                 'scope_type' => (string) $row->scope_type,
                 'scope_id' => $row->scope_id === null ? null : (string) $row->scope_id,
+                'scope_title' => match ($row->scope_type) {
+                    'TENANT' => 'کل سازمان',
+                    'AREA' => DB::table('areas')->where(['hq_id' => $hqId, 'area_id' => $row->scope_id])->value('area_title') ?? 'ناحیه',
+                    'NODE' => DB::table('nodes')->where(['hq_id' => $hqId, 'node_id' => $row->scope_id])->value('node_title') ?? 'گره',
+                    default => 'حساب شخصی',
+                },
                 'includes_descendants' => (bool) $row->includes_descendants,
                 'status' => (string) $row->status,
             ])

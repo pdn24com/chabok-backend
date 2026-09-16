@@ -54,11 +54,6 @@ final class ConsignmentPolicy
         if (! in_array($input['payment_method'] ?? null, ['CASH', 'CREDIT'], true)) {
             throw new ApiException(ApiErrorCode::ValidationError, 422, 'The payment method is not available for new pilot Consignments.', details: ['reason_code' => 'PILOT_PAYMENT_METHOD_INVALID']);
         }
-        foreach ((array) ($input['parcels'] ?? []) as $index => $parcel) {
-            if (trim((string) ($parcel['content_description'] ?? '')) === '') {
-                throw new ApiException(ApiErrorCode::ValidationError, 422, 'Every Parcel requires a content description.', details: ['reason_code' => 'PARCEL_CONTENT_REQUIRED', 'parcel_index' => $index]);
-            }
-        }
     }
 
     /** @param array<string, mixed> $input */

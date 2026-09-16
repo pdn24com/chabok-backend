@@ -1,0 +1,11 @@
+{
+    "name": "Operations",
+    "alias": "operations",
+    "description": "Driver, Pickup, Movement, and Delivery operational bounded contexts.",
+    "keywords": ["driver", "pickup", "movement", "delivery"],
+    "priority": 12,
+    "providers": [
+        "Modules\\Operations\\Infrastructure\\Providers\\OperationsServiceProvider"
+    ],
+    "files": []
+}

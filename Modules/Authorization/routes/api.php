@@ -15,6 +15,9 @@ Route::prefix('api/v1')
 Route::prefix('api/v1/iam')
     ->middleware(['api', 'access.auth', 'node.access', 'password.changed'])
     ->group(function (): void {
+        Route::get('/assignment-options', [AuthorizationController::class, 'assignmentOptions'])->name('iam.assignment-options');
+        Route::post('/roles', [AuthorizationController::class, 'createRole'])
+            ->middleware('idempotent:iam.roles.create')->name('iam.roles.store');
         Route::get('/roles', [AuthorizationController::class, 'roles'])->name('iam.roles.index');
         Route::get('/roles/{roleId}', [AuthorizationController::class, 'role'])
             ->whereUuid('roleId')->name('iam.roles.show');
@@ -27,6 +30,7 @@ Route::prefix('api/v1/iam')
         Route::get('/permissions', [AuthorizationController::class, 'permissions'])->name('iam.permissions.index');
         Route::post('/users/{userId}/role-assignments', [AuthorizationController::class, 'createAssignments'])
             ->whereUuid('userId')->name('iam.assignments.store');
+        Route::patch('/users/{userId}/role-assignments/{assignmentId}', [AuthorizationController::class, 'updateAssignment'])->whereUuid('userId')->whereUuid('assignmentId')->name('iam.assignments.update');
         Route::delete('/users/{userId}/role-assignments/{assignmentId}', [AuthorizationController::class, 'revokeAssignment'])
             ->whereUuid('userId')->whereUuid('assignmentId')->name('iam.assignments.revoke');
         Route::get('/module-entitlements', [AuthorizationController::class, 'entitlements'])

@@ -16,7 +16,49 @@ final readonly class ServiceCatalogController
     public function __construct(
         private ServiceCatalogService $catalog,
         private CommitmentScheduleService $schedules,
+        private \Modules\ServiceCatalog\Application\CatalogRecordService $records,
     ) {}
+
+    public function commitmentZoneGroups(Request $request): JsonResponse
+    {
+        $actor=$this->principal($request); $this->records->authorize($actor);
+        return ApiResponder::success($request, app(\Modules\ServiceCatalog\Application\Contracts\CommitmentZoneResolver::class)->groups((string)$actor->hqId));
+    }
+
+    public function recordDetail(Request $request, string $resource, string $identityId): JsonResponse
+    {
+        return ApiResponder::success($request, $this->records->detail($this->principal($request), $resource, $identityId));
+    }
+
+    public function saveRecord(Request $request, string $resource, ?string $identityId = null): JsonResponse
+    {
+        $this->records->authorize($this->principal($request), true);
+        $rules = $resource === 'commitment-schedules' ? $this->scheduleRules($identityId === null) : $this->draftRules($resource, $identityId === null);
+        // Legacy timestamps are read-only evidence, never scheduling inputs for current records.
+        unset($rules['valid_from'], $rules['valid_to']);
+        if ($identityId === null) $rules['code'] = ['sometimes', 'nullable', 'regex:/^[0-9]{6}$/'];
+        if ($resource === 'offerings') {
+            foreach (['service_type', 'shipping_method'] as $prefix) { unset($rules[$prefix.'_version_id']); $rules[$prefix.'_id'] = ['required', 'uuid']; }
+            unset($rules['option_rules.*.service_option_version_id'], $rules['commitment_binding.commitment_schedule_version_id']);
+            $rules['option_rules.*.service_option_id'] = ['required', 'uuid'];
+            $rules['commitment_binding.commitment_schedule_id'] = ['required_with:commitment_binding', 'uuid'];
+        }
+        if ($identityId !== null) $rules['expected_version'] = ['required', 'integer', 'min:1'];
+        $input = $request->validate($rules);
+        if ($resource === 'offerings') {
+            foreach (['service_type', 'shipping_method'] as $prefix) $input[$prefix.'_version_id'] = $input[$prefix.'_id'];
+            foreach ($input['option_rules'] ?? [] as $index => $rule) $input['option_rules'][$index]['service_option_version_id'] = $rule['service_option_id'];
+            if (!empty($input['commitment_binding'])) $input['commitment_binding']['commitment_schedule_version_id'] = $input['commitment_binding']['commitment_schedule_id'];
+        }
+        return app(\Modules\Foundation\Infrastructure\Http\Middleware\IdempotentCommand::class)->handle($request,
+            fn () => ApiResponder::success($request, $this->records->save($this->principal($request), $resource, $identityId, $input, $this->correlation($request)), status: $identityId === null ? 201 : 200), 'catalog.record.save');
+    }
+
+    public function recordStatus(Request $request, string $resource, string $identityId): JsonResponse
+    {
+        $input = $request->validate(['active' => ['required', 'boolean'], 'expected_version' => ['required', 'integer', 'min:1']]);
+        return ApiResponder::success($request, $this->records->setActive($this->principal($request), $resource, $identityId, $input['active'], $input['expected_version'], $this->correlation($request)));
+    }
 
     public function index(Request $request, string $resource): JsonResponse
     {
@@ -27,7 +69,10 @@ final readonly class ServiceCatalogController
 
     public function publishedVersions(Request $request, string $resource): JsonResponse
     {
-        $filters = $request->validate(['page' => ['integer', 'min:1'], 'page_size' => ['integer', 'min:1', 'max:100'], 'search' => ['nullable', 'string', 'max:120']]);
+        $filters = $request->validate([
+            'page' => ['integer', 'min:1'], 'page_size' => ['integer', 'min:1', 'max:100'], 'search' => ['nullable', 'string', 'max:120'],
+            'include_version_ids' => ['nullable', 'array', 'max:100'], 'include_version_ids.*' => ['uuid'],
+        ]);
         $page = $this->catalog->listPublishedVersions($this->principal($request), $resource, $filters);
 
         return ApiResponder::success($request, $page->items(), ['pagination' => ['page' => $page->currentPage(), 'page_size' => $page->perPage(), 'total' => $page->total(), 'total_pages' => $page->lastPage()]]);
@@ -86,7 +131,7 @@ final readonly class ServiceCatalogController
 
     public function commitments(Request $request, string $offeringId): JsonResponse
     {
-        $input = $request->validate(['service_offering_version_id' => ['nullable', 'uuid'], 'channel' => ['required', 'string'], 'acceptance_at' => ['nullable', 'date'], 'pickup_window_code' => ['nullable', 'string', 'max:80'], 'pickup_service_date' => ['nullable', 'date_format:Y-m-d'], 'delivery_window_code' => ['nullable', 'string', 'max:80'], 'sender' => ['required', 'array'], 'receiver' => ['required', 'array'], 'parcels' => ['nullable', 'array']]);
+        $input = $request->validate(['service_offering_version_id' => ['nullable', 'uuid'], 'channel' => ['required', 'string'], 'acceptance_at' => ['nullable', 'date'], 'as_of_timestamp' => ['nullable', 'date'], 'pickup_window_code' => ['nullable', 'string', 'max:80'], 'pickup_service_date' => ['nullable', 'date_format:Y-m-d'], 'delivery_window_code' => ['nullable', 'string', 'max:80'], 'sender' => ['required', 'array'], 'receiver' => ['required', 'array'], 'parcels' => ['nullable', 'array']]);
         return ApiResponder::success($request, $this->catalog->commitmentPreview($this->principal($request), $offeringId, $input));
     }
 
@@ -105,7 +150,8 @@ final readonly class ServiceCatalogController
 
     public function publishedSchedules(Request $request): JsonResponse
     {
-        return ApiResponder::success($request, $this->schedules->published($this->principal($request)));
+        $filters = $request->validate(['include_version_ids' => ['nullable', 'array', 'max:100'], 'include_version_ids.*' => ['uuid']]);
+        return ApiResponder::success($request, $this->schedules->published($this->principal($request), (array) ($filters['include_version_ids'] ?? [])));
     }
 
     public function createSchedule(Request $request): JsonResponse
@@ -147,11 +193,11 @@ final readonly class ServiceCatalogController
             'labels' => ['required', 'array'], 'description' => ['nullable', 'string', 'max:4000'],
             'valid_from' => ['nullable', 'date'], 'valid_to' => ['nullable', 'date'],
         ];
-        if ($creating) $rules['code'] = ['required', 'regex:/^[A-Z][A-Z0-9_]{1,79}$/'];
+        if ($creating) $rules['code'] = ['sometimes', 'nullable', 'regex:/^(?:[0-9]{6}|[A-Z][A-Z0-9_]{1,79})$/'];
         if ($resource !== 'offerings') return $rules + ['definition' => ['sometimes', 'array']];
         return $rules + [
             'service_type_version_id' => ['required', 'uuid'], 'shipping_method_version_id' => ['required', 'uuid'],
-            'sla_policy' => ['required', 'array'], 'availability_summary' => ['nullable', 'array'],
+            'sla_policy' => ['required_without:commitment_binding', 'array'], 'availability_summary' => ['nullable', 'array'],
             'option_rules' => ['array'], 'eligibility_rules' => ['array'], 'coverage_references' => ['array'], 'availability_bindings' => ['required', 'array', 'min:1'],
             'option_rules.*.service_option_version_id' => ['required', 'uuid'], 'option_rules.*.compatibility' => ['required', 'in:ALLOWED,REQUIRED,FORBIDDEN,CONDITIONAL'], 'option_rules.*.condition' => ['nullable', 'array'],
             'eligibility_rules.*.dimension' => ['required', 'in:GEOGRAPHY,PHYSICAL,CONTENT,VALUE,COMMERCIAL,OPERATIONAL,TEMPORAL,OPTION,CHANNEL'], 'eligibility_rules.*.fact_key' => ['required', 'string', 'max:120'], 'eligibility_rules.*.operator' => ['required', 'in:EQ,NEQ,IN,NOT_IN,MIN,MAX,BETWEEN,EXISTS,NOT_EXISTS'], 'eligibility_rules.*.expected_value' => ['present'], 'eligibility_rules.*.reason_code' => ['required', 'string', 'max:120'], 'eligibility_rules.*.priority' => ['sometimes', 'integer', 'min:1', 'max:65535'],
@@ -168,14 +214,15 @@ final readonly class ServiceCatalogController
     private function scheduleRules(bool $creating): array
     {
         $rules = [
-            'title' => [$creating ? 'required' : 'sometimes', 'string', 'max:200'], 'timezone' => ['required', 'timezone'], 'calendar_code' => ['required', 'string', 'max:80'],
+            'title' => [$creating ? 'required' : 'sometimes', 'string', 'max:200'], 'timezone' => ['sometimes', 'timezone'], 'calendar_code' => ['sometimes', 'string', 'max:80'], 'commitment_policy' => ['sometimes', 'array'],
             'valid_from' => ['nullable', 'date'], 'valid_to' => ['nullable', 'date', 'after:valid_from'],
-            'windows' => ['required', 'array', 'min:1'], 'windows.*.window_code' => ['required', 'regex:/^[A-Z][A-Z0-9_]{1,79}$/'], 'windows.*.window_type' => ['required', 'in:PICKUP,DELIVERY'],
-            'windows.*.label_fa' => ['required', 'string', 'max:200'], 'windows.*.start_time' => ['required', 'date_format:H:i'], 'windows.*.end_time' => ['required', 'date_format:H:i'], 'windows.*.booking_cutoff_time' => ['required', 'date_format:H:i'],
+            'windows' => ['present', 'array'], 'windows.*.window_code' => ['required', 'distinct', 'regex:/^[A-Z][A-Z0-9_]{1,79}$/'], 'windows.*.window_type' => ['required', 'in:PICKUP,DELIVERY'],
+            'windows.*.risk_threshold_minutes' => ['sometimes', 'integer', 'min:0', 'max:525600'],
+            'windows.*.label_fa' => ['required', 'string', 'max:200'], 'windows.*.start_time' => ['required', 'date_format:H:i,H:i:s'], 'windows.*.end_time' => ['required', 'date_format:H:i,H:i:s'], 'windows.*.booking_cutoff_time' => ['required', 'date_format:H:i,H:i:s'],
             'windows.*.applicable_weekdays' => ['required', 'array', 'min:1'], 'windows.*.applicable_weekdays.*' => ['integer', 'between:1,7'], 'windows.*.day_offset' => ['sometimes', 'integer', 'between:0,30'], 'windows.*.active' => ['sometimes', 'boolean'],
             'scopes' => ['required', 'array', 'min:1'], 'scopes.*.scope_type' => ['required', 'in:HQ,NODE'], 'scopes.*.node_id' => ['required_if:scopes.*.scope_type,NODE', 'nullable', 'uuid'],
         ];
-        if ($creating) $rules['code'] = ['required', 'regex:/^[A-Z][A-Z0-9_]{1,79}$/'];
+        if ($creating) $rules['code'] = ['sometimes', 'nullable', 'regex:/^(?:[0-9]{6}|[A-Z][A-Z0-9_]{1,79})$/'];
         return $rules;
     }
 

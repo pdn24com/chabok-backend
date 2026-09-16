@@ -11,9 +11,17 @@ final class ManifestPolicy
 {
     /** @var array<string, list<string>> */
     private const TRANSITIONS = [
+        'PD' => ['CFM'],
+        'PU' => ['PD'],
+        'NPU' => ['PD'],
         'IR' => ['PU', 'OS'],
-        'OF' => ['ROU'],
+        'ROU' => ['IR'],
+        'OF' => ['ROU', 'CI'],
+        'OS' => ['OF'],
+        'CI' => ['OS'],
         'OD' => ['IR'],
+        'OK' => ['OD'],
+        'NOK' => ['OD'],
     ];
 
     public function assertEditable(string $state): void
@@ -31,25 +39,17 @@ final class ManifestPolicy
     {
         if (! isset(self::TRANSITIONS[$targetStatus])) {
             throw new ApiException(
-                ApiErrorCode::ValidationError,
+                ApiErrorCode::UnsupportedManifestTransition,
                 422,
                 'The Manifest target status is not available.',
             );
         }
-        if ($targetStatus === 'OD' && $driverId === null) {
+        if (in_array($targetStatus, ['PD', 'OD', 'OS'], true) && $driverId === null) {
             throw new ApiException(
                 ApiErrorCode::ValidationError,
                 422,
                 'An assigned driver is required for this target status.',
                 ['assigned_driver_id' => ['An assigned driver is required.']],
-            );
-        }
-        if ($targetStatus === 'OD') {
-            throw new ApiException(
-                ApiErrorCode::ValidationError,
-                422,
-                'Driver-backed Manifest status is not available yet.',
-                ['manifest_status' => ['The Driver dependency is not available.']],
             );
         }
     }

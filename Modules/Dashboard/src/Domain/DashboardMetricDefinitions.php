@@ -8,7 +8,7 @@ final class DashboardMetricDefinitions
 {
     /** @var list<string> */
     public const CONSIGNMENT_STATUSES = [
-        'D00', 'CFM', 'PD', 'PU', 'IR', 'ROU', 'OF', 'OS',
+        'D00', 'CFM', 'PD', 'PU', 'IR', 'ROU', 'OF', 'OS', 'CI',
         'OD', 'OK', 'NPU', 'NOK', 'RH', 'RCH', 'RO', 'AA',
     ];
 
@@ -17,7 +17,7 @@ final class DashboardMetricDefinitions
 
     /** @var list<string> */
     public const ACTIVE_CONSIGNMENT_STATUSES = [
-        'D00', 'CFM', 'PD', 'PU', 'IR', 'ROU', 'OF', 'OS',
+        'D00', 'CFM', 'PD', 'PU', 'IR', 'ROU', 'OF', 'OS', 'CI',
         'OD', 'NPU', 'NOK', 'RH', 'RCH',
     ];
 

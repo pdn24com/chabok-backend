@@ -25,6 +25,8 @@ final readonly class UserService
 {
     public function __construct(
         private UserStore $users,
+        private \Modules\User\Application\Contracts\OperationalProfileWriter $operationalProfiles,
+        private \Modules\User\Application\Contracts\UserScopeAuthorizer $scopeAuthorizer,
         private IdentifierNormalizer $normalizer,
         private UserLifecyclePolicy $lifecycle,
         private UserAdministrationAuthorizer $authorizer,
@@ -86,6 +88,11 @@ final readonly class UserService
                 $channel = $mode === 'SMS_INVITATION' ? 'SMS' : 'EMAIL';
                 $this->identity->createInvitation($row, $channel, $actor->userId, $correlationId);
             }
+            if (isset($input['operational_profile'])) {
+                $assignment = $this->operationalProfiles->attach($actor, $userId, $input['operational_profile'], $correlationId);
+                if ($assignment !== null) $input['assignments'][] = $assignment;
+            }
+            if ($input['assignments'] === []) throw new ApiException(ApiErrorCode::ValidationError, 422, 'At least one assignment is required.');
             $this->assignments->assign(
                 $hqId,
                 $userId,
@@ -93,6 +100,7 @@ final readonly class UserService
                 $input['assignments'],
                 $correlationId,
             );
+            $this->scopeAuthorizer->assertTarget($actor, $userId, 'iam.users.manage');
             $public = $this->publicUser($row);
             $this->audit->write($hqId, $actor->userId, 'USER_CREATED', 'USER', $userId, $correlationId, after: $public);
             $this->outbox->write($hqId, 'USER', $userId, 'iam.user.created', $correlationId, [
@@ -103,17 +111,31 @@ final readonly class UserService
         });
     }
 
+    public function attachOperationalProfile(AuthenticatedPrincipal $actor, string $userId, array $input, string $correlationId): array
+    {
+        $hqId = $this->requireTenant($actor);
+        $this->scopeAuthorizer->assertTarget($actor, $userId, 'iam.users.manage');
+        return $this->transactions->run(function () use ($actor, $userId, $input, $correlationId, $hqId): array {
+            $user = $this->users->findTenantUserForUpdate($hqId, $userId);
+            $this->assertTenantUser($user, $hqId);
+            $assignment = $this->operationalProfiles->attach($actor, $userId, $input, $correlationId);
+            if ($assignment !== null) $this->assignments->assign($hqId, $userId, $actor->userId, [$assignment], $correlationId);
+            return ['driver_profile' => $this->operationalProfiles->forUser($actor, $userId)];
+        });
+    }
+
     public function list(
         AuthenticatedPrincipal $actor,
         int $page,
         int $pageSize,
         ?string $search,
         ?string $status,
+        ?string $nodeId = null,
     ): \Illuminate\Contracts\Pagination\LengthAwarePaginator {
         $hqId = $this->requireTenant($actor);
         $this->authorizer->assertCan($actor, 'iam.users.view', $hqId);
 
-        return $this->users->paginate($hqId, $page, $pageSize, $search, $status);
+        return $this->users->paginate($hqId, $page, $pageSize, $search, $status, $this->scopeAuthorizer->visibleUserIds($actor, $nodeId));
     }
 
     /** @return array<string, mixed> */
@@ -121,6 +143,7 @@ final readonly class UserService
     {
         $hqId = $this->requireTenant($actor);
         $this->authorizer->assertCan($actor, 'iam.users.view', $hqId);
+        $this->scopeAuthorizer->assertTarget($actor, $userId, 'iam.users.view');
         $user = $this->users->findById($userId);
         $this->assertTenantUser($user, $hqId);
         $invitation = DB::table('user_invitations')->where('user_id', $userId)
@@ -130,6 +153,7 @@ final readonly class UserService
             'user' => $this->publicUser($user),
             'assignments' => $this->assignmentReader->forUser($hqId, $userId),
             'invitation_status' => $invitation,
+            'driver_profile' => $this->operationalProfiles->forUser($actor, $userId),
             'sessions' => $this->sessions->listSessions($userId),
         ];
     }
@@ -143,6 +167,7 @@ final readonly class UserService
     ): array {
         $hqId = $this->requireTenant($actor);
         $this->authorizer->assertCan($actor, 'iam.users.manage', $hqId);
+        $this->scopeAuthorizer->assertTarget($actor, $userId, 'iam.users.manage');
 
         return $this->transactions->run(function () use ($actor, $userId, $input, $hqId, $correlationId): array {
             $before = $this->users->findTenantUserForUpdate($hqId, $userId);
@@ -198,6 +223,7 @@ final readonly class UserService
     ): array {
         $hqId = $this->requireTenant($actor);
         $this->authorizer->assertCan($actor, 'iam.users.manage', $hqId);
+        $this->scopeAuthorizer->assertTarget($actor, $userId, 'iam.users.manage');
 
         return $this->transactions->run(function () use ($actor, $userId, $to, $hqId, $correlationId): array {
             $user = $this->users->findTenantUserForUpdate($hqId, $userId);
@@ -228,6 +254,7 @@ final readonly class UserService
     ): void {
         $hqId = $this->requireTenant($actor);
         $this->authorizer->assertCan($actor, 'iam.users.manage', $hqId);
+        $this->scopeAuthorizer->assertTarget($actor, $userId, 'iam.users.manage');
         $this->transactions->run(function () use ($actor, $userId, $channel, $hqId, $correlationId): void {
             $user = $this->users->findTenantUserForUpdate($hqId, $userId);
             $this->assertTenantUser($user, $hqId);
@@ -244,6 +271,7 @@ final readonly class UserService
     ): void {
         $hqId = $this->requireTenant($actor);
         $this->authorizer->assertCan($actor, 'iam.users.manage', $hqId);
+        $this->scopeAuthorizer->assertTarget($actor, $userId, 'iam.users.manage');
         $this->transactions->run(function () use ($actor, $userId, $password, $hqId, $correlationId): void {
             $user = $this->users->findTenantUserForUpdate($hqId, $userId);
             $this->assertTenantUser($user, $hqId);
@@ -261,6 +289,7 @@ final readonly class UserService
     ): int {
         $hqId = $this->requireTenant($actor);
         $this->authorizer->assertCan($actor, 'iam.users.manage', $hqId);
+        $this->scopeAuthorizer->assertTarget($actor, $userId, 'iam.users.manage');
         return $this->transactions->run(function () use ($actor, $userId, $hqId, $correlationId): int {
             $user = $this->users->findTenantUserForUpdate($hqId, $userId);
             $this->assertTenantUser($user, $hqId);

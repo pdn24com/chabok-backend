@@ -54,11 +54,26 @@ final class DeterministicPricingCalculatorTest extends TestCase
 
         self::assertSame(60000, $result['lines'][0]['amount']);
         self::assertSame([
-            'range_from' => null, 'range_to' => null, 'declared_value_basis' => 290000000,
+            'service_tariff_version_id' => null, 'incremental_step' => null,
+            'range_from' => null, 'range_to' => null, 'incremental_step_kg' => null, 'base_amount' => null,
+            'declared_value_basis' => 290000000,
             'percentage_bps' => 2, 'raw_amount' => 58000,
             'amount_rounding_mode' => 'CEIL', 'amount_rounding_step' => 10000,
             'final_amount' => 60000,
         ], $result['lines'][0]['explanation']);
+    }
+
+    /** @return array<string,mixed> */
+    public function test_tax_excludes_non_taxable_lines_without_changing_surcharge_percentage_bases(): void
+    {
+        $base = $this->rule('base', 'BASE_FREIGHT', 'BASE', 'FIXED', fixed: 1000, priority: 10);
+        $insurance = [...$this->rule('insurance', 'INSURANCE', 'SURCHARGE', 'FIXED', fixed: 500, priority: 20), 'taxable' => false];
+        $fuel = $this->rule('fuel', 'FUEL_SURCHARGE', 'SURCHARGE', 'PERCENT', percentage: 1000, bases: ['BASE_FREIGHT', 'INSURANCE'], priority: 30);
+        $tax = $this->rule('tax', 'TAX', 'TAX', 'PERCENT', percentage: 1000, bases: ['BASE_FREIGHT', 'INSURANCE', 'FUEL_SURCHARGE'], priority: 40);
+        $result = (new DeterministicCalculator())->calculate([$base, $insurance, $fuel, $tax], []);
+        self::assertSame(150, $result['lines'][2]['amount']);
+        self::assertSame(115, $result['tax_amount']);
+        self::assertSame(1765, $result['total_amount']);
     }
 
     /** @return array<string,mixed> */
