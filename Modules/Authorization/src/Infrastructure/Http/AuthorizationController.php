@@ -27,6 +27,12 @@ final readonly class AuthorizationController
         return ApiResponder::success($request, $this->authorization->accessibleNodes($this->principal($request)));
     }
 
+    public function assignmentOptions(Request $request): JsonResponse
+    {
+        $input = $request->validate(['role_id' => ['sometimes', 'nullable', 'uuid']]);
+        return ApiResponder::success($request, $this->authorization->assignmentOptions($this->principal($request), $input['role_id'] ?? null));
+    }
+
     public function roles(Request $request): JsonResponse
     {
         return ApiResponder::success($request, $this->authorization->listRoles($this->principal($request)));
@@ -154,6 +160,16 @@ final readonly class AuthorizationController
             $input['assignments'],
             $this->correlationId($request),
         ), status: 201);
+    }
+
+    public function updateAssignment(Request $request, string $userId, string $assignmentId): JsonResponse
+    {
+        StrictPayload::assertOnly($request, ['role_id', 'scope_type', 'scope_id', 'includes_descendants']);
+        $input = $request->validate([
+            'role_id' => ['required', 'uuid'], 'scope_type' => ['required', 'in:TENANT,AREA,NODE'],
+            'scope_id' => ['sometimes', 'nullable', 'uuid'], 'includes_descendants' => ['required', 'boolean'],
+        ]);
+        return ApiResponder::success($request, $this->authorization->updateAssignment($this->principal($request), $userId, $assignmentId, $input, $this->correlationId($request)));
     }
 
     public function revokeAssignment(Request $request, string $userId, string $assignmentId): JsonResponse

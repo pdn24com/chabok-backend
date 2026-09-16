@@ -19,7 +19,7 @@ final readonly class FleetAdministrationController
 
     public function drivers(Request $request): JsonResponse
     {
-        $filters = $request->validate($this->listRules() + ['capability' => ['sometimes', 'nullable', 'in:PICKUP,LINEHAUL,DELIVERY']]);
+        $filters = $request->validate($this->listRules() + ['unlinked' => ['sometimes', 'boolean'], 'capability' => ['sometimes', 'nullable', 'in:PICKUP,LINEHAUL,DELIVERY']]);
         $page = $this->fleet->drivers($this->principal($request), $filters);
 
         return ApiResponder::success($request, $page->items(), $this->pagination($page));

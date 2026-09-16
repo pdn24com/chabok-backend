@@ -29,7 +29,7 @@ final class NetworkAdministrationServiceTest extends TestCase
         DB::table('cities')->insert(['city_id' => $cityId, 'province_id' => $provinceId, 'legacy_city_code' => '10712', 'name_fa' => 'تبریز', 'normalized_name' => 'tabriz', 'is_active' => true, 'created_at' => now(), 'updated_at' => now()]);
         $resolver = new class implements AuthorizationContextResolver {
             /** @var list<string> */ public array $permissions = ['network.area.view', 'network.area.manage', 'network.node.view', 'network.node.manage'];
-            public function resolve(AuthenticatedPrincipal $principal): array { return ['permissions' => $this->permissions, 'module_entitlements' => [['module_code' => 'LiveOperations', 'status' => 'ENABLED']]]; }
+            public function resolve(AuthenticatedPrincipal $principal): array { return ['hq_id' => $principal->hqId, 'permission_scopes' => array_fill_keys($this->permissions, [['scope_type' => 'TENANT', 'scope_id' => null, 'includes_descendants' => false]]), 'permissions' => $this->permissions, 'module_entitlements' => [['module_code' => 'LiveOperations', 'status' => 'ENABLED']]]; }
         };
         app()->instance(AuthorizationContextResolver::class, $resolver);
         app()->instance(OutboxWriter::class, new class implements OutboxWriter {
@@ -68,12 +68,12 @@ final class NetworkAdministrationServiceTest extends TestCase
         DB::table('hq_tenants')->insert(['hq_id' => $foreignHqId, 'hq_code' => 'HQ-FOREIGN', 'hq_title' => 'Foreign HQ', 'status' => 'ACTIVE', 'created_at' => now(), 'updated_at' => now()]);
         DB::table('users')->insert(['user_id' => $foreignUserId, 'hq_id' => $foreignHqId, 'username' => 'foreign.admin', 'normalized_username' => 'foreign.admin', 'first_name' => 'Foreign', 'last_name' => 'Admin', 'display_name' => 'Foreign Admin', 'status' => 'ACTIVE', 'must_change_password' => false, 'created_at' => now(), 'updated_at' => now()]);
         $foreignActor = new AuthenticatedPrincipal($foreignUserId, (string) Str::uuid(), $foreignHqId, false);
-        foreach ([fn () => $service->area($foreignActor, $area['area_id']), fn () => $service->node($foreignActor, $node['node_id'])] as $foreignRead) {
+        foreach ([[fn () => $service->area($foreignActor, $area['area_id']), ApiErrorCode::ResourceNotFound], [fn () => $service->node($foreignActor, $node['node_id']), ApiErrorCode::ScopeAccessDenied]] as [$foreignRead, $expectedCode]) {
             try {
                 $foreignRead();
                 $this->fail('A foreign HQ must not read Area or Node resources.');
             } catch (ApiException $exception) {
-                $this->assertSame(ApiErrorCode::ResourceNotFound, $exception->errorCode);
+                $this->assertSame($expectedCode, $exception->errorCode);
             }
         }
 

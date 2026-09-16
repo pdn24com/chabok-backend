@@ -24,6 +24,7 @@ final readonly class UserController
             'status' => ['sometimes', 'nullable', 'in:INVITED,ACTIVE,SUSPENDED,DEACTIVATED'],
             'role_code' => ['sometimes', 'nullable', 'string'],
             'scope_id' => ['sometimes', 'nullable', 'uuid'],
+            'node_id' => ['sometimes', 'nullable', 'uuid'],
         ]);
         $paginator = $this->users->list(
             $this->principal($request),
@@ -31,6 +32,7 @@ final readonly class UserController
             (int) ($query['page_size'] ?? 25),
             $query['search'] ?? null,
             $query['status'] ?? null,
+            $query['node_id'] ?? null,
         );
 
         return ApiResponder::paginated($request, $paginator, fn ($row) => $this->users->publicUser((array) $row));
@@ -69,7 +71,7 @@ final readonly class UserController
     {
         StrictPayload::assertOnly($request, [
             'creation_mode', 'username', 'mobile', 'email', 'first_name',
-            'last_name', 'temporary_password', 'assignments',
+            'last_name', 'temporary_password', 'assignments', 'operational_profile',
         ]);
         $input = $request->validate([
             'creation_mode' => ['required', 'in:DIRECT_ACTIVE,SMS_INVITATION,EMAIL_INVITATION'],
@@ -79,12 +81,12 @@ final readonly class UserController
             'first_name' => ['required', 'string', 'max:120'],
             'last_name' => ['required', 'string', 'max:120'],
             'temporary_password' => ['sometimes', 'string'],
-            'assignments' => ['required', 'array', 'min:1'],
+            'assignments' => ['present', 'array', 'max:50'],
             'assignments.*.role_id' => ['required', 'uuid'],
             'assignments.*.scope_type' => ['required', 'in:PLATFORM,TENANT,AREA,NODE,VENDOR,VENDOR_BRANCH,SELF'],
             'assignments.*.scope_id' => ['sometimes', 'nullable', 'uuid'],
             'assignments.*.includes_descendants' => ['required', 'boolean'],
-        ]);
+        ] + OperationalProfileRules::rules((array) $request->input('operational_profile', [])));
         StrictPayload::assertItemsOnly(
             $input['assignments'],
             ['role_id', 'scope_type', 'scope_id', 'includes_descendants'],
@@ -101,6 +103,13 @@ final readonly class UserController
             $this->users->create($this->principal($request), $input, $this->correlationId($request)),
             status: 201,
         );
+    }
+
+    public function operationalProfile(Request $request, string $userId): JsonResponse
+    {
+        StrictPayload::assertOnly($request, ['operational_profile']);
+        $input = $request->validate(['operational_profile' => ['required', 'array:kind,mode,existing_id,expected_version,role_id,driver,node']] + OperationalProfileRules::rules((array) $request->input('operational_profile', [])));
+        return ApiResponder::success($request, $this->users->attachOperationalProfile($this->principal($request), $userId, $input['operational_profile'], $this->correlationId($request)));
     }
 
     public function show(Request $request, string $userId): JsonResponse

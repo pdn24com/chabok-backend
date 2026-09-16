@@ -509,10 +509,12 @@ final readonly class ConsignmentService
         if (! in_array($permission, $context['permissions'], true)) {
             throw new ApiException(ApiErrorCode::PermissionDenied, 403, 'Access denied.');
         }
-        if (! in_array($nodeId, $context['accessible_node_ids'], true)) {
+        if (! in_array($nodeId, \Modules\Foundation\Application\ScopedAccess::nodes($context, $permission), true)) {
             throw new ApiException(ApiErrorCode::ScopeAccessDenied, 403, 'Access denied.');
         }
 
+        $context['accessible_node_ids'] = \Modules\Foundation\Application\ScopedAccess::nodes($context, $permission);
+        $context['acting_node_id'] = $nodeId;
         return $context;
     }
 
@@ -574,7 +576,7 @@ final readonly class ConsignmentService
             ->where('ov.service_offering_version_id', $row['service_offering_version_id'])
             ->where(fn (Builder $query) => $query->whereNull('ov.hq_id')->orWhere('ov.hq_id', $hqId))
             ->first(['ov.labels as offering_labels', 'stv.labels as service_type_labels', 'smv.labels as shipping_method_labels']);
-        $parcels = in_array('parcel.view', $context['permissions'], true)
+        $parcels = (in_array('parcel.view', $context['permissions'], true) && in_array($context['acting_node_id'], \Modules\Foundation\Application\ScopedAccess::nodes($context, 'parcel.view'), true))
             ? DB::table('parcels')->where(['hq_id' => $hqId, 'consignment_id' => $id])
                 ->orderBy('parcel_number')->get()->map(fn ($parcel): array => [
                     'parcel_id' => (string) $parcel->parcel_id,
@@ -650,7 +652,7 @@ final readonly class ConsignmentService
                 'note' => $event->note,
                 'created_at' => $this->time($event->created_at),
             ])->all();
-        $auditTimeline = in_array('audit.view', $context['permissions'], true)
+        $auditTimeline = (in_array('audit.view', $context['permissions'], true) && in_array($context['acting_node_id'], \Modules\Foundation\Application\ScopedAccess::nodes($context, 'audit.view'), true))
             ? DB::table('audit_events')->where([
                 'hq_id' => $hqId,
                 'target_type' => 'CONSIGNMENT',
@@ -777,7 +779,7 @@ final readonly class ConsignmentService
         });
         $catalogSnapshot = empty($row['catalog_snapshot']) ? [] : json_decode((string) $row['catalog_snapshot'], true);
         $base = $this->listItem($row);
-        $editable = in_array('consignment.edit', $context['permissions'], true)
+        $editable = (in_array('consignment.edit', $context['permissions'], true) && in_array($context['acting_node_id'], \Modules\Foundation\Application\ScopedAccess::nodes($context, 'consignment.edit'), true))
             && in_array($row['current_status'], (array) config('chabok.consignment.editable_statuses'), true);
 
         return [

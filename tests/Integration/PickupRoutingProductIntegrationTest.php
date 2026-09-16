@@ -147,7 +147,8 @@ final class PickupRoutingProductIntegrationTest extends MySqlRedisTestCase
 
         $foreign = $this->fixture('CROSS-HQ');
         $this->authorization->accessibleNodeIds = [$fixture['nodes'][0]];
-        $this->expectApi(ApiErrorCode::ResourceNotFound, fn () => $service->get($foreign['actor'], $fixture['nodes'][0], $task['pickup_task_id']));
+        // Tenant-qualified scope resolution denies the foreign node before loading its task.
+        $this->expectApi(ApiErrorCode::ScopeAccessDenied, fn () => $service->get($foreign['actor'], $fixture['nodes'][0], $task['pickup_task_id']));
     }
 
     public function test_pickup_audit_and_outbox_roll_back_atomically_when_event_write_fails(): void
@@ -285,6 +286,8 @@ final class MutableOperationsAuthorization implements AuthorizationContextResolv
         return [
             'module_entitlements' => array_map(fn (string $code): array => ['module_code' => $code, 'status' => 'ENABLED'], $this->entitlements),
             'permissions' => $this->permissions,
+            'hq_id' => $principal->hqId,
+            'permission_scopes' => array_fill_keys($this->permissions, array_map(fn ($id) => ['scope_type' => 'NODE', 'scope_id' => $id, 'includes_descendants' => false], $this->accessibleNodeIds)),
             'accessible_node_ids' => $this->accessibleNodeIds,
         ];
     }

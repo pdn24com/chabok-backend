@@ -32,8 +32,9 @@ final readonly class FleetAdministrationService
     public function drivers(AuthenticatedPrincipal $actor, array $filters): LengthAwarePaginator
     {
         $this->access($actor, 'fleet.driver.view');
-        $query = DB::table('drivers as d')->where('d.hq_id', $actor->hqId);
+        $query = DB::table('drivers as d')->where('d.hq_id', $actor->hqId)->whereIn('d.home_node_id', $this->scopeNodes($actor, 'fleet.driver.view'));
         $this->applyCommonFilters($query, $filters, 'd');
+        if ($filters['unlinked'] ?? false) $query->whereNull('d.user_id');
         if (($filters['search'] ?? '') !== '') {
             $search = '%'.addcslashes(trim((string) $filters['search']), '%_\\').'%';
             $query->where(fn ($q) => $q->where('d.driver_code', 'like', $search)
@@ -63,6 +64,7 @@ final readonly class FleetAdministrationService
         $row = DB::table('drivers')->where(['hq_id' => $actor->hqId, 'driver_id' => $driverId])->first();
         if ($row === null) throw new ApiException(ApiErrorCode::ResourceNotFound, 404, 'Driver not found.');
 
+        $this->assertScopeNode($actor, (string) $row->home_node_id, 'fleet.driver.view');
         return $this->driver((array) $row, DB::table('driver_capabilities')->where('driver_id', $driverId)
             ->orderByRaw("CASE capability WHEN 'PICKUP' THEN 1 WHEN 'LINEHAUL' THEN 2 WHEN 'DELIVERY' THEN 3 END")
             ->pluck('capability')->map(fn ($value): string => (string) $value)->all());
@@ -74,6 +76,7 @@ final readonly class FleetAdministrationService
         $this->access($actor, 'fleet.driver.manage');
         $capabilities = $this->capabilities((array) $input['capabilities']);
         $this->activeNode($actor, (string) $input['home_node_id']);
+        $this->assertScopeNode($actor, (string) $input['home_node_id'], 'fleet.driver.manage');
         $this->availableUser($actor, $input['user_id'] ?? null);
 
         try {
@@ -118,6 +121,8 @@ final readonly class FleetAdministrationService
             return $this->transactions->run(function () use ($actor, $driverId, $input, $capabilities, $correlationId): array {
                 $row = DB::table('drivers')->where(['hq_id' => $actor->hqId, 'driver_id' => $driverId])->lockForUpdate()->first();
                 if ($row === null) throw new ApiException(ApiErrorCode::ResourceNotFound, 404, 'Driver not found.');
+                $this->assertScopeNode($actor, (string) $row->home_node_id, 'fleet.driver.manage');
+                if (isset($input['home_node_id'])) $this->assertScopeNode($actor, $input['home_node_id'], 'fleet.driver.manage');
                 $expected = (int) $input['expected_version'];
                 if ((int) $row->version !== $expected) {
                     throw new ApiException(ApiErrorCode::VersionConflict, 409, 'The Driver changed since it was loaded.', details: ['current_version' => (int) $row->version]);
@@ -153,7 +158,7 @@ final readonly class FleetAdministrationService
     public function vehicles(AuthenticatedPrincipal $actor, array $filters): LengthAwarePaginator
     {
         $this->access($actor, 'fleet.vehicle.view');
-        $query = DB::table('vehicles as v')->where('v.hq_id', $actor->hqId);
+        $query = DB::table('vehicles as v')->where('v.hq_id', $actor->hqId)->whereIn('v.home_node_id', $this->scopeNodes($actor, 'fleet.vehicle.view'));
         $this->applyCommonFilters($query, $filters, 'v');
         if (($filters['search'] ?? '') !== '') {
             $search = '%'.addcslashes(trim((string) $filters['search']), '%_\\').'%';
@@ -176,6 +181,7 @@ final readonly class FleetAdministrationService
         $row = DB::table('vehicles')->where(['hq_id' => $actor->hqId, 'vehicle_id' => $vehicleId])->first();
         if ($row === null) throw new ApiException(ApiErrorCode::ResourceNotFound, 404, 'Vehicle not found.');
 
+        $this->assertScopeNode($actor, (string) $row->home_node_id, 'fleet.vehicle.view');
         return $this->vehicle((array) $row);
     }
 
@@ -184,6 +190,7 @@ final readonly class FleetAdministrationService
     {
         $this->access($actor, 'fleet.vehicle.manage');
         $this->activeNode($actor, (string) $input['home_node_id']);
+        $this->assertScopeNode($actor, (string) $input['home_node_id'], 'fleet.vehicle.manage');
 
         try {
             return $this->transactions->run(function () use ($actor, $input, $correlationId): array {
@@ -226,6 +233,8 @@ final readonly class FleetAdministrationService
             return $this->transactions->run(function () use ($actor, $vehicleId, $input, $correlationId): array {
                 $row = DB::table('vehicles')->where(['hq_id' => $actor->hqId, 'vehicle_id' => $vehicleId])->lockForUpdate()->first();
                 if ($row === null) throw new ApiException(ApiErrorCode::ResourceNotFound, 404, 'Vehicle not found.');
+                $this->assertScopeNode($actor, (string) $row->home_node_id, 'fleet.vehicle.manage');
+                if (isset($input['home_node_id'])) $this->assertScopeNode($actor, $input['home_node_id'], 'fleet.vehicle.manage');
                 $expected = (int) $input['expected_version'];
                 if ((int) $row->version !== $expected) {
                     throw new ApiException(ApiErrorCode::VersionConflict, 409, 'The Vehicle changed since it was loaded.', details: ['current_version' => (int) $row->version]);
@@ -265,6 +274,16 @@ final readonly class FleetAdministrationService
             throw new ApiException(ApiErrorCode::EntitlementDisabled, 403, 'Access denied.');
         }
         if (! in_array($permission, $context['permissions'], true)) throw new ApiException(ApiErrorCode::PermissionDenied, 403, 'Access denied.');
+    }
+
+    private function scopeNodes(AuthenticatedPrincipal $actor, string $permission): array
+    {
+        return \Modules\Foundation\Application\ScopedAccess::nodes($this->authorization->resolve($actor), $permission, false);
+    }
+
+    private function assertScopeNode(AuthenticatedPrincipal $actor, string $nodeId, string $permission): void
+    {
+        if (! in_array($nodeId, $this->scopeNodes($actor, $permission), true)) throw new ApiException(ApiErrorCode::ScopeAccessDenied, 403, 'Access denied.');
     }
 
     private function activeNode(AuthenticatedPrincipal $actor, string $nodeId): void

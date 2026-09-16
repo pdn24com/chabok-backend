@@ -40,7 +40,7 @@ final readonly class NetworkAdministrationController
 
     public function nodes(Request $request): JsonResponse
     {
-        $filters = $request->validate(['search' => ['sometimes', 'nullable', 'string', 'max:200'], 'status' => ['sometimes', 'nullable', 'in:ACTIVE,INACTIVE'], 'area_id' => ['sometimes', 'nullable', 'uuid'], 'node_type' => ['sometimes', 'nullable', 'in:BRANCH,HUB,GATEWAY'], 'page' => ['sometimes', 'integer', 'min:1'], 'per_page' => ['sometimes', 'integer', 'min:1', 'max:100']]);
+        $filters = $request->validate(['search' => ['sometimes', 'nullable', 'string', 'max:200'], 'status' => ['sometimes', 'nullable', 'in:ACTIVE,INACTIVE'], 'area_id' => ['sometimes', 'nullable', 'uuid'], 'node_type' => ['sometimes', 'nullable', 'in:BRANCH,HUB,GATEWAY,AGENT'], 'page' => ['sometimes', 'integer', 'min:1'], 'per_page' => ['sometimes', 'integer', 'min:1', 'max:100']]);
         return ApiResponder::paginated($request, $this->network->nodes($this->actor($request), $filters), fn ($row) => $this->network->nodeResource($row));
     }
 
@@ -65,7 +65,7 @@ final readonly class NetworkAdministrationController
         $required = $creating ? 'required' : 'sometimes';
         $input = $request->validate([
             'area_id' => [$required, 'uuid'], 'node_code' => [$creating ? 'required' : 'prohibited', 'string', 'max:80', 'regex:/^[A-Za-z0-9][A-Za-z0-9._-]*$/'],
-            'node_title' => [$required, 'string', 'max:200'], 'node_type' => [$required, 'in:BRANCH,HUB,GATEWAY'],
+            'node_title' => [$required, 'string', 'max:200'], 'node_type' => [$required, 'in:BRANCH,HUB,GATEWAY,AGENT'],
             'capabilities' => [$required, 'array'], 'capabilities.*' => ['string', 'distinct', 'in:PICKUP,CONSOLIDATION,GATEWAY,LINEHAUL,DELIVERY,CUSTOMER_HANDOFF'],
             'address' => [$required, 'array'], 'address.country_code' => [$required, 'in:IR'], 'address.province_id' => ['sometimes', 'nullable', 'uuid'], 'address.city_id' => ['sometimes', 'nullable', 'uuid'],
             'address.postal_code' => ['sometimes', 'nullable', 'regex:/^[0-9]{10}$/'], 'address.line' => ['sometimes', 'nullable', 'string', 'max:1000'],

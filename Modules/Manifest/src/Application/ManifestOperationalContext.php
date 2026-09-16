@@ -34,7 +34,7 @@ final readonly class ManifestOperationalContext
             'transition_contracts' => $this->transitionContracts(),
             'contexts' => $contexts,
             'drivers' => in_array('driver.view', $authorization['permissions'] ?? [], true)
-                ? $this->drivers((string) $actor->hqId, $accessibleNodeIds)
+                ? $this->drivers((string) $actor->hqId, \Modules\Foundation\Application\ScopedAccess::nodes($authorization, 'driver.view'))
                 : [],
             'vehicles' => $this->vehicles((string) $actor->hqId, $nodeId),
         ];

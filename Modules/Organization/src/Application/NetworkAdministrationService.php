@@ -17,7 +17,7 @@ use Modules\Foundation\Domain\AuthenticatedPrincipal;
 
 final readonly class NetworkAdministrationService
 {
-    private const NODE_TYPES = ['BRANCH', 'HUB', 'GATEWAY'];
+    private const NODE_TYPES = ['BRANCH', 'HUB', 'GATEWAY', 'AGENT'];
     private const CAPABILITIES = ['PICKUP', 'CONSOLIDATION', 'GATEWAY', 'LINEHAUL', 'DELIVERY', 'CUSTOMER_HANDOFF'];
 
     public function __construct(
@@ -33,7 +33,7 @@ final readonly class NetworkAdministrationService
         $hqId = $this->access($actor, 'network.area.view');
         $query = DB::table('areas as a')->where('a.hq_id', $hqId)
             ->leftJoin('area_hierarchies as h', fn ($join) => $join->on('h.hq_id', '=', 'a.hq_id')->on('h.child_area_id', '=', 'a.area_id'))
-            ->select(['a.*', 'h.parent_area_id']);
+            ->select(['a.*', 'h.parent_area_id'])->whereIn('a.area_id', $this->scopeAreas($actor, 'network.area.view'));
         if (($filters['search'] ?? '') !== '') {
             $search = '%'.addcslashes((string) $filters['search'], '%_\\').'%';
             $query->where(fn ($q) => $q->where('a.area_code', 'like', $search)->orWhere('a.area_title', 'like', $search));
@@ -48,6 +48,7 @@ final readonly class NetworkAdministrationService
     public function area(AuthenticatedPrincipal $actor, string $areaId): array
     {
         $hqId = $this->access($actor, 'network.area.view');
+        $this->assertAreaScope($actor, 'network.area.view', $areaId);
         return $this->areaResource($this->areaRow($hqId, $areaId));
     }
 
@@ -55,6 +56,7 @@ final readonly class NetworkAdministrationService
     public function createArea(AuthenticatedPrincipal $actor, array $input, string $correlationId): array
     {
         $hqId = $this->access($actor, 'network.area.manage');
+        $this->assertAreaScope($actor, 'network.area.manage', $input['parent_area_id'] ?? null, true);
         return $this->transactions->run(function () use ($actor, $hqId, $input, $correlationId): array {
             if (DB::table('areas')->where(['hq_id' => $hqId, 'area_code' => $input['area_code']])->exists()) {
                 throw new ApiException(ApiErrorCode::Conflict, 409, 'Area code already exists.');
@@ -76,6 +78,8 @@ final readonly class NetworkAdministrationService
     public function updateArea(AuthenticatedPrincipal $actor, string $areaId, array $input, string $correlationId): array
     {
         $hqId = $this->access($actor, 'network.area.manage');
+        $this->assertAreaScope($actor, 'network.area.manage', $areaId, true);
+        if (array_key_exists('parent_area_id', $input)) $this->assertAreaScope($actor, 'network.area.manage', $input['parent_area_id'], true);
         return $this->transactions->run(function () use ($actor, $hqId, $areaId, $input, $correlationId): array {
             $row = DB::table('areas')->where(['hq_id' => $hqId, 'area_id' => $areaId])->lockForUpdate()->first();
             if ($row === null) throw new ApiException(ApiErrorCode::ResourceNotFound, 404, 'Resource not found.');
@@ -105,7 +109,7 @@ final readonly class NetworkAdministrationService
     public function nodes(AuthenticatedPrincipal $actor, array $filters): LengthAwarePaginator
     {
         $hqId = $this->access($actor, 'network.node.view');
-        $query = DB::table('nodes')->where('hq_id', $hqId);
+        $query = DB::table('nodes')->where('hq_id', $hqId)->whereIn('node_id', \Modules\Foundation\Application\ScopedAccess::nodes($this->authorization->resolve($actor), 'network.node.view', false));
         if (($filters['search'] ?? '') !== '') {
             $search = '%'.addcslashes((string) $filters['search'], '%_\\').'%';
             $query->where(fn ($q) => $q->where('node_code', 'like', $search)->orWhere('node_title', 'like', $search));
@@ -120,6 +124,7 @@ final readonly class NetworkAdministrationService
     public function node(AuthenticatedPrincipal $actor, string $nodeId): array
     {
         $hqId = $this->access($actor, 'network.node.view');
+        $this->assertNodeScope($actor, 'network.node.view', $nodeId);
         $row = DB::table('nodes')->where(['hq_id' => $hqId, 'node_id' => $nodeId])->first();
         if ($row === null) throw new ApiException(ApiErrorCode::ResourceNotFound, 404, 'Resource not found.');
         return $this->nodeResource($row);
@@ -129,6 +134,7 @@ final readonly class NetworkAdministrationService
     public function createNode(AuthenticatedPrincipal $actor, array $input, string $correlationId): array
     {
         $hqId = $this->access($actor, 'network.node.manage');
+        $this->assertAreaScope($actor, 'network.node.manage', $input['area_id']);
         return $this->transactions->run(function () use ($actor, $hqId, $input, $correlationId): array {
             $this->validateNodeInput($hqId, $input);
             if (DB::table('nodes')->where(['hq_id' => $hqId, 'node_code' => $input['node_code']])->exists()) {
@@ -149,6 +155,8 @@ final readonly class NetworkAdministrationService
     public function updateNode(AuthenticatedPrincipal $actor, string $nodeId, array $input, string $correlationId): array
     {
         $hqId = $this->access($actor, 'network.node.manage');
+        $this->assertNodeScope($actor, 'network.node.manage', $nodeId);
+        if (isset($input['area_id'])) $this->assertAreaScope($actor, 'network.node.manage', $input['area_id']);
         return $this->transactions->run(function () use ($actor, $hqId, $nodeId, $input, $correlationId): array {
             $row = DB::table('nodes')->where(['hq_id' => $hqId, 'node_id' => $nodeId])->lockForUpdate()->first();
             if ($row === null) throw new ApiException(ApiErrorCode::ResourceNotFound, 404, 'Resource not found.');
@@ -170,6 +178,29 @@ final readonly class NetworkAdministrationService
             $this->record($actor, 'network.node.updated', 'NODE', $nodeId, $correlationId, $before, $after);
             return $after;
         });
+    }
+
+    private function scopeAreas(AuthenticatedPrincipal $actor, string $permission): array
+    {
+        $scopes = \Modules\Foundation\Application\ScopedAccess::scopes($this->authorization->resolve($actor), $permission);
+        return DB::table('areas')->where('hq_id', $actor->hqId)->pluck('area_id')->filter(
+            fn ($id) => \Modules\Foundation\Application\ScopedAccess::covers($scopes, $actor->hqId, 'AREA', $id)
+        )->values()->all();
+    }
+
+    private function assertAreaScope(AuthenticatedPrincipal $actor, string $permission, ?string $areaId, bool $descendants = false): void
+    {
+        $scopes = \Modules\Foundation\Application\ScopedAccess::scopes($this->authorization->resolve($actor), $permission);
+        if (! \Modules\Foundation\Application\ScopedAccess::covers($scopes, $actor->hqId, $areaId === null ? 'TENANT' : 'AREA', $areaId, $descendants)) {
+            throw new ApiException(ApiErrorCode::ScopeAccessDenied, 403, 'Access denied.');
+        }
+    }
+
+    private function assertNodeScope(AuthenticatedPrincipal $actor, string $permission, string $nodeId): void
+    {
+        if (! in_array($nodeId, \Modules\Foundation\Application\ScopedAccess::nodes($this->authorization->resolve($actor), $permission, false), true)) {
+            throw new ApiException(ApiErrorCode::ScopeAccessDenied, 403, 'Access denied.');
+        }
     }
 
     private function access(AuthenticatedPrincipal $actor, string $permission): string

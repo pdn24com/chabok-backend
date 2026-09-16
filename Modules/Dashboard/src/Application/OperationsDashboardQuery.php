@@ -28,6 +28,7 @@ final readonly class OperationsDashboardQuery
         }
 
         $context = $this->authorization->resolve($actor);
+        $context['acting_node_id'] = $nodeId;
         $this->assertDashboardAccess($context, $nodeId);
         $node = DB::table('nodes')->where([
             'hq_id' => $actor->hqId,
@@ -170,7 +171,7 @@ final readonly class OperationsDashboardQuery
                 : ApiErrorCode::PermissionDenied;
             throw new ApiException($code, 403, 'Access denied.');
         }
-        if (! in_array($nodeId, $context['accessible_node_ids'], true)) {
+        if (! in_array($nodeId, \Modules\Foundation\Application\ScopedAccess::nodes($context, 'branch_panel.access'), true)) {
             throw new ApiException(ApiErrorCode::ScopeAccessDenied, 403, 'Access denied.');
         }
     }
@@ -189,7 +190,7 @@ final readonly class OperationsDashboardQuery
         if (! $enabled) {
             return ['available' => false, 'reason' => 'ENTITLEMENT_DISABLED'];
         }
-        if (! in_array($permission, $context['permissions'], true)) {
+        if (! in_array($permission, $context['permissions'], true) || ! in_array($context['acting_node_id'] ?? '', \Modules\Foundation\Application\ScopedAccess::nodes($context, $permission), true)) {
             return ['available' => false, 'reason' => 'PERMISSION_DENIED'];
         }
 

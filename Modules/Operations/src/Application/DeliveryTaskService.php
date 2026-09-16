@@ -325,6 +325,6 @@ final readonly class DeliveryTaskService
         $context = $this->authorization->resolve($actor);
         if (! collect($context['module_entitlements'])->contains(fn ($entry) => $entry['module_code'] === 'LiveOperations' && $entry['status'] === 'ENABLED')) throw new ApiException(ApiErrorCode::EntitlementDisabled, 403, 'Access denied.');
         if (! in_array($permission, $context['permissions'], true)) throw new ApiException(ApiErrorCode::PermissionDenied, 403, 'Access denied.');
-        if (! in_array($nodeId, $context['accessible_node_ids'], true)) throw new ApiException(ApiErrorCode::ScopeAccessDenied, 403, 'Access denied.');
+        if (! in_array($nodeId, \Modules\Foundation\Application\ScopedAccess::nodes($context, $permission), true)) throw new ApiException(ApiErrorCode::ScopeAccessDenied, 403, 'Access denied.');
     }
 }

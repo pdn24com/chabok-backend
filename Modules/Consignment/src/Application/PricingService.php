@@ -157,7 +157,7 @@ final readonly class PricingService
         if (! in_array($permission, $context['permissions'], true)) {
             throw new ApiException(ApiErrorCode::PermissionDenied, 403, 'Access denied.');
         }
-        if (! in_array($nodeId, $context['accessible_node_ids'], true)) {
+        if (! in_array($nodeId, \Modules\Foundation\Application\ScopedAccess::nodes($context, $permission), true)) {
             throw new ApiException(ApiErrorCode::ScopeAccessDenied, 403, 'Access denied.');
         }
     }

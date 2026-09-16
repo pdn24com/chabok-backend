@@ -135,7 +135,7 @@ final readonly class PickupTaskService
         if ($task === null) throw new ApiException(ApiErrorCode::ResourceNotFound, 404, 'Resource not found.');
         $driverUser = DB::table('drivers')->where(['hq_id' => $actor->hqId, 'driver_id' => $task->assigned_driver_id])->value('user_id');
         if ((string) $driverUser === $actor->userId) return;
-        if (! in_array('live_operations.intervene', $context['permissions'], true)) throw new ApiException(ApiErrorCode::PermissionDenied, 403, 'Access denied.');
+        if (! in_array($nodeId, \Modules\Foundation\Application\ScopedAccess::nodes($context, 'live_operations.intervene'), true)) throw new ApiException(ApiErrorCode::PermissionDenied, 403, 'Access denied.');
     }
     private function access(AuthenticatedPrincipal $actor, string $nodeId, string $permission): void
     {
@@ -143,7 +143,7 @@ final readonly class PickupTaskService
         $context = $this->authorization->resolve($actor);
         if (! collect($context['module_entitlements'])->contains(fn ($e) => $e['module_code'] === 'Pickup' && $e['status'] === 'ENABLED')) throw new ApiException(ApiErrorCode::EntitlementDisabled, 403, 'Access denied.');
         if (! in_array($permission, $context['permissions'], true)) throw new ApiException(ApiErrorCode::PermissionDenied, 403, 'Access denied.');
-        if (! in_array($nodeId, $context['accessible_node_ids'], true)) throw new ApiException(ApiErrorCode::ScopeAccessDenied, 403, 'Access denied.');
+        if (! in_array($nodeId, \Modules\Foundation\Application\ScopedAccess::nodes($context, $permission), true)) throw new ApiException(ApiErrorCode::ScopeAccessDenied, 403, 'Access denied.');
     }
     /** @return array<string,mixed> */
     private function item(object $row): array

@@ -19,7 +19,7 @@ use Modules\Foundation\Domain\AuthenticatedPrincipal;
 
 final readonly class AuthorizationService implements AuthorizationContextResolver
 {
-    private const CACHE_TTL = 300;
+    private const CACHE_TTL = 60;
 
     public function __construct(
         private TransactionManager $transactions,
@@ -35,7 +35,7 @@ final readonly class AuthorizationService implements AuthorizationContextResolve
         $cached = Redis::connection('cache')->get($key);
         if (is_string($cached)) {
             $decoded = json_decode($cached, true, 512, JSON_THROW_ON_ERROR);
-            if (array_key_exists('menu_keys', $decoded)) return $decoded;
+            if (array_key_exists('permission_scopes', $decoded)) return $decoded;
         }
 
         $user = DB::table('users')->where('user_id', $principal->userId)->first();
@@ -65,7 +65,7 @@ final readonly class AuthorizationService implements AuthorizationContextResolve
                 ->join('permissions as p', 'p.permission_id', '=', 'rp.permission_id')
                 ->whereIn('rp.role_id', $roleIds)
                 ->where('p.status', 'ACTIVE')
-                ->select(['p.permission_code', 'p.module_code'])
+                ->select(['rp.role_id', 'p.permission_code', 'p.module_code'])
                 ->distinct()->get();
 
         $entitlements = $principal->hqId === null
@@ -97,6 +97,16 @@ final readonly class AuthorizationService implements AuthorizationContextResolve
         $tenant = $principal->hqId === null ? null : DB::table('hq_tenants')->where('hq_id', $principal->hqId)
             ->first(['hq_id', 'hq_code', 'hq_title']);
 
+        $permissionScopes = [];
+        foreach ($permissionRows as $grant) {
+            foreach ($assignments->where('role_id', $grant->role_id) as $assignment) {
+                $permissionScopes[$grant->permission_code][] = [
+                    'scope_type' => (string) $assignment->scope_type,
+                    'scope_id' => $assignment->scope_id,
+                    'includes_descendants' => (bool) $assignment->includes_descendants,
+                ];
+            }
+        }
         $context = [
             'hq_id' => $principal->hqId,
             'tenant' => $tenant === null ? null : [
@@ -108,6 +118,7 @@ final readonly class AuthorizationService implements AuthorizationContextResolve
             'role_codes' => $assignments->pluck('role_code')->map(fn ($value) => (string) $value)
                 ->unique()->sort()->values()->all(),
             'permissions' => $permissions,
+            'permission_scopes' => $permissionScopes === [] ? new \stdClass() : $permissionScopes,
             'menu_keys' => $this->navigation->effective($roleIds->all()),
             'scopes' => $scopes,
             'accessible_node_ids' => $nodes,
@@ -153,7 +164,7 @@ final readonly class AuthorizationService implements AuthorizationContextResolve
     public function accessibleNodes(AuthenticatedPrincipal $actor): array
     {
         $this->assertPermission($actor, 'node_context.view', $actor->hqId);
-        $nodeIds = $this->resolve($actor)['accessible_node_ids'];
+        $nodeIds = \Modules\Foundation\Application\ScopedAccess::nodes($this->resolve($actor), 'node_context.view');
         if ($nodeIds === []) {
             return [];
         }
@@ -172,7 +183,7 @@ final readonly class AuthorizationService implements AuthorizationContextResolve
             throw new ApiException(ApiErrorCode::TenantAccessDenied, 403, 'Access denied.');
         }
         $this->assertPermission($actor, 'node_context.switch', $actor->hqId);
-        if (! in_array($nodeId, $this->resolve($actor)['accessible_node_ids'], true)) {
+        if (! in_array($nodeId, \Modules\Foundation\Application\ScopedAccess::nodes($this->resolve($actor), 'node_context.switch'), true)) {
             throw new ApiException(ApiErrorCode::ScopeAccessDenied, 403, 'Access denied.');
         }
     }
@@ -412,6 +423,15 @@ final readonly class AuthorizationService implements AuthorizationContextResolve
         });
     }
 
+    /** Changes are append-only: revoke the old assignment and create its replacement atomically. */
+    public function updateAssignment(AuthenticatedPrincipal $actor, string $userId, string $assignmentId, array $input, string $correlationId): array
+    {
+        return $this->transactions->run(function () use ($actor, $userId, $assignmentId, $input, $correlationId): array {
+            $this->revokeAssignment($actor, $userId, $assignmentId, $correlationId);
+            return $this->createAssignments($actor, $userId, [$input], $correlationId)[0];
+        });
+    }
+
     public function revokeAssignment(
         AuthenticatedPrincipal $actor,
         string $userId,
@@ -431,7 +451,10 @@ final readonly class AuthorizationService implements AuthorizationContextResolve
             if ($assignment->status !== 'ACTIVE') {
                 throw new ApiException(ApiErrorCode::ValidationError, 422, 'The assignment is not active.');
             }
-            $this->assertScopeDelegable($actor, (string) $assignment->scope_type, $assignment->scope_id);
+            $this->assertScopeDelegable($actor, (string) $assignment->scope_type, $assignment->scope_id, (bool) $assignment->includes_descendants);
+            $codes = $this->permissionCodesForRole((string) $assignment->role_id);
+            $this->assertDelegablePermissions($actor, $codes);
+            foreach ($codes as $code) $this->assertScopeDelegable($actor, (string) $assignment->scope_type, $assignment->scope_id, (bool) $assignment->includes_descendants, $code);
             DB::table('user_role_assignments')->where('assignment_id', $assignmentId)->update([
                 'status' => 'REVOKED',
                 'active_slot' => null,
@@ -726,7 +749,10 @@ final readonly class AuthorizationService implements AuthorizationContextResolve
         $this->assertDelegablePermissions($actor, $permissionCodes);
         $scopeId = $input['scope_id'] ?? null;
         $this->assertScopeTarget($hqId, $userId, (string) $input['scope_type'], $scopeId, (bool) $input['includes_descendants']);
-        $this->assertScopeDelegable($actor, (string) $input['scope_type'], $scopeId);
+        $this->assertScopeDelegable($actor, (string) $input['scope_type'], $scopeId, (bool) $input['includes_descendants']);
+        foreach ($permissionCodes as $permission) {
+            $this->assertScopeDelegable($actor, (string) $input['scope_type'], $scopeId, (bool) $input['includes_descendants'], $permission);
+        }
         $slot = hash('sha256', implode('|', [
             $userId, (string) $role->role_id, (string) $input['scope_type'], (string) ($scopeId ?? '-'),
         ]));
@@ -809,32 +835,52 @@ final readonly class AuthorizationService implements AuthorizationContextResolve
         AuthenticatedPrincipal $actor,
         string $scopeType,
         ?string $scopeId,
+        bool $includesDescendants = false,
+        string $permission = 'iam.roles.assign',
     ): void {
-        $scopes = $this->resolve($actor)['scopes'];
-        foreach ($scopes as $scope) {
-            if ($scope['scope_type'] === 'TENANT') {
-                return;
-            }
-            if ($scopeType === $scope['scope_type'] && $scopeId === $scope['scope_id']) {
-                return;
-            }
-            if ($scopeType === 'AREA' && $scope['scope_type'] === 'AREA' && $scope['includes_descendants']) {
-                $areas = $this->descendantAreaIds((string) $actor->hqId, (string) $scope['scope_id']);
-                if (in_array((string) $scopeId, $areas, true)) {
-                    return;
-                }
-            }
-            if ($scopeType === 'NODE' && $scope['scope_type'] === 'AREA' && $scope['includes_descendants']) {
-                $node = DB::table('nodes')->where('node_id', $scopeId)->first(['hq_id', 'area_id']);
-                if ($node !== null && $node->hq_id === $actor->hqId) {
-                    $areas = [(string) $scope['scope_id'], ...$this->descendantAreaIds((string) $actor->hqId, (string) $scope['scope_id'])];
-                    if (in_array((string) $node->area_id, $areas, true)) {
-                        return;
-                    }
-                }
-            }
+        $scopes = \Modules\Foundation\Application\ScopedAccess::scopes($this->resolve($actor), $permission);
+        if (! \Modules\Foundation\Application\ScopedAccess::covers($scopes, (string) $actor->hqId, $scopeType, $scopeId, $includesDescendants)) {
+            throw new ApiException(ApiErrorCode::DelegationDenied, 403, 'Access denied.');
         }
-        throw new ApiException(ApiErrorCode::DelegationDenied, 403, 'Access denied.');
+    }
+
+    /** Options describe administration authority; writes independently recheck every role permission. */
+    public function assignmentOptions(AuthenticatedPrincipal $actor, ?string $roleId = null): array
+    {
+        $this->assertPermission($actor, 'iam.roles.assign', $this->tenantId($actor));
+        $context = $this->resolve($actor);
+        $scopes = \Modules\Foundation\Application\ScopedAccess::scopes($context, 'iam.roles.assign');
+        $codes = ['iam.roles.assign'];
+        if ($roleId !== null) {
+            $this->assertVisibleRole($roleId, $actor->hqId);
+            if (! DB::table('roles')->where('role_id', $roleId)->where('status', 'ACTIVE')->where('role_code', '!=', 'platform_super_admin')->exists()) {
+                throw new ApiException(ApiErrorCode::ValidationError, 422, 'The role is invalid for tenant assignments.');
+            }
+            $codes = [...$codes, ...$this->permissionCodesForRole($roleId)];
+        }
+        $covers = function (string $type, ?string $id, bool $descendants = false) use ($context, $actor, $codes): bool {
+            foreach ($codes as $code) {
+                if (! \Modules\Foundation\Application\ScopedAccess::covers(\Modules\Foundation\Application\ScopedAccess::scopes($context, $code), $actor->hqId, $type, $id, $descendants)) return false;
+            }
+            return true;
+        };
+
+        $areas = DB::table('areas')->where('hq_id', $actor->hqId)->where('status', 'ACTIVE')->orderBy('area_title')->get()->keyBy('area_id');
+        $parents = DB::table('area_hierarchies')->where('hq_id', $actor->hqId)->pluck('parent_area_id', 'child_area_id');
+        $options = [];
+        foreach ($areas as $area) {
+            if (! $covers('AREA', $area->area_id)) continue;
+            $path = [$area->area_title]; $cursor = $area->area_id; $seen = [$cursor => true];
+            while (isset($parents[$cursor], $areas[$parents[$cursor]]) && ! isset($seen[$parents[$cursor]])) {
+                $cursor = $parents[$cursor]; $seen[$cursor] = true; array_unshift($path, $areas[$cursor]->area_title);
+            }
+            $options[] = ['area_id' => $area->area_id, 'area_title' => $area->area_title, 'path' => implode(' / ', $path),
+                'can_include_descendants' => $covers('AREA', $area->area_id, true)];
+        }
+        return ['tenant_allowed' => $covers('TENANT', null), 'areas' => $options,
+            'nodes' => DB::table('nodes')->where('hq_id', $actor->hqId)
+                ->whereIn('node_id', \Modules\Foundation\Application\ScopedAccess::nodes($context, 'iam.roles.assign'))
+                ->orderBy('node_title')->get(['node_id', 'node_title', 'node_code', 'node_type', 'area_id'])->filter(fn ($n) => $covers('NODE', $n->node_id))->values()->map(fn ($n) => (array) $n)->all()];
     }
 
     private function invalidateRoleUsers(string $roleId): void

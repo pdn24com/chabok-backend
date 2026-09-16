@@ -249,6 +249,11 @@ final class PersistenceAndAdministrationTest extends MySqlRedisTestCase
 
     private function allowAdministration(): void
     {
+        // This boundary test deliberately substitutes authorization; scoped-access behavior has real integration coverage.
+        $this->app->instance(\Modules\User\Application\Contracts\UserScopeAuthorizer::class, new class implements \Modules\User\Application\Contracts\UserScopeAuthorizer {
+            public function visibleUserIds(AuthenticatedPrincipal $actor, ?string $nodeId = null): ?array { return null; }
+            public function assertTarget(AuthenticatedPrincipal $actor, string $userId, string $permission): void {}
+        });
         $this->app->instance(UserAdministrationAuthorizer::class, new class implements UserAdministrationAuthorizer {
             public function assertCan(AuthenticatedPrincipal $actor, string $permission, string $hqId): void {}
         });

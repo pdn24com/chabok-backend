@@ -178,6 +178,8 @@ final class FleetTestAuthorization implements AuthorizationContextResolver
         return [
             'module_entitlements' => [['module_code' => 'Driver', 'status' => $this->entitled ? 'ENABLED' : 'DISABLED']],
             'permissions' => $this->permissions,
+            'hq_id' => $principal->hqId,
+            'permission_scopes' => array_fill_keys($this->permissions, [['scope_type' => 'TENANT', 'scope_id' => null, 'includes_descendants' => false]]),
             'accessible_node_ids' => [],
         ];
     }

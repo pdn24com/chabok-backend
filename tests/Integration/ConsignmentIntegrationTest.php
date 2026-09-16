@@ -687,6 +687,51 @@ final class ConsignmentIntegrationTest extends MySqlRedisTestCase
         DB::purge('mysql_contender');
     }
 
+    public function test_area_read_scope_and_node_edit_scope_stay_separate_for_two_ended_consignments(): void
+    {
+        [$tenant, $owner, $pickup, $principal] = $this->branchContext('SCOPED-SHIP', 'scope-owner');
+        $hq = $tenant['hq_id'];
+        $root = DB::table('nodes')->where('node_id', $pickup)->value('area_id');
+        $child = (string) Str::uuid(); $leaf = (string) Str::uuid();
+        foreach ([$child, $leaf] as $area) DB::table('areas')->insert(['area_id' => $area, 'hq_id' => $hq, 'area_title' => $area === $child ? 'Child' : 'Leaf', 'status' => 'ACTIVE', 'created_at' => now(), 'updated_at' => now()]);
+        foreach ([[$root, $child], [$child, $leaf]] as [$parent, $childId]) DB::table('area_hierarchies')->insert(['area_hierarchy_id' => (string) Str::uuid(), 'hq_id' => $hq, 'parent_area_id' => $parent, 'child_area_id' => $childId, 'created_at' => now()]);
+        $delivery = (string) Str::uuid();
+        $template = (array) DB::table('nodes')->where('node_id', $pickup)->first();
+        DB::table('nodes')->insert([...$template, 'node_id' => $delivery, 'node_code' => 'DELIVERY-SCOPE', 'node_title' => 'Delivery', 'area_id' => $leaf]);
+        $draft = $this->draft(); $pricing = $this->app->make(PricingService::class);
+        $quote = $pricing->calculate($principal, $pickup, 'CREATE', $draft, null, null);
+        $service = $this->app->make(ConsignmentService::class);
+        $created = $service->create($principal, $pickup, [...$draft, 'accepted_quote' => ['quote_id' => $quote['quote_id'], 'quote_version' => $quote['quote_version'], 'option_id' => $quote['options'][0]['option_id']]], (string) Str::uuid());
+        $id = $created['consignment_id'];
+        DB::table('consignments')->where('consignment_id', $id)->update(['delivery_node_id' => $delivery]);
+        $user = $this->user($hq, 'scope-reader');
+        foreach ([['branch_read_only', 'AREA', $root, true], ['branch_manager', 'NODE', $pickup, false]] as [$code, $type, $scope, $descendants]) {
+            $role = DB::table('roles')->where('role_code', $code)->value('role_id');
+            DB::table('user_role_assignments')->insert(['assignment_id' => (string) Str::uuid(), 'hq_id' => $hq, 'user_id' => $user['user_id'], 'role_id' => $role, 'scope_type' => $type, 'scope_id' => $scope, 'includes_descendants' => $descendants, 'status' => 'ACTIVE', 'active_slot' => hash('sha256', $user['user_id'].$role.$scope), 'created_at' => now(), 'updated_at' => now()]);
+        }
+        $actor = new AuthenticatedPrincipal($user['user_id'], (string) Str::uuid(), $hq, false);
+        $deliveryDetail = $service->get($actor, $delivery, $id);
+        $this->assertSame($id, $deliveryDetail['consignment_id']);
+        $this->assertSame([], $deliveryDetail['permitted_actions']);
+        $this->assertSame(['EDIT'], $service->get($actor, $pickup, $id)['permitted_actions']);
+        $this->assertSame(1, $service->list($actor, $delivery, ['page' => 1, 'page_size' => 25])->total());
+        try {
+            $service->edit($actor, $delivery, $id, ['expected_version' => 1, 'change_reason' => 'Scope test', 'sender' => ['contact_name' => 'Forbidden']], (string) Str::uuid());
+            $this->fail('Read scope must not become edit scope.');
+        } catch (\Modules\Foundation\Domain\ApiException $error) { $this->assertSame(403, $error->httpStatus); }
+        $edited = $service->edit($actor, $pickup, $id, ['expected_version' => 1, 'change_reason' => 'Scope test', 'sender' => ['contact_name' => 'Allowed']], (string) Str::uuid());
+        $this->assertSame(2, $edited['version']);
+        // Losing the deep read scope immediately prevents delivery-node reads, but not pickup edits.
+        DB::table('user_role_assignments')->where('user_id', $user['user_id'])->where('scope_type', 'AREA')->update(['includes_descendants' => false]);
+        $this->app->make(\Modules\Authorization\Application\AuthorizationService::class)->invalidateUser($user['user_id']);
+        try { $service->get($actor, $delivery, $id); $this->fail('Exact Area must exclude deep delivery nodes.'); }
+        catch (\Modules\Foundation\Domain\ApiException $error) { $this->assertSame(403, $error->httpStatus); }
+        DB::table('consignments')->where('consignment_id', $id)->update(['current_status' => 'OK']);
+        try { $service->edit($actor, $pickup, $id, ['expected_version' => 2, 'change_reason' => 'Terminal', 'sender' => ['contact_name' => 'Forbidden']], (string) Str::uuid()); $this->fail('Scope must not bypass lifecycle policy.'); }
+        catch (\Modules\Foundation\Domain\ApiException $error) { $this->assertSame(422, $error->httpStatus); }
+        $this->assertDatabaseHas('consignments', ['consignment_id' => $id, 'current_status' => 'OK', 'version' => 2]);
+    }
+
     private function assignRole(string $userId, string $roleCode): void
     {
         $roleId = (string) DB::table('roles')->where('role_code', $roleCode)->value('role_id');

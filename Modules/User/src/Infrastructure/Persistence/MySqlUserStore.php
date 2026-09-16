@@ -80,8 +80,9 @@ final class MySqlUserStore implements UserStore
         int $pageSize,
         ?string $search,
         ?string $status,
+        ?array $visibleUserIds = null,
     ): LengthAwarePaginator {
-        $query = DB::table('users')->where('hq_id', $hqId);
+        $query = DB::table('users')->where('hq_id', $hqId)->when($visibleUserIds !== null, fn ($q) => $q->whereIn('user_id', $visibleUserIds));
 
         if ($status !== null) {
             $query->where('status', $status);
