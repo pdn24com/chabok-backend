@@ -71,6 +71,60 @@ final class RoleEditorIntegrationTest extends MySqlRedisTestCase
             ->update(['scope_type' => 'NODE', 'scope_id' => (string) Str::uuid()]);
         $this->withToken($token)->withHeader('Idempotency-Key', (string) Str::uuid())->postJson('/api/v1/iam/roles', [...$input, 'permission_codes' => []])->assertForbidden();
     }
+
+    public function test_menu_preferences_round_trip_clone_and_failure_rollback(): void
+    {
+        [$tenant, , $token] = $this->manager('MENUS');
+        $input = ['role_code' => 'menus.custom', 'role_title' => 'Menus', 'permission_codes' => ['consignment.view'], 'menu_keys' => ['profile', 'consignments']];
+        $key = (string) Str::uuid();
+        $id = $this->withToken($token)->withHeader('Idempotency-Key', $key)->postJson('/api/v1/iam/roles', $input)
+            ->assertCreated()->assertJsonPath('data.menu_keys', ['consignments', 'profile'])->json('data.role_id');
+        $this->withToken($token)->postJson('/api/v1/iam/roles', $input)->assertCreated()->assertJsonPath('data.role_id', $id);
+        $this->withToken($token)->postJson('/api/v1/iam/roles', [...$input, 'menu_keys' => []])->assertConflict();
+        $this->withToken($token)->patchJson('/api/v1/iam/roles/'.$id, ['role_title' => 'Renamed'])->assertOk()->assertJsonPath('data.menu_keys', ['consignments', 'profile']);
+        $this->withToken($token)->patchJson('/api/v1/iam/roles/'.$id, ['role_title' => 'Must roll back', 'permission_codes' => ['manifest.approve'], 'menu_keys' => []])->assertForbidden();
+        $this->withToken($token)->getJson('/api/v1/iam/roles/'.$id)->assertOk()->assertJsonPath('data.role_title', 'Renamed')->assertJsonPath('data.menu_keys', ['consignments', 'profile']);
+        foreach ([['unknown-menu'], ['profile', 'profile'], ['pricing']] as $invalid) {
+            $this->withToken($token)->patchJson('/api/v1/iam/roles/'.$id, ['menu_keys' => $invalid])->assertUnprocessable();
+        }
+        $clone = $this->withToken($token)->withHeader('Idempotency-Key', (string) Str::uuid())->postJson('/api/v1/iam/roles/'.$id.'/clone', ['role_code' => 'menus.copy', 'role_title' => 'Copy'])
+            ->assertCreated()->assertJsonPath('data.menu_keys', ['consignments', 'profile'])->json('data.role_id');
+        $this->withToken($token)->patchJson('/api/v1/iam/roles/'.$clone, ['menu_keys' => []])->assertOk()->assertJsonPath('data.menu_keys', []);
+        $this->assertTrue(DB::table('role_menu_preferences')->where('role_id', $clone)->exists());
+        $this->withToken($token)->patchJson('/api/v1/iam/roles/'.$clone, ['menu_keys' => null])->assertOk()->assertJsonPath('data.menu_keys', null);
+        $this->assertFalse(DB::table('role_menu_preferences')->where('role_id', $clone)->exists());
+        $this->withToken($token)->patchJson('/api/v1/iam/roles/'.$this->roleId('branch_manager'), ['menu_keys' => []])->assertUnprocessable();
+        [, , $other] = $this->manager('MENUS-OTHER');
+        $this->withToken($other)->patchJson('/api/v1/iam/roles/'.$id, ['menu_keys' => []])->assertForbidden();
+        $this->assertSame(['consignments', 'profile'], app(\Modules\Authorization\Application\RoleNavigation::class)->forRole($id));
+        $this->assertTrue(DB::table('audit_events')->where('target_id', $id)->exists());
+    }
+
+    public function test_context_combines_active_menu_selections_without_granting_permissions(): void
+    {
+        [$tenant, , $token] = $this->manager('NAV-CONTEXT');
+        $target = $this->user($tenant['hq_id'], 'menu-reader');
+        $input = ['role_code' => 'menus.reader', 'role_title' => 'Reader', 'permission_codes' => ['branch_panel.access', 'node_context.view'], 'menu_keys' => ['roles', 'profile']];
+        $id = $this->withToken($token)->withHeader('Idempotency-Key', (string) Str::uuid())->postJson('/api/v1/iam/roles', $input)->assertCreated()->json('data.role_id');
+        $this->withToken($token)->postJson('/api/v1/iam/users/'.$target['user_id'].'/role-assignments', ['assignments' => [['role_id' => $id, 'scope_type' => 'TENANT', 'scope_id' => null, 'includes_descendants' => false]]])->assertCreated();
+        $reader = $this->login('menu-reader')['token'];
+        $this->withToken($reader)->getJson('/api/v1/me/context')->assertOk()->assertJsonPath('data.menu_keys', ['profile', 'roles']);
+        $this->withToken($reader)->getJson('/api/v1/iam/roles')->assertForbidden();
+        $this->withToken($reader)->patchJson('/api/v1/iam/roles/'.$id, ['menu_keys' => ['dashboard']])->assertForbidden();
+        // Editing menus invalidates the already-cached context of assigned users.
+        $this->withToken($token)->patchJson('/api/v1/iam/roles/'.$id, ['menu_keys' => ['dashboard']])->assertOk();
+        $this->withToken($reader)->getJson('/api/v1/me/context')->assertOk()->assertJsonPath('data.menu_keys', ['dashboard']);
+        $otherId = $this->withToken($token)->withHeader('Idempotency-Key', (string) Str::uuid())->postJson('/api/v1/iam/roles', [...$input, 'role_code' => 'menus.second', 'menu_keys' => ['sessions']])->assertCreated()->json('data.role_id');
+        $this->withToken($token)->postJson('/api/v1/iam/users/'.$target['user_id'].'/role-assignments', ['assignments' => [['role_id' => $otherId, 'scope_type' => 'TENANT', 'scope_id' => null, 'includes_descendants' => false]]])->assertCreated();
+        $this->withToken($reader)->getJson('/api/v1/me/context')->assertOk()->assertJsonPath('data.menu_keys', ['dashboard', 'sessions']);
+        $this->withToken($token)->patchJson('/api/v1/iam/roles/'.$otherId, ['status' => 'INACTIVE'])->assertOk();
+        $this->withToken($reader)->getJson('/api/v1/me/context')->assertOk()->assertJsonPath('data.menu_keys', ['dashboard']);
+        $this->withToken($token)->patchJson('/api/v1/iam/roles/'.$id, ['menu_keys' => []])->assertOk();
+        $this->withToken($reader)->getJson('/api/v1/me/context')->assertOk()->assertJsonPath('data.menu_keys', []);
+        $this->withToken($token)->postJson('/api/v1/iam/users/'.$target['user_id'].'/role-assignments', ['assignments' => [['role_id' => $this->roleId('branch_read_only'), 'scope_type' => 'TENANT', 'scope_id' => null, 'includes_descendants' => false]]])->assertCreated();
+        $this->withToken($reader)->getJson('/api/v1/me/context')->assertOk()->assertJsonPath('data.menu_keys', null);
+    }
+
     private function entitlement(string $hqId, string $module, string $status = 'ENABLED'): void
     {
         DB::table('tenant_module_entitlements')->insert([

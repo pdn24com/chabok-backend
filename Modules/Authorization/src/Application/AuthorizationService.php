@@ -23,6 +23,7 @@ final readonly class AuthorizationService implements AuthorizationContextResolve
 
     public function __construct(
         private TransactionManager $transactions,
+        private RoleNavigation $navigation,
         private AuditWriter $audit,
         private OutboxWriter $outbox,
     ) {}
@@ -33,7 +34,8 @@ final readonly class AuthorizationService implements AuthorizationContextResolve
         $key = $this->cacheKey($principal->userId);
         $cached = Redis::connection('cache')->get($key);
         if (is_string($cached)) {
-            return json_decode($cached, true, 512, JSON_THROW_ON_ERROR);
+            $decoded = json_decode($cached, true, 512, JSON_THROW_ON_ERROR);
+            if (array_key_exists('menu_keys', $decoded)) return $decoded;
         }
 
         $user = DB::table('users')->where('user_id', $principal->userId)->first();
@@ -106,6 +108,7 @@ final readonly class AuthorizationService implements AuthorizationContextResolve
             'role_codes' => $assignments->pluck('role_code')->map(fn ($value) => (string) $value)
                 ->unique()->sort()->values()->all(),
             'permissions' => $permissions,
+            'menu_keys' => $this->navigation->effective($roleIds->all()),
             'scopes' => $scopes,
             'accessible_node_ids' => $nodes,
             'module_entitlements' => $entitlements->map(fn ($row): array => [
@@ -221,6 +224,10 @@ final readonly class AuthorizationService implements AuthorizationContextResolve
             $this->assertMutableRole($role, $hqId);
             $before = $this->rolePayload($roleId);
             $permissionCodes = $input['permission_codes'] ?? null;
+            if (array_key_exists('menu_keys', $input)) {
+                $this->navigation->replace($roleId, $input['menu_keys']);
+                unset($input['menu_keys']);
+            }
             unset($input['permission_codes']);
             $this->assertDelegablePermissions($actor, $permissionCodes ?? $before['permission_codes'], true);
             if ($permissionCodes !== null) {
@@ -265,6 +272,7 @@ final readonly class AuthorizationService implements AuthorizationContextResolve
                 throw $exception;
             }
             $this->insertRolePermissions($roleId, $input['permission_codes'], $actor->userId);
+            $this->navigation->replace($roleId, $input['menu_keys'] ?? null);
             $payload = $this->rolePayload($roleId);
             $this->audit->write($hqId, $actor->userId, 'ROLE_CREATED', 'ROLE', $roleId, $correlationId, after: $payload);
             $this->outbox->write($hqId, 'ROLE', $roleId, 'iam.role.created', $correlationId, ['role_id' => $roleId]);
@@ -315,6 +323,7 @@ final readonly class AuthorizationService implements AuthorizationContextResolve
                 throw $exception;
             }
             $this->insertRolePermissions($roleId, $sourcePermissions, $actor->userId);
+            $this->navigation->replace($roleId, array_key_exists('menu_keys', $input) ? $input['menu_keys'] : $this->navigation->forRole($sourceRoleId));
             $payload = $this->rolePayload($roleId);
             $this->audit->write($hqId, $actor->userId, 'ROLE_CLONED', 'ROLE', $roleId, $correlationId, after: $payload);
             $this->outbox->write($hqId, 'ROLE', $roleId, 'iam.role.cloned', $correlationId, [
@@ -588,6 +597,7 @@ final readonly class AuthorizationService implements AuthorizationContextResolve
             'is_cloneable' => (bool) $role->is_cloneable,
             'status' => (string) $role->status,
             'permission_codes' => $this->permissionCodesForRole($roleId),
+            'menu_keys' => $this->navigation->forRole($roleId),
         ];
     }
 

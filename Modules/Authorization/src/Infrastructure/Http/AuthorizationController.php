@@ -6,6 +6,8 @@ namespace Modules\Authorization\Infrastructure\Http;
 
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Validation\Rule;
+use Modules\Authorization\Application\RoleNavigation;
 use Modules\Authorization\Application\AuthorizationService;
 use Modules\Foundation\Application\ApiResponder;
 use Modules\Foundation\Application\StrictPayload;
@@ -37,13 +39,15 @@ final readonly class AuthorizationController
 
     public function updateRole(Request $request, string $roleId): JsonResponse
     {
-        StrictPayload::assertOnly($request, ['role_title', 'description', 'status', 'permission_codes']);
+        StrictPayload::assertOnly($request, ['role_title', 'description', 'status', 'permission_codes', 'menu_keys']);
         $input = $request->validate([
             'role_title' => ['sometimes', 'string', 'max:200'],
             'description' => ['sometimes', 'nullable', 'string', 'max:500'],
             'status' => ['sometimes', 'in:ACTIVE,INACTIVE'],
             'permission_codes' => ['sometimes', 'array'],
             'permission_codes.*' => ['required', 'string', 'distinct'],
+            'menu_keys' => ['sometimes', 'nullable', 'array', 'max:27'],
+            'menu_keys.*' => ['required', 'string', 'distinct', Rule::in(RoleNavigation::keys())],
         ]);
         if ($input === []) {
             throw \Illuminate\Validation\ValidationException::withMessages([
@@ -61,13 +65,15 @@ final readonly class AuthorizationController
 
     public function createRole(Request $request): JsonResponse
     {
-        StrictPayload::assertOnly($request, ['role_code', 'role_title', 'description', 'permission_codes']);
+        StrictPayload::assertOnly($request, ['role_code', 'role_title', 'description', 'permission_codes', 'menu_keys']);
         $input = $request->validate([
             'role_code' => ['required', 'string', 'max:120', 'regex:/^[a-z][a-z0-9_.-]+$/'],
             'role_title' => ['required', 'string', 'max:200'],
             'description' => ['sometimes', 'nullable', 'string', 'max:500'],
             'permission_codes' => ['present', 'array'],
             'permission_codes.*' => ['required', 'string', 'distinct'],
+            'menu_keys' => ['sometimes', 'nullable', 'array', 'max:27'],
+            'menu_keys.*' => ['required', 'string', 'distinct', Rule::in(RoleNavigation::keys())],
         ]);
 
         return ApiResponder::success($request, $this->authorization->createRole(
@@ -79,13 +85,15 @@ final readonly class AuthorizationController
 
     public function cloneRole(Request $request, string $roleId): JsonResponse
     {
-        StrictPayload::assertOnly($request, ['role_code', 'role_title', 'description', 'permission_codes']);
+        StrictPayload::assertOnly($request, ['role_code', 'role_title', 'description', 'permission_codes', 'menu_keys']);
         $input = $request->validate([
             'role_code' => ['required', 'string', 'max:120', 'regex:/^[a-z][a-z0-9_.-]+$/'],
             'role_title' => ['required', 'string', 'max:200'],
             'description' => ['sometimes', 'nullable', 'string', 'max:500'],
             'permission_codes' => ['sometimes', 'array'],
             'permission_codes.*' => ['required', 'string', 'distinct'],
+            'menu_keys' => ['sometimes', 'nullable', 'array', 'max:27'],
+            'menu_keys.*' => ['required', 'string', 'distinct', Rule::in(RoleNavigation::keys())],
         ]);
 
         return ApiResponder::success($request, $this->authorization->cloneRole(
