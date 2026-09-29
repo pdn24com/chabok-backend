@@ -11,13 +11,18 @@ use Modules\Authorization\Application\Catalogs\AuthorizationCatalog;
 use RuntimeException;
 
 /**
- * A ready-made `admin` / `admin` login for local and staging databases: tenant admin (`hq_admin`) of a
- * tenant that has every module enabled. It is deliberately weak, so it never runs in production.
+ * A ready-made `admin` / `admin` login for local and staging databases: tenant admin (`hq_admin`) and
+ * manager of one branch node (the panel asks for the node context right after login, and only the branch
+ * roles carry `node_context.*`), in a tenant that has every module enabled. It is deliberately weak, so it never runs in production.
  * Re-running it resets the password and reactivates the account instead of creating a second user.
  */
 final class AdminUserSeeder extends Seeder
 {
     private const TENANT_CODE = 'CHABOK-HQ';
+
+    private const AREA_CODE = 'CHABOK-AREA';
+
+    private const NODE_CODE = 'CHABOK-BRANCH';
 
     private const USERNAME = 'admin';
 
@@ -40,6 +45,12 @@ final class AdminUserSeeder extends Seeder
             $now = now();
             $hqId = $this->fixtures->putTenant(['hq_code' => self::TENANT_CODE],
                 ['hq_title' => 'Chabok HQ', 'status' => 'ACTIVE', 'created_at' => $now, 'updated_at' => $now]);
+            $areaId = $this->fixtures->putArea(['hq_id' => $hqId, 'area_code' => self::AREA_CODE],
+                ['area_title' => 'Chabok Area', 'status' => 'ACTIVE', 'created_at' => $now, 'updated_at' => $now]);
+            $nodeId = $this->fixtures->putNode(['hq_id' => $hqId, 'node_code' => self::NODE_CODE],
+                ['area_id' => $areaId, 'node_title' => 'Chabok Branch', 'node_type' => 'BRANCH',
+                    'address_snapshot' => ['country' => 'IR', 'city' => 'Tehran', 'label' => 'Seeded branch'],
+                    'status' => 'ACTIVE', 'created_at' => $now, 'updated_at' => $now]);
             $userId = $this->fixtures->putUser(['normalized_username' => self::USERNAME],
                 ['hq_id' => $hqId, 'username' => self::USERNAME, 'mobile' => null, 'normalized_mobile' => null,
                     'email' => null, 'normalized_email' => null, 'first_name' => 'Admin', 'last_name' => 'Chabok',
@@ -49,13 +60,20 @@ final class AdminUserSeeder extends Seeder
                 ['password_hash' => password_hash(self::PASSWORD, PASSWORD_ARGON2ID), 'algorithm' => 'argon2id', 'algorithm_version' => 1,
                     'password_changed_at' => $now, 'failed_attempt_count' => 0, 'locked_until' => null, 'created_at' => $now, 'updated_at' => $now]);
 
-            $roleId = $this->fixtures->globalRoleId('hq_admin')
-                ?? throw new RuntimeException('The hq_admin role is not seeded; run AuthorizationCatalogSeeder first.');
-            $slot = hash('sha256', "{$userId}|{$roleId}|TENANT|");
-            $this->fixtures->putAssignment($slot,
-                ['hq_id' => $hqId, 'user_id' => $userId, 'role_id' => $roleId, 'scope_type' => 'TENANT', 'scope_id' => null,
-                    'includes_descendants' => false, 'status' => 'ACTIVE', 'assigned_by' => null, 'revoked_by' => null,
-                    'revoked_at' => null, 'created_at' => $now, 'updated_at' => $now]);
+            $assignments = [
+                ['hq_admin', 'TENANT', null],
+                ['branch_manager', 'NODE', $nodeId],
+                ['manifest_approver', 'NODE', $nodeId],
+            ];
+            foreach ($assignments as [$roleCode, $scopeType, $scopeId]) {
+                $roleId = $this->fixtures->globalRoleId($roleCode)
+                    ?? throw new RuntimeException("The {$roleCode} role is not seeded; run AuthorizationCatalogSeeder first.");
+                $slot = hash('sha256', "{$userId}|{$roleId}|{$scopeType}|".($scopeId ?? ''));
+                $this->fixtures->putAssignment($slot,
+                    ['hq_id' => $hqId, 'user_id' => $userId, 'role_id' => $roleId, 'scope_type' => $scopeType, 'scope_id' => $scopeId,
+                        'includes_descendants' => false, 'status' => 'ACTIVE', 'assigned_by' => null, 'revoked_by' => null,
+                        'revoked_at' => null, 'created_at' => $now, 'updated_at' => $now]);
+            }
 
             // Every module the permission catalog names, so the whole panel (CRM included) is reachable.
             foreach (array_unique(array_values(AuthorizationCatalog::permissions())) as $moduleCode) {
