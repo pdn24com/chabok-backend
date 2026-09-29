@@ -18,7 +18,7 @@ final readonly class UpdateCustomerDepartmentHandler
         private ConnectionInterface $connection,
         private CustomerAccessGuardInterface $accessGuard,
         private CustomerDepartmentRepositoryInterface $customerDepartmentRepository,
-        private CustomerOrgStructureValidatorInterface $validator,
+        private CustomerOrgStructureValidatorInterface $customerOrgStructureValidator,
     ) {}
 
     public function handle(UpdateCustomerDepartmentCommand $command): UpdateCustomerDepartmentResult
@@ -37,7 +37,7 @@ final readonly class UpdateCustomerDepartmentHandler
                 throw new ApiException(ApiErrorCode::ResourceNotFound, 404, 'common.resource_not_found');
             }
             if ($changes->parentSpecified) {
-                $this->validator->assertParent($hqId, $command->customerId, $changes->parentDepartmentId, $command->departmentId);
+                $this->customerOrgStructureValidator->assertParent($hqId, $command->customerId, $changes->parentDepartmentId, $command->departmentId);
             }
             $this->customerDepartmentRepository->update($hqId, $command->departmentId, $changes->toAttributes());
 

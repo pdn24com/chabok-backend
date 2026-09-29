@@ -22,7 +22,7 @@ final readonly class CreateCustomerAddressHandler
         private CustomerAccessGuardInterface $accessGuard,
         private CustomerRepositoryInterface $customerRepository,
         private CustomerAddressRepositoryInterface $customerAddressRepository,
-        private CustomerAddressValidatorInterface $addressValidator,
+        private CustomerAddressValidatorInterface $customerAddressValidator,
     ) {}
 
     public function handle(CreateCustomerAddressCommand $command): CreateCustomerAddressResult
@@ -34,7 +34,7 @@ final readonly class CreateCustomerAddressHandler
             if (! $this->customerRepository->existsForTenant($hqId, $command->customerId)) {
                 throw new ApiException(ApiErrorCode::ResourceNotFound, 404, 'common.resource_not_found');
             }
-            $this->addressValidator->validateEntry($input);
+            $this->customerAddressValidator->validateEntry($input);
 
             // The first entry is the default one whatever the form said: a customer with addresses always
             // has one the rest of the system can fall back to.

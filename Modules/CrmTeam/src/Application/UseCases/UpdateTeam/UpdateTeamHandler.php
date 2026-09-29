@@ -29,7 +29,7 @@ final readonly class UpdateTeamHandler
         private MembershipEventRepositoryInterface $membershipEventRepository,
     ) {}
 
-    public function handle(UpdateTeamCommand $command): TeamRecord
+    public function handle(UpdateTeamCommand $command): UpdateTeamResult
     {
         $hqId = $this->accessGuard->assertCanManage($command->actor);
         $changes = $command->changes;
@@ -37,7 +37,7 @@ final readonly class UpdateTeamHandler
             throw $this->invalid('*', 'team.change_is_empty');
         }
 
-        return $this->connection->transaction(function () use ($command, $hqId, $changes): TeamRecord {
+        $result = $this->connection->transaction(function () use ($command, $hqId, $changes): TeamRecord {
             $current = $this->teamRepository->lockForTenant($hqId, $command->teamId)
                 ?? throw new ApiException(ApiErrorCode::ResourceNotFound, 404, 'common.resource_not_found');
 
@@ -70,6 +70,8 @@ final readonly class UpdateTeamHandler
 
             return $this->teamRepository->findForTenant($hqId, $command->teamId) ?? $current;
         }, attempts: 3);
+
+        return new UpdateTeamResult($result);
     }
 
     /** The supervisor has to be an active member, so naming a new one enrols them if they are not already. */

@@ -8,13 +8,13 @@ use DateTimeImmutable;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 use Modules\Customer\Application\Dto\CustomerHistoryCategoryDto;
-use Modules\Customer\Application\Dto\CustomerHistoryDto;
+use Modules\Customer\Application\UseCases\GetCustomerHistory\GetCustomerHistoryResult;
 
 /**
  * The history page of one customer: six cards and two plain observations. Neither figure carries an
  * approved threshold, so the payload reports them and declares no alert.
  *
- * @mixin CustomerHistoryDto
+ * @mixin GetCustomerHistoryResult
  */
 final class CustomerHistoryResource extends JsonResource
 {

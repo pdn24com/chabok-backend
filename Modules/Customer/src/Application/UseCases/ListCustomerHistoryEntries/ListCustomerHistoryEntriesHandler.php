@@ -18,22 +18,21 @@ final readonly class ListCustomerHistoryEntriesHandler
 {
     public function __construct(
         private CustomerAccessGuardInterface $accessGuard,
-        private CustomerRepositoryInterface $customers,
-        private CustomerHistoryReaderInterface $history,
+        private CustomerRepositoryInterface $customerRepository,
+        private CustomerHistoryReaderInterface $customerHistoryReader,
     ) {}
 
-    /** @return LengthAwarePaginator<CustomerHistoryEntryDto> */
-    public function handle(ListCustomerHistoryEntriesCommand $command): LengthAwarePaginator
+    public function handle(ListCustomerHistoryEntriesCommand $command): ListCustomerHistoryEntriesResult
     {
         $hqId = $this->accessGuard->assertCanRead($command->actor);
-        if (! $this->customers->existsForTenant($hqId, $command->customerId)) {
+        if (! $this->customerRepository->existsForTenant($hqId, $command->customerId)) {
             throw new ApiException(ApiErrorCode::ResourceNotFound, 404, 'common.resource_not_found');
         }
 
         $categories = $command->category === null ? CustomerHistoryCategory::cases() : [$command->category];
         $entries = [];
         foreach ($categories as $category) {
-            foreach ($this->history->entries($hqId, $command->customerId, $category) as $entry) {
+            foreach ($this->customerHistoryReader->entries($hqId, $command->customerId, $category) as $entry) {
                 if ($entry->matches($command->search)) {
                     $entries[] = $entry;
                 }
@@ -46,11 +45,11 @@ final readonly class ListCustomerHistoryEntriesHandler
 
         // The rows of one customer are counted in the hundreds and come from several tables, so they are
         // merged in memory and paged here rather than through a union query.
-        return new LengthAwarePaginator(
+        return new ListCustomerHistoryEntriesResult(new LengthAwarePaginator(
             array_slice($entries, ($command->page - 1) * $command->perPage, $command->perPage),
             count($entries),
             $command->perPage,
             $command->page,
-        );
+        ));
     }
 }

@@ -23,23 +23,23 @@ final class TeamMemberController
 {
     public function index(ListTeamMembersRequest $request, ListTeamMembersHandler $handler): JsonResponse
     {
-        $members = $handler->handle(TeamCommandMapper::memberListing($request->attributes->get('principal'), $request->validated()));
+        $result = $handler->handle(TeamCommandMapper::memberListing($request->attributes->get('principal'), $request->validated()));
 
-        return ApiResponder::paginated($request, $members, fn ($member): array => (new TeamMemberResource($member))->resolve($request));
+        return ApiResponder::paginated($request, $result->members, fn ($member): array => (new TeamMemberResource($member))->resolve($request));
     }
 
     public function store(AddTeamMemberRequest $request, AddTeamMemberHandler $handler, string $teamId): JsonResponse
     {
-        $membership = $handler->handle(TeamCommandMapper::member($request->attributes->get('principal'), $teamId, $request->validated()));
+        $result = $handler->handle(TeamCommandMapper::member($request->attributes->get('principal'), $teamId, $request->validated()));
 
-        return ApiResponder::success($request, new TeamMemberResource($membership), status: 201);
+        return ApiResponder::success($request, new TeamMemberResource($result->membership), status: 201);
     }
 
     public function end(EndTeamMembershipRequest $request, EndTeamMembershipHandler $handler, string $membershipId): JsonResponse
     {
-        $membership = $handler->handle(TeamCommandMapper::membershipEnd($request->attributes->get('principal'), $membershipId, $request->validated()));
+        $result = $handler->handle(TeamCommandMapper::membershipEnd($request->attributes->get('principal'), $membershipId, $request->validated()));
 
-        return ApiResponder::success($request, new TeamMemberResource($membership));
+        return ApiResponder::success($request, new TeamMemberResource($result->membership));
     }
 
     public function bulk(RunBulkMembershipChangeRequest $request, RunBulkMembershipChangeHandler $handler): JsonResponse

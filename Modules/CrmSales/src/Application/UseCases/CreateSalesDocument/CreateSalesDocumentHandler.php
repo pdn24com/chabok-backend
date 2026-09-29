@@ -31,8 +31,8 @@ final readonly class CreateSalesDocumentHandler
         private SalesDocumentAccessGuardInterface $accessGuard,
         private CustomerRepositoryInterface $customerRepository,
         private OpportunityRepositoryInterface $opportunityRepository,
-        private SalesDocumentRepositoryInterface $salesDocuments,
-        private SalesDocumentVersionRepositoryInterface $versions,
+        private SalesDocumentRepositoryInterface $salesDocumentRepository,
+        private SalesDocumentVersionRepositoryInterface $salesDocumentVersionRepository,
     ) {}
 
     public function handle(CreateSalesDocumentCommand $command): CreateSalesDocumentResult
@@ -54,12 +54,12 @@ final readonly class CreateSalesDocumentHandler
             }
 
             $documentNo = $input->documentNo ?? $this->nextDocumentNo($hqId, $input, $at);
-            if ($this->salesDocuments->documentNoTaken($hqId, $documentNo)) {
+            if ($this->salesDocumentRepository->documentNoTaken($hqId, $documentNo)) {
                 throw new ApiException(ApiErrorCode::Conflict, 409, 'sales.document_number_is_already_use',
                     ['document_no' => ['sales.document_number_is_already_use']]);
             }
 
-            $document = $this->salesDocuments->create([
+            $document = $this->salesDocumentRepository->create([
                 'hq_id' => $hqId,
                 'opportunity_id' => $input->opportunityId,
                 'customer_id' => $customerId,
@@ -70,7 +70,7 @@ final readonly class CreateSalesDocumentHandler
                 'created_at' => $at,
             ]);
 
-            $version = $this->versions->create([
+            $version = $this->salesDocumentVersionRepository->create([
                 'hq_id' => $hqId,
                 'document_id' => $document->sales_document_id,
                 'previous_version_id' => null,
@@ -85,11 +85,11 @@ final readonly class CreateSalesDocumentHandler
             ]);
             // The document and its first revision point at each other, and the cycle can only be closed
             // once both rows exist.
-            $this->salesDocuments->update($hqId, $document->sales_document_id, [
+            $this->salesDocumentRepository->update($hqId, $document->sales_document_id, [
                 'current_version_id' => $version->sales_document_version_id,
             ]);
 
-            $stored = $this->salesDocuments->findForTenant($hqId, $document->sales_document_id) ?? $document;
+            $stored = $this->salesDocumentRepository->findForTenant($hqId, $document->sales_document_id) ?? $document;
 
             return new CreateSalesDocumentResult($stored, $version);
         }, attempts: 3);
@@ -106,7 +106,7 @@ final readonly class CreateSalesDocumentHandler
         return SalesDocumentNumber::format(
             $input->documentType,
             (int) $at->format('Y'),
-            $this->salesDocuments->lastSequenceForStem($hqId, $stem) + 1,
+            $this->salesDocumentRepository->lastSequenceForStem($hqId, $stem) + 1,
         );
     }
 

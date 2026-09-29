@@ -35,11 +35,11 @@ final readonly class EndTeamMembershipHandler
         private TaskRepositoryInterface $taskRepository,
     ) {}
 
-    public function handle(EndTeamMembershipCommand $command): TeamMemberRecord
+    public function handle(EndTeamMembershipCommand $command): EndTeamMembershipResult
     {
         $hqId = $this->accessGuard->assertCanManage($command->actor);
 
-        return $this->connection->transaction(function () use ($command, $hqId): TeamMemberRecord {
+        $result = $this->connection->transaction(function () use ($command, $hqId): TeamMemberRecord {
             $membership = $this->teamMemberRepository->lockForTenant($hqId, $command->membershipId)
                 ?? throw new ApiException(ApiErrorCode::ResourceNotFound, 404, 'common.resource_not_found');
             if ($membership->status !== MembershipStatus::ACTIVE) {
@@ -79,6 +79,8 @@ final readonly class EndTeamMembershipHandler
 
             return $this->teamMemberRepository->findForTenant($hqId, $command->membershipId) ?? $membership;
         }, attempts: 3);
+
+        return new EndTeamMembershipResult($result);
     }
 
     /** Leaving a team does not close the work in hand, so it is handed over or left with its owner. */

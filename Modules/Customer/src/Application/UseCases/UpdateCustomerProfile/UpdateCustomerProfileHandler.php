@@ -21,7 +21,7 @@ final readonly class UpdateCustomerProfileHandler
         private ClockInterface $clock,
         private CustomerAccessGuardInterface $accessGuard,
         private CustomerRepositoryInterface $customerRepository,
-        private CustomerPrimaryIndustryManagerInterface $primaryIndustryManager,
+        private CustomerPrimaryIndustryManagerInterface $customerPrimaryIndustryManager,
     ) {}
 
     public function handle(UpdateCustomerProfileCommand $command): UpdateCustomerProfileResult
@@ -58,7 +58,7 @@ final readonly class UpdateCustomerProfileHandler
             $this->customerRepository->update($hqId, $command->customerId, $attributes);
 
             if ($changes->primaryIndustrySpecified) {
-                $this->primaryIndustryManager->move(
+                $this->customerPrimaryIndustryManager->move(
                     $hqId,
                     $command->customerId,
                     $changes->primaryIndustryId,

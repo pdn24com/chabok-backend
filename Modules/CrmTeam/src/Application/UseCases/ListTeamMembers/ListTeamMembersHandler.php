@@ -4,10 +4,8 @@ declare(strict_types=1);
 
 namespace Modules\CrmTeam\Application\UseCases\ListTeamMembers;
 
-use Illuminate\Pagination\LengthAwarePaginator;
 use Modules\CrmTeam\Application\Contracts\TeamAccessGuardInterface;
 use Modules\CrmTeam\Application\Repositories\TeamMemberRepositoryInterface;
-use Modules\CrmTeam\Infrastructure\Persistence\Models\TeamMemberRecord;
 
 final readonly class ListTeamMembersHandler
 {
@@ -16,10 +14,10 @@ final readonly class ListTeamMembersHandler
         private TeamMemberRepositoryInterface $teamMemberRepository,
     ) {}
 
-    /** @return LengthAwarePaginator<TeamMemberRecord> */
-    public function handle(ListTeamMembersCommand $command): LengthAwarePaginator
+    public function handle(ListTeamMembersCommand $command): ListTeamMembersResult
     {
-        return $this->teamMemberRepository->paginateForTenant(
-            $this->accessGuard->assertCanRead($command->actor), $command->filters);
+        return new ListTeamMembersResult($this->teamMemberRepository->paginateForTenant(
+            $this->accessGuard->assertCanRead($command->actor), $command->filters,
+        ));
     }
 }

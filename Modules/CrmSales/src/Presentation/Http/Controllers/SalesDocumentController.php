@@ -23,18 +23,18 @@ final class SalesDocumentController
 {
     public function index(ListSalesDocumentsRequest $request, ListSalesDocumentsHandler $handler): JsonResponse
     {
-        $documents = $handler->handle(SalesCommandMapper::listing($request->attributes->get('principal'), $request->validated()));
+        $result = $handler->handle(SalesCommandMapper::listing($request->attributes->get('principal'), $request->validated()));
 
-        return ApiResponder::success($request, $documents
+        return ApiResponder::success($request, $result->documents
             ->map(fn ($document): array => (new SalesDocumentListResource($document))->resolve($request))
             ->all());
     }
 
     public function show(Request $request, GetSalesDocumentHandler $handler, string $documentId): JsonResponse
     {
-        $document = $handler->handle(SalesCommandMapper::document($request->attributes->get('principal'), $documentId));
+        $result = $handler->handle(SalesCommandMapper::document($request->attributes->get('principal'), $documentId));
 
-        return ApiResponder::success($request, new SalesDocumentResource($document));
+        return ApiResponder::success($request, new SalesDocumentResource($result->document));
     }
 
     public function store(CreateSalesDocumentRequest $request, CreateSalesDocumentHandler $handler): JsonResponse

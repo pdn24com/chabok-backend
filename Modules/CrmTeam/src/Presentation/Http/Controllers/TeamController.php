@@ -20,9 +20,9 @@ final class TeamController
 {
     public function index(ListTeamsRequest $request, ListTeamsHandler $handler): JsonResponse
     {
-        $teams = $handler->handle(TeamCommandMapper::listing($request->attributes->get('principal'), $request->validated()));
+        $result = $handler->handle(TeamCommandMapper::listing($request->attributes->get('principal'), $request->validated()));
 
-        return ApiResponder::success($request, TeamResource::collection($teams)->resolve($request));
+        return ApiResponder::success($request, TeamResource::collection($result->teams)->resolve($request));
     }
 
     public function store(CreateTeamRequest $request, CreateTeamHandler $handler): JsonResponse
@@ -38,8 +38,8 @@ final class TeamController
 
     public function update(UpdateTeamRequest $request, UpdateTeamHandler $handler, string $teamId): JsonResponse
     {
-        $team = $handler->handle(TeamCommandMapper::changes($request->attributes->get('principal'), $teamId, $request->validated()));
+        $result = $handler->handle(TeamCommandMapper::changes($request->attributes->get('principal'), $teamId, $request->validated()));
 
-        return ApiResponder::success($request, new TeamResource($team));
+        return ApiResponder::success($request, new TeamResource($result->team));
     }
 }

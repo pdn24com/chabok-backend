@@ -27,8 +27,8 @@ final readonly class CreateCustomerHandler
         private CustomerAddressRepositoryInterface $customerAddressRepository,
         private ContactPointRepositoryInterface $contactPointRepository,
         private CustomerIndustryRepositoryInterface $customerIndustryRepository,
-        private CustomerAddressValidatorInterface $addressValidator,
-        private CustomerDraftValidatorInterface $draftValidator,
+        private CustomerAddressValidatorInterface $customerAddressValidator,
+        private CustomerDraftValidatorInterface $customerDraftValidator,
     ) {}
 
     public function handle(CreateCustomerCommand $command): CreateCustomerResult
@@ -37,8 +37,8 @@ final readonly class CreateCustomerHandler
         $input = $command->input;
 
         $customer = $this->connection->transaction(function () use ($command, $hqId, $input): CustomerRecord {
-            $this->addressValidator->validate($input->address);
-            $mobile = $this->draftValidator->validate($hqId, $input);
+            $this->customerAddressValidator->validate($input->address);
+            $mobile = $this->customerDraftValidator->validate($hqId, $input);
 
             $at = $this->clock->now();
             $customer = $this->customerRepository->create([

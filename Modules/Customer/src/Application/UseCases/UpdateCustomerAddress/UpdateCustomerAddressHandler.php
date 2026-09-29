@@ -21,7 +21,7 @@ final readonly class UpdateCustomerAddressHandler
         private ClockInterface $clock,
         private CustomerAccessGuardInterface $accessGuard,
         private CustomerAddressRepositoryInterface $customerAddressRepository,
-        private CustomerAddressValidatorInterface $addressValidator,
+        private CustomerAddressValidatorInterface $customerAddressValidator,
     ) {}
 
     public function handle(UpdateCustomerAddressCommand $command): UpdateCustomerAddressResult
@@ -44,7 +44,7 @@ final readonly class UpdateCustomerAddressHandler
             // A partial change is judged as the whole address it leaves behind: switching the country
             // alone can put a reference city or a foreign city on the wrong side of the border.
             $merged = $changes->applyTo(CustomerAddressDraftDto::fromRecord($current));
-            $this->addressValidator->validateEntry($merged);
+            $this->customerAddressValidator->validateEntry($merged);
 
             if ($current->is_default && ! $merged->isDefault) {
                 throw new ApiException(ApiErrorCode::ValidationError, 422, 'foundation.request_is_invalid',

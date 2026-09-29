@@ -18,14 +18,14 @@ use Modules\Customer\Domain\Enums\CustomerHistoryCategory;
 final readonly class CustomerFinanceHistory implements CustomerFinanceHistoryInterface
 {
     public function __construct(
-        private ExternalInvoiceRepositoryInterface $invoices,
-        private FinancialEntryRepositoryInterface $entries,
+        private ExternalInvoiceRepositoryInterface $externalInvoiceRepository,
+        private FinancialEntryRepositoryInterface $financialEntryRepository,
     ) {}
 
     public function historyForCustomer(string $hqId, string $customerId): array
     {
         $rows = [];
-        foreach ($this->invoices->listForCustomer($hqId, $customerId) as $invoice) {
+        foreach ($this->externalInvoiceRepository->listForCustomer($hqId, $customerId) as $invoice) {
             $rows[] = new CustomerHistoryEntryDto(
                 category: CustomerHistoryCategory::FINANCE,
                 entryType: 'EXTERNAL_INVOICE',
@@ -36,7 +36,7 @@ final readonly class CustomerFinanceHistory implements CustomerFinanceHistoryInt
                 amount: $invoice->amount,
             );
         }
-        foreach ($this->entries->listForCustomer($hqId, $customerId) as $entry) {
+        foreach ($this->financialEntryRepository->listForCustomer($hqId, $customerId) as $entry) {
             $rows[] = new CustomerHistoryEntryDto(
                 category: CustomerHistoryCategory::FINANCE,
                 entryType: 'FINANCIAL_ENTRY',

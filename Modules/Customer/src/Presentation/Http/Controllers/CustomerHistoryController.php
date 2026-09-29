@@ -19,24 +19,24 @@ final class CustomerHistoryController
 {
     public function show(Request $request, GetCustomerHistoryHandler $handler, string $customerId): JsonResponse
     {
-        $history = $handler->handle(CustomerCommandMapper::history($request->attributes->get('principal'), $customerId));
+        $result = $handler->handle(CustomerCommandMapper::history($request->attributes->get('principal'), $customerId));
 
-        return ApiResponder::success($request, new CustomerHistoryResource($history));
+        return ApiResponder::success($request, new CustomerHistoryResource($result));
     }
 
     public function timeline(ListCustomerHistoryEntriesRequest $request, ListCustomerHistoryEntriesHandler $handler, string $customerId): JsonResponse
     {
-        $entries = $handler->handle(CustomerCommandMapper::historyEntries(
+        $result = $handler->handle(CustomerCommandMapper::historyEntries(
             $request->attributes->get('principal'), $customerId, null, $request->validated()));
 
-        return ApiResponder::paginated($request, $entries, fn ($entry): array => (new CustomerHistoryEntryResource($entry))->resolve($request));
+        return ApiResponder::paginated($request, $result->entries, fn ($entry): array => (new CustomerHistoryEntryResource($entry))->resolve($request));
     }
 
     public function category(ListCustomerHistoryEntriesRequest $request, ListCustomerHistoryEntriesHandler $handler, string $customerId, string $category): JsonResponse
     {
-        $entries = $handler->handle(CustomerCommandMapper::historyEntries(
+        $result = $handler->handle(CustomerCommandMapper::historyEntries(
             $request->attributes->get('principal'), $customerId, $category, $request->validated()));
 
-        return ApiResponder::paginated($request, $entries, fn ($entry): array => (new CustomerHistoryEntryResource($entry))->resolve($request));
+        return ApiResponder::paginated($request, $result->entries, fn ($entry): array => (new CustomerHistoryEntryResource($entry))->resolve($request));
     }
 }

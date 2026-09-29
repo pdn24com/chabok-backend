@@ -34,11 +34,11 @@ final readonly class AddTeamMemberHandler
         private MembershipEventRepositoryInterface $membershipEventRepository,
     ) {}
 
-    public function handle(AddTeamMemberCommand $command): TeamMemberRecord
+    public function handle(AddTeamMemberCommand $command): AddTeamMemberResult
     {
         $hqId = $this->accessGuard->assertCanManage($command->actor);
 
-        return $this->connection->transaction(function () use ($command, $hqId): TeamMemberRecord {
+        $result = $this->connection->transaction(function () use ($command, $hqId): TeamMemberRecord {
             $team = $this->teamRepository->findForTenant($hqId, $command->teamId)
                 ?? throw new ApiException(ApiErrorCode::ResourceNotFound, 404, 'common.resource_not_found');
             if ($team->status !== TeamStatus::ACTIVE) {
@@ -76,6 +76,8 @@ final readonly class AddTeamMemberHandler
 
             return $this->teamMemberRepository->findForTenant($hqId, $membership->team_member_id) ?? $membership;
         }, attempts: 3);
+
+        return new AddTeamMemberResult($result);
     }
 
     private function invalid(string $field, string $messageKey): ApiException

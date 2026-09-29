@@ -29,11 +29,11 @@ final readonly class CustomerHistoryReader implements CustomerHistoryReaderInter
     private const CORRESPONDENCE_ACTIVITY_TYPES = ['MESSAGE', 'DOCUMENT_SENT', 'NOTE', 'REFERRAL'];
 
     public function __construct(
-        private TaskRepositoryInterface $tasks,
-        private ActivityRepositoryInterface $activities,
-        private SalesDocumentRepositoryInterface $salesDocuments,
-        private CustomerFinanceHistoryInterface $finance,
-        private AuditEventRepositoryInterface $auditEvents,
+        private TaskRepositoryInterface $taskRepository,
+        private ActivityRepositoryInterface $activityRepository,
+        private SalesDocumentRepositoryInterface $salesDocumentRepository,
+        private CustomerFinanceHistoryInterface $customerFinanceHistory,
+        private AuditEventRepositoryInterface $auditEventRepository,
     ) {}
 
     public function entries(string $hqId, string $customerId, CustomerHistoryCategory $category): array
@@ -45,7 +45,7 @@ final readonly class CustomerHistoryReader implements CustomerHistoryReaderInter
             ],
             CustomerHistoryCategory::FINANCE => [
                 ...$this->salesDocuments($hqId, $customerId),
-                ...$this->finance->historyForCustomer($hqId, $customerId),
+                ...$this->customerFinanceHistory->historyForCustomer($hqId, $customerId),
             ],
             CustomerHistoryCategory::CORRESPONDENCE => $this->activities($hqId, $customerId, self::CORRESPONDENCE_ACTIVITY_TYPES, $category),
             CustomerHistoryCategory::CHANGES => $this->changes($hqId, $customerId),
@@ -65,7 +65,7 @@ final readonly class CustomerHistoryReader implements CustomerHistoryReaderInter
     private function tasks(string $hqId, string $customerId): array
     {
         $rows = [];
-        foreach ($this->tasks->historyForCustomer($hqId, $customerId) as $task) {
+        foreach ($this->taskRepository->historyForCustomer($hqId, $customerId) as $task) {
             $rows[] = new CustomerHistoryEntryDto(
                 category: CustomerHistoryCategory::WORK,
                 entryType: 'TASK',
@@ -87,7 +87,7 @@ final readonly class CustomerHistoryReader implements CustomerHistoryReaderInter
     private function activities(string $hqId, string $customerId, array $types, CustomerHistoryCategory $category): array
     {
         $rows = [];
-        foreach ($this->activities->historyForCustomer($hqId, $customerId, $types) as $activity) {
+        foreach ($this->activityRepository->historyForCustomer($hqId, $customerId, $types) as $activity) {
             $type = $activity->type instanceof BackedEnum ? $activity->type->value : (string) $activity->type;
             $rows[] = new CustomerHistoryEntryDto(
                 category: $category,
@@ -109,7 +109,7 @@ final readonly class CustomerHistoryReader implements CustomerHistoryReaderInter
     private function salesDocuments(string $hqId, string $customerId): array
     {
         $rows = [];
-        foreach ($this->salesDocuments->historyForCustomer($hqId, $customerId) as $document) {
+        foreach ($this->salesDocumentRepository->historyForCustomer($hqId, $customerId) as $document) {
             $version = $document->currentVersion;
             $rows[] = new CustomerHistoryEntryDto(
                 category: CustomerHistoryCategory::FINANCE,
@@ -132,7 +132,7 @@ final readonly class CustomerHistoryReader implements CustomerHistoryReaderInter
     private function changes(string $hqId, string $customerId): array
     {
         $rows = [];
-        foreach ($this->auditEvents->historyForResource($hqId, 'crm_customers', $customerId) as $event) {
+        foreach ($this->auditEventRepository->historyForResource($hqId, 'crm_customers', $customerId) as $event) {
             $rows[] = new CustomerHistoryEntryDto(
                 category: CustomerHistoryCategory::CHANGES,
                 entryType: 'AUDIT',

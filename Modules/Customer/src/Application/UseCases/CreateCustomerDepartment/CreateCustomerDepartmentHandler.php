@@ -18,7 +18,7 @@ final readonly class CreateCustomerDepartmentHandler
         private ClockInterface $clock,
         private CustomerAccessGuardInterface $accessGuard,
         private CustomerDepartmentRepositoryInterface $customerDepartmentRepository,
-        private CustomerOrgStructureValidatorInterface $validator,
+        private CustomerOrgStructureValidatorInterface $customerOrgStructureValidator,
     ) {}
 
     public function handle(CreateCustomerDepartmentCommand $command): CreateCustomerDepartmentResult
@@ -26,8 +26,8 @@ final readonly class CreateCustomerDepartmentHandler
         $hqId = $this->accessGuard->assertCanEdit($command->actor);
 
         $department = $this->connection->transaction(function () use ($command, $hqId): CustomerDepartmentRecord {
-            $this->validator->assertCompany($hqId, $command->customerId);
-            $this->validator->assertParent($hqId, $command->customerId, $command->input->parentDepartmentId);
+            $this->customerOrgStructureValidator->assertCompany($hqId, $command->customerId);
+            $this->customerOrgStructureValidator->assertParent($hqId, $command->customerId, $command->input->parentDepartmentId);
 
             $department = $this->customerDepartmentRepository->create([
                 ...$command->input->toAttributes(),

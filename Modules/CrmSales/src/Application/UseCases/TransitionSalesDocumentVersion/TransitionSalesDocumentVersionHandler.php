@@ -41,8 +41,8 @@ final readonly class TransitionSalesDocumentVersionHandler
         private ClockInterface $clock,
         private SalesDocumentAccessGuardInterface $accessGuard,
         private CustomerRepositoryInterface $customerRepository,
-        private SalesDocumentRepositoryInterface $salesDocuments,
-        private SalesDocumentVersionRepositoryInterface $versions,
+        private SalesDocumentRepositoryInterface $salesDocumentRepository,
+        private SalesDocumentVersionRepositoryInterface $salesDocumentVersionRepository,
     ) {}
 
     public function handle(TransitionSalesDocumentVersionCommand $command): TransitionSalesDocumentVersionResult
@@ -52,9 +52,9 @@ final readonly class TransitionSalesDocumentVersionHandler
         return $this->connection->transaction(function () use ($command, $hqId): TransitionSalesDocumentVersionResult {
             // A revision of another tenant is indistinguishable from one that does not exist. The row is
             // locked for the whole transaction, so the status check below cannot be raced past.
-            $version = $this->versions->lockForTenant($hqId, $command->versionId)
+            $version = $this->salesDocumentVersionRepository->lockForTenant($hqId, $command->versionId)
                 ?? throw new ApiException(ApiErrorCode::ResourceNotFound, 404, 'common.resource_not_found');
-            $document = $this->salesDocuments->findForTenant($hqId, (string) $version->document_id)
+            $document = $this->salesDocumentRepository->findForTenant($hqId, (string) $version->document_id)
                 ?? throw new ApiException(ApiErrorCode::InternalServerError, 500, 'common.unexpected_error_occurred');
 
             if ((string) $document->current_version_id !== $command->versionId) {
@@ -67,15 +67,15 @@ final readonly class TransitionSalesDocumentVersionHandler
             }
 
             $at = $this->clock->now();
-            $this->versions->update($hqId, $command->versionId, match ($command->transition) {
+            $this->salesDocumentVersionRepository->update($hqId, $command->versionId, match ($command->transition) {
                 SalesDocumentTransition::ISSUE => $this->issued($hqId, $document, $version, $at),
                 SalesDocumentTransition::ACCEPT => $this->accepted($version, $at),
                 SalesDocumentTransition::CANCEL => ['status' => SalesDocumentStatus::CANCELLED->value],
             });
 
             return new TransitionSalesDocumentVersionResult(
-                $this->salesDocuments->findForTenant($hqId, (string) $version->document_id) ?? $document,
-                $this->versions->findForTenant($hqId, $command->versionId) ?? $version,
+                $this->salesDocumentRepository->findForTenant($hqId, (string) $version->document_id) ?? $document,
+                $this->salesDocumentVersionRepository->findForTenant($hqId, $command->versionId) ?? $version,
             );
         }, attempts: 3);
     }

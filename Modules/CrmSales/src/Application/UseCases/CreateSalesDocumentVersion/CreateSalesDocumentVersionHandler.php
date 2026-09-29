@@ -24,8 +24,8 @@ final readonly class CreateSalesDocumentVersionHandler
         private ConnectionInterface $connection,
         private ClockInterface $clock,
         private SalesDocumentAccessGuardInterface $accessGuard,
-        private SalesDocumentRepositoryInterface $salesDocuments,
-        private SalesDocumentVersionRepositoryInterface $versions,
+        private SalesDocumentRepositoryInterface $salesDocumentRepository,
+        private SalesDocumentVersionRepositoryInterface $salesDocumentVersionRepository,
     ) {}
 
     public function handle(CreateSalesDocumentVersionCommand $command): CreateSalesDocumentVersionResult
@@ -36,11 +36,11 @@ final readonly class CreateSalesDocumentVersionHandler
         return $this->connection->transaction(function () use ($command, $hqId, $input): CreateSalesDocumentVersionResult {
             // The row is locked for the whole transaction, so two operators cannot both build revision
             // three out of revision two.
-            $document = $this->salesDocuments->lockForTenant($hqId, $command->documentId)
+            $document = $this->salesDocumentRepository->lockForTenant($hqId, $command->documentId)
                 ?? throw new ApiException(ApiErrorCode::ResourceNotFound, 404, 'common.resource_not_found');
             $current = $document->current_version_id === null
                 ? null
-                : $this->versions->findForTenant($hqId, (string) $document->current_version_id);
+                : $this->salesDocumentVersionRepository->findForTenant($hqId, (string) $document->current_version_id);
             if ($current === null) {
                 throw new ApiException(ApiErrorCode::InternalServerError, 500, 'common.unexpected_error_occurred');
             }
@@ -55,7 +55,7 @@ final readonly class CreateSalesDocumentVersionHandler
                 throw $this->invalid('expires_at', 'sales.validity_cannot_be_in_the_past');
             }
 
-            $version = $this->versions->create([
+            $version = $this->salesDocumentVersionRepository->create([
                 'hq_id' => $hqId,
                 'document_id' => $command->documentId,
                 'previous_version_id' => $current->sales_document_version_id,
@@ -72,11 +72,11 @@ final readonly class CreateSalesDocumentVersionHandler
                 'created_by' => $command->actor->userId,
                 'created_at' => $at,
             ]);
-            $this->salesDocuments->update($hqId, $command->documentId, [
+            $this->salesDocumentRepository->update($hqId, $command->documentId, [
                 'current_version_id' => $version->sales_document_version_id,
             ]);
 
-            $stored = $this->salesDocuments->findForTenant($hqId, $command->documentId) ?? $document;
+            $stored = $this->salesDocumentRepository->findForTenant($hqId, $command->documentId) ?? $document;
 
             return new CreateSalesDocumentVersionResult($stored, $version);
         }, attempts: 3);
