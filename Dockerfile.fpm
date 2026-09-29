@@ -1,0 +1,23 @@
+FROM composer:2.8.12@sha256:5248900ab8b5f7f880c2d62180e40960cd87f60149ec9a1abfd62ac72a02577c AS composer
+
+# Pinned linux/amd64 image for the existing x86 Stage host.
+FROM php:8.3.33-fpm-bookworm@sha256:4b43ef9eef15c1ae0812a0a2f8c52eac81bfa9fef008f5028758dcca6a70d642
+
+RUN apt-get update \
+    && apt-get install --no-install-recommends --yes git libfcgi-bin libxml2-dev libonig-dev libzip-dev unzip \
+    && docker-php-ext-install dom mbstring pcntl pdo_mysql zip opcache \
+    && pecl install redis-6.2.0 \
+    && docker-php-ext-enable redis \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=composer /usr/bin/composer /usr/local/bin/composer
+COPY docker/fpm/zz-chabok.conf /usr/local/etc/php-fpm.d/zz-chabok.conf
+COPY docker/fpm/chabok.ini /usr/local/etc/php/conf.d/zz-chabok.ini
+COPY docker/fpm/healthcheck.sh /usr/local/bin/chabok-fpm-healthcheck
+RUN sed -i 's/\r$//' /usr/local/bin/chabok-fpm-healthcheck \
+    && chmod 755 /usr/local/bin/chabok-fpm-healthcheck
+
+ENV PHP_FPM_MAX_CHILDREN=4 PHP_FPM_MAX_REQUESTS=500
+WORKDIR /app
+HEALTHCHECK --interval=15s --timeout=5s --start-period=20s --retries=5 CMD ["chabok-fpm-healthcheck"]
+CMD ["php-fpm", "-F"]

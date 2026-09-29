@@ -1,0 +1,16 @@
+{
+    "name": "chabok/crm-opportunitie",
+    "description": "Chabok CrmOpportunitie bounded module.",
+    "type": "library",
+    "license": "proprietary",
+    "autoload": {
+        "psr-4": {
+            "Modules\\CrmOpportunitie\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Modules\\CrmOpportunitie\\Tests\\": "tests/"
+        }
+    }
+}

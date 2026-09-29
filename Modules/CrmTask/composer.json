@@ -1,0 +1,16 @@
+{
+    "name": "chabok/crm-task",
+    "description": "Chabok CrmTask bounded module.",
+    "type": "library",
+    "license": "proprietary",
+    "autoload": {
+        "psr-4": {
+            "Modules\\CrmTask\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Modules\\CrmTask\\Tests\\": "tests/"
+        }
+    }
+}

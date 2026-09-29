@@ -1,0 +1,11 @@
+{
+    "name": "Outbox",
+    "alias": "outbox",
+    "description": "",
+    "keywords": [],
+    "priority": 0,
+    "providers": [
+        "Modules\\Outbox\\Infrastructure\\Providers\\OutboxServiceProvider"
+    ],
+    "files": []
+}

@@ -1,0 +1,16 @@
+{
+    "name": "chabok/notification",
+    "description": "Chabok deterministic Stage 0 notification delivery module.",
+    "type": "library",
+    "license": "proprietary",
+    "autoload": {
+        "psr-4": {
+            "Modules\\Notification\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Modules\\Notification\\Tests\\": "tests/"
+        }
+    }
+}

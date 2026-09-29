@@ -1,0 +1,59 @@
+{
+    "long_methods": [
+        {
+            "file": "Modules/Outbox/src/Application/Services/OutboxEventSchemaRegistry.php",
+            "method": "schemas",
+            "lines": 91
+        },
+        {
+            "file": "Modules/ServiceCatalog/src/Application/UseCases/SaveCatalogRecord/SaveCatalogRecordHandler.php",
+            "method": "handle",
+            "lines": 82
+        },
+        {
+            "file": "Modules/Operations/src/Application/UseCases/PlanConsignmentRoute/PlanConsignmentRouteHandler.php",
+            "method": "handle",
+            "lines": 81
+        }
+    ],
+    "structured_array_parameters": [
+        {
+            "file": "Modules/Outbox/src/Application/Services/PublicationRecorder.php",
+            "method": "destroyDeliverySecret",
+            "param": "payload"
+        },
+        {
+            "file": "Modules/Outbox/src/Application/Services/OutboxEventSchemaRegistry.php",
+            "method": "assertValid",
+            "param": "payload"
+        },
+        {
+            "file": "Modules/Outbox/src/Infrastructure/Adapters/LaravelWorkerRuntime.php",
+            "method": "shareContext",
+            "param": "context"
+        }
+    ],
+    "multiple_handler_entries": [],
+    "vague_returns": [
+        {
+            "file": "Modules/Consignment/src/Domain/Support/InputFingerprint.php",
+            "method": "sort",
+            "type": "mixed"
+        },
+        {
+            "file": "Modules/Foundation/src/Domain/ValueObjects/CoverageAddress.php",
+            "method": "factValue",
+            "type": "mixed"
+        },
+        {
+            "file": "Modules/ServiceCatalog/src/Domain/Support/OfferingFacts.php",
+            "method": "value",
+            "type": "mixed"
+        },
+        {
+            "file": "Modules/ServiceCatalog/src/Domain/ValueObjects/OfferingSelectionContext.php",
+            "method": "factValue",
+            "type": "mixed"
+        }
+    ]
+}

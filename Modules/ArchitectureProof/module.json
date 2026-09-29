@@ -1,0 +1,11 @@
+{
+    "name": "ArchitectureProof",
+    "alias": "architectureproof",
+    "description": "",
+    "keywords": [],
+    "priority": 0,
+    "providers": [
+        "Modules\\ArchitectureProof\\Infrastructure\\Providers\\ArchitectureProofServiceProvider"
+    ],
+    "files": []
+}

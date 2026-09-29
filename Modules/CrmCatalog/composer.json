@@ -1,0 +1,16 @@
+{
+    "name": "chabok/crm-catalog",
+    "description": "Chabok CrmCatalog bounded module.",
+    "type": "library",
+    "license": "proprietary",
+    "autoload": {
+        "psr-4": {
+            "Modules\\CrmCatalog\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Modules\\CrmCatalog\\Tests\\": "tests/"
+        }
+    }
+}

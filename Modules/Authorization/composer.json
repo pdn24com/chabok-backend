@@ -1,0 +1,16 @@
+{
+    "name": "chabok/authorization",
+    "description": "Chabok authorization, role, permission, scope, and entitlement module.",
+    "type": "library",
+    "license": "proprietary",
+    "autoload": {
+        "psr-4": {
+            "Modules\\Authorization\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Modules\\Authorization\\Tests\\": "tests/"
+        }
+    }
+}

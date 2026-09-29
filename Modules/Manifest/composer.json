@@ -1,0 +1,16 @@
+{
+    "name": "chabok/manifest",
+    "description": "Chabok Manifest bounded module.",
+    "type": "library",
+    "license": "proprietary",
+    "autoload": {
+        "psr-4": {
+            "Modules\\Manifest\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Modules\\Manifest\\Tests\\": "tests/"
+        }
+    }
+}

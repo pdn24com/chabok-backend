@@ -1,0 +1,16 @@
+{
+    "name": "chabok/crm-sales",
+    "description": "Chabok CrmSales bounded module.",
+    "type": "library",
+    "license": "proprietary",
+    "autoload": {
+        "psr-4": {
+            "Modules\\CrmSales\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Modules\\CrmSales\\Tests\\": "tests/"
+        }
+    }
+}

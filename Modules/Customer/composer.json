@@ -1,0 +1,16 @@
+{
+    "name": "chabok/customer",
+    "description": "Chabok Customer bounded module.",
+    "type": "library",
+    "license": "proprietary",
+    "autoload": {
+        "psr-4": {
+            "Modules\\Customer\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Modules\\Customer\\Tests\\": "tests/"
+        }
+    }
+}

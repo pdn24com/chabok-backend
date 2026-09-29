@@ -1,0 +1,16 @@
+{
+    "name": "chabok/crm-team",
+    "description": "Chabok CrmTeam bounded module.",
+    "type": "library",
+    "license": "proprietary",
+    "autoload": {
+        "psr-4": {
+            "Modules\\CrmTeam\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Modules\\CrmTeam\\Tests\\": "tests/"
+        }
+    }
+}

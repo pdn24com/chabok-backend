@@ -1,0 +1,17 @@
+{
+    "name": "CrmFinance",
+    "alias": "crm-finance",
+    "description": "CRM customer bank accounts, manual financial entries, receipt allocations and external invoice references.",
+    "keywords": [
+        "crm",
+        "finance",
+        "invoice",
+        "receipt",
+        "allocation"
+    ],
+    "priority": 18,
+    "providers": [
+        "Modules\\CrmFinance\\Infrastructure\\Providers\\CrmFinanceServiceProvider"
+    ],
+    "files": []
+}

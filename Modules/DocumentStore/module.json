@@ -1,0 +1,16 @@
+{
+    "name": "DocumentStore",
+    "alias": "document-store",
+    "description": "Shared document metadata, category tree and polymorphic links to owning resources.",
+    "keywords": [
+        "document",
+        "attachment",
+        "category",
+        "link"
+    ],
+    "priority": 19,
+    "providers": [
+        "Modules\\DocumentStore\\Infrastructure\\Providers\\DocumentStoreServiceProvider"
+    ],
+    "files": []
+}

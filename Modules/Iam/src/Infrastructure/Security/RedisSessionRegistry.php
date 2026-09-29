@@ -1,0 +1,48 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Modules\Iam\Infrastructure\Security;
+
+use Illuminate\Support\Facades\Redis;
+use Modules\Iam\Application\Contracts\SessionRegistryInterface;
+
+final class RedisSessionRegistry implements SessionRegistryInterface
+{
+    public function invalidate(string $sessionId, int $ttl = 2592000): void
+    {
+        Redis::connection()->setex("iam:session:revoked:{$sessionId}", $ttl, '1');
+    }
+
+    public function invalidateMany(array $sessionIds, int $ttl = 2592000): void
+    {
+        if ($sessionIds === []) {
+            return;
+        }
+        Redis::connection()->pipeline(function ($pipeline) use ($sessionIds, $ttl): void {
+            foreach ($sessionIds as $sessionId) {
+                $pipeline->setex("iam:session:revoked:{$sessionId}", $ttl, '1');
+            }
+        });
+    }
+
+    public function isInvalidated(string $sessionId): bool
+    {
+        return Redis::connection()->exists("iam:session:revoked:{$sessionId}") > 0;
+    }
+
+    public function rememberRotatedToken(
+        string $tokenHash,
+        string $familyId,
+        int $ttl,
+    ): void {
+        Redis::connection()->setex("iam:refresh:rotated:{$tokenHash}", $ttl, $familyId);
+    }
+
+    public function rotatedFamily(string $tokenHash): ?string
+    {
+        $value = Redis::connection()->get("iam:refresh:rotated:{$tokenHash}");
+
+        return is_string($value) && $value !== '' ? $value : null;
+    }
+}

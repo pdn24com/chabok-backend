@@ -1,0 +1,13 @@
+{
+    "database": "isolated temporary chabok_testing",
+    "tables": 89,
+    "integer_auto_increment_primary_keys": 89,
+    "invalid_primary_keys": [],
+    "constraints": {
+        "UNIQUE": 195,
+        "PRIMARY KEY": 89,
+        "FOREIGN KEY": 272,
+        "CHECK": 26
+    },
+    "triggers": 90
+}

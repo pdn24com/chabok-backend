@@ -1,0 +1,9 @@
+{
+    "name": "Pricing",
+    "alias": "pricing",
+    "description": "Versioned tariffs, deterministic SALES quotes and immutable pricing snapshots.",
+    "keywords": ["pricing", "tariff", "quote"],
+    "priority": 9,
+    "providers": ["Modules\\Pricing\\Infrastructure\\Providers\\PricingServiceProvider"],
+    "files": []
+}
