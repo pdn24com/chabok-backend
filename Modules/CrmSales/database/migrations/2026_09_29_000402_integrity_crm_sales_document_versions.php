@@ -14,7 +14,15 @@ return new class extends Migration
             return;
         }
 
-        DB::statement('ALTER TABLE `crm_sales_document_versions` ADD CONSTRAINT `crm_sales_document_versions_previous_self_check` CHECK (((`previous_version_id` is null) or (`previous_version_id` <> `id`)))');
+        // MySQL refuses a CHECK that reads an auto-increment column (error 3818), so the self-reference rule is a trigger.
+        DB::unprepared(<<<'SQL'
+CREATE TRIGGER `crm_sales_document_versions_previous_self_insert` BEFORE INSERT ON `crm_sales_document_versions` FOR EACH ROW BEGIN IF NEW.previous_version_id IS NOT NULL AND NEW.previous_version_id = NEW.id THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='A row cannot reference itself through previous_version_id'; END IF; END
+SQL
+        );
+        DB::unprepared(<<<'SQL'
+CREATE TRIGGER `crm_sales_document_versions_previous_self_update` BEFORE UPDATE ON `crm_sales_document_versions` FOR EACH ROW BEGIN IF NEW.previous_version_id IS NOT NULL AND NEW.previous_version_id = NEW.id THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='A row cannot reference itself through previous_version_id'; END IF; END
+SQL
+        );
         DB::statement('ALTER TABLE `crm_sales_document_versions` ADD CONSTRAINT `crm_sales_document_versions_version_no_check` CHECK ((`version_no` >= 1))');
         DB::statement('ALTER TABLE `crm_sales_document_versions` ADD CONSTRAINT `crm_sales_document_versions_total_check` CHECK ((`total` >= 0))');
         // An issued version carries frozen content, so its snapshot, expiry and hash can no longer be missing.
@@ -40,6 +48,7 @@ SQL
         DB::statement('ALTER TABLE `crm_sales_document_versions` DROP CHECK `crm_sales_document_versions_issued_content_check`');
         DB::statement('ALTER TABLE `crm_sales_document_versions` DROP CHECK `crm_sales_document_versions_total_check`');
         DB::statement('ALTER TABLE `crm_sales_document_versions` DROP CHECK `crm_sales_document_versions_version_no_check`');
-        DB::statement('ALTER TABLE `crm_sales_document_versions` DROP CHECK `crm_sales_document_versions_previous_self_check`');
+        DB::unprepared('DROP TRIGGER IF EXISTS `crm_sales_document_versions_previous_self_update`');
+        DB::unprepared('DROP TRIGGER IF EXISTS `crm_sales_document_versions_previous_self_insert`');
     }
 };

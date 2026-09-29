@@ -14,7 +14,15 @@ return new class extends Migration
             return;
         }
 
-        DB::statement('ALTER TABLE `crm_catalog_categories` ADD CONSTRAINT `crm_catalog_categories_parent_self_check` CHECK (((`parent_id` is null) or (`parent_id` <> `id`)))');
+        // MySQL refuses a CHECK that reads an auto-increment column (error 3818), so the self-reference rule is a trigger.
+        DB::unprepared(<<<'SQL'
+CREATE TRIGGER `crm_catalog_categories_parent_self_insert` BEFORE INSERT ON `crm_catalog_categories` FOR EACH ROW BEGIN IF NEW.parent_id IS NOT NULL AND NEW.parent_id = NEW.id THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='A row cannot reference itself through parent_id'; END IF; END
+SQL
+        );
+        DB::unprepared(<<<'SQL'
+CREATE TRIGGER `crm_catalog_categories_parent_self_update` BEFORE UPDATE ON `crm_catalog_categories` FOR EACH ROW BEGIN IF NEW.parent_id IS NOT NULL AND NEW.parent_id = NEW.id THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='A row cannot reference itself through parent_id'; END IF; END
+SQL
+        );
     }
 
     public function down(): void
@@ -23,6 +31,7 @@ return new class extends Migration
             return;
         }
 
-        DB::statement('ALTER TABLE `crm_catalog_categories` DROP CHECK `crm_catalog_categories_parent_self_check`');
+        DB::unprepared('DROP TRIGGER IF EXISTS `crm_catalog_categories_parent_self_update`');
+        DB::unprepared('DROP TRIGGER IF EXISTS `crm_catalog_categories_parent_self_insert`');
     }
 };
