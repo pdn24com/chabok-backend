@@ -8,8 +8,10 @@ use Illuminate\Support\ServiceProvider;
 use Modules\CrmTask\Application\Ports\CustomerDirectoryInterface;
 use Modules\Customer\Application\Contracts\CustomerAccessGuardInterface;
 use Modules\Customer\Application\Contracts\CustomerAddressValidatorInterface;
+use Modules\Customer\Application\Contracts\CustomerContactPointValidatorInterface;
 use Modules\Customer\Application\Contracts\CustomerDraftValidatorInterface;
 use Modules\Customer\Application\Contracts\CustomerHistoryReaderInterface;
+use Modules\Customer\Application\Contracts\CustomerIndustryValidatorInterface;
 use Modules\Customer\Application\Contracts\CustomerOrgStructureValidatorInterface;
 use Modules\Customer\Application\Contracts\CustomerPrimaryIndustryManagerInterface;
 use Modules\Customer\Application\Repositories\ContactPointRepositoryInterface;
@@ -20,11 +22,14 @@ use Modules\Customer\Application\Repositories\CustomerFinancialDetailRepositoryI
 use Modules\Customer\Application\Repositories\CustomerIndustryRepositoryInterface;
 use Modules\Customer\Application\Repositories\CustomerPositionRepositoryInterface;
 use Modules\Customer\Application\Repositories\CustomerRepositoryInterface;
+use Modules\Customer\Application\Repositories\RelationshipRepositoryInterface;
 use Modules\Customer\Application\Services\CustomerAccessGuard;
 use Modules\Customer\Application\Services\CustomerHistoryReader;
 use Modules\Customer\Application\Services\CustomerPrimaryIndustryManager;
 use Modules\Customer\Application\Validators\CustomerAddressValidator;
+use Modules\Customer\Application\Validators\CustomerContactPointValidator;
 use Modules\Customer\Application\Validators\CustomerDraftValidator;
+use Modules\Customer\Application\Validators\CustomerIndustryValidator;
 use Modules\Customer\Application\Validators\CustomerOrgStructureValidator;
 use Modules\Customer\Infrastructure\Adapters\TaskCustomerDirectory;
 use Modules\Customer\Infrastructure\Repositories\EloquentContactPointRepository;
@@ -35,6 +40,7 @@ use Modules\Customer\Infrastructure\Repositories\EloquentCustomerFinancialDetail
 use Modules\Customer\Infrastructure\Repositories\EloquentCustomerIndustryRepository;
 use Modules\Customer\Infrastructure\Repositories\EloquentCustomerPositionRepository;
 use Modules\Customer\Infrastructure\Repositories\EloquentCustomerRepository;
+use Modules\Customer\Infrastructure\Repositories\EloquentRelationshipRepository;
 
 final class CustomerServiceProvider extends ServiceProvider
 {
@@ -48,6 +54,7 @@ final class CustomerServiceProvider extends ServiceProvider
         CustomerPositionRepositoryInterface::class => EloquentCustomerPositionRepository::class,
         CustomerExtendedDetailRepositoryInterface::class => EloquentCustomerExtendedDetailRepository::class,
         CustomerFinancialDetailRepositoryInterface::class => EloquentCustomerFinancialDetailRepository::class,
+        RelationshipRepositoryInterface::class => EloquentRelationshipRepository::class,
     ];
 
     public function register(): void
@@ -62,6 +69,8 @@ final class CustomerServiceProvider extends ServiceProvider
         $this->app->bind(CustomerDraftValidatorInterface::class, CustomerDraftValidator::class);
         $this->app->bind(CustomerOrgStructureValidatorInterface::class, CustomerOrgStructureValidator::class);
         $this->app->bind(CustomerHistoryReaderInterface::class, CustomerHistoryReader::class);
+        $this->app->bind(CustomerContactPointValidatorInterface::class, CustomerContactPointValidator::class);
+        $this->app->bind(CustomerIndustryValidatorInterface::class, CustomerIndustryValidator::class);
     }
 
     public function boot(): void

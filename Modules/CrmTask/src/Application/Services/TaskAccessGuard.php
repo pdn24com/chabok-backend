@@ -25,6 +25,11 @@ final readonly class TaskAccessGuard implements TaskAccessGuardInterface
         return $this->assertTenantPermission($actor, 'crm.task.manage');
     }
 
+    public function assertCanRecordActivity(AuthenticatedPrincipal $actor): string
+    {
+        return $this->assertTenantPermission($actor, 'crm.activity.manage');
+    }
+
     private function assertTenantPermission(AuthenticatedPrincipal $actor, string $permission): string
     {
         if ($actor->hqId === null) {

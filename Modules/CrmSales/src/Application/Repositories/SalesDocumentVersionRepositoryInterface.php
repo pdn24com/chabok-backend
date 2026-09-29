@@ -16,6 +16,9 @@ interface SalesDocumentVersionRepositoryInterface
 
     public function findForTenant(string $hqId, string $versionId): ?SalesDocumentVersionRecord;
 
+    /** True when the revision exists in the tenant and its document belongs to this customer. */
+    public function existsForCustomer(string $hqId, string $customerId, string $versionId): bool;
+
     /** @param array<string, mixed> $attributes */
     public function update(string $hqId, string $versionId, array $attributes): void;
 }

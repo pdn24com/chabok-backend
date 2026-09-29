@@ -24,6 +24,8 @@ final class CreateExternalInvoiceRequest extends ApiFormRequest
             'issued_on' => ['required', 'integer', 'min:-2208988800', 'max:4102444800'],
             'due_on' => ['sometimes', 'nullable', 'integer', 'min:-2208988800', 'max:4102444800'],
             'opportunity_id' => ['sometimes', 'nullable', 'integer', 'min:1', 'max:4294967295'],
+            // The contract this invoice bills, when there is one; it must be one of this same customer.
+            'contract_id' => ['sometimes', 'nullable', 'integer', 'min:1', 'max:4294967295'],
         ];
     }
 }

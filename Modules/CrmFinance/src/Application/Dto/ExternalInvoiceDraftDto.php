@@ -16,5 +16,6 @@ final readonly class ExternalInvoiceDraftDto
         public DateTimeImmutable $issuedOn,
         public ?DateTimeImmutable $dueOn = null,
         public ?string $opportunityId = null,
+        public ?string $contractId = null,
     ) {}
 }

@@ -6,6 +6,8 @@ namespace Modules\Customer\Presentation\Mappers;
 
 use DateTimeImmutable;
 use DateTimeZone;
+use Modules\Customer\Application\Dto\CustomerContactPointDraftDto;
+use Modules\Customer\Application\Dto\CustomerIndustryDraftDto;
 use Modules\Customer\Application\Dto\CustomerAddressChangesDto;
 use Modules\Customer\Application\Dto\CustomerAddressDraftDto;
 use Modules\Customer\Application\Dto\CustomerAddressDto;
@@ -22,6 +24,11 @@ use Modules\Customer\Application\UseCases\CreateCustomer\CreateCustomerCommand;
 use Modules\Customer\Application\UseCases\CreateCustomerAddress\CreateCustomerAddressCommand;
 use Modules\Customer\Application\UseCases\CreateCustomerDepartment\CreateCustomerDepartmentCommand;
 use Modules\Customer\Application\UseCases\CreateCustomerPosition\CreateCustomerPositionCommand;
+use Modules\Customer\Application\UseCases\FindCustomerDuplicates\FindCustomerDuplicatesCommand;
+use Modules\Customer\Application\UseCases\ListCustomerContactPoints\ListCustomerContactPointsCommand;
+use Modules\Customer\Application\UseCases\ListCustomerIndustries\ListCustomerIndustriesCommand;
+use Modules\Customer\Application\UseCases\SaveCustomerContactPoints\SaveCustomerContactPointsCommand;
+use Modules\Customer\Application\UseCases\SaveCustomerIndustries\SaveCustomerIndustriesCommand;
 use Modules\Customer\Application\UseCases\GetCustomerAddress\GetCustomerAddressCommand;
 use Modules\Customer\Application\UseCases\GetCustomerDetail\GetCustomerDetailCommand;
 use Modules\Customer\Application\UseCases\GetCustomerExtendedDetails\GetCustomerExtendedDetailsCommand;
@@ -38,6 +45,10 @@ use Modules\Customer\Application\UseCases\UpdateCustomerAddress\UpdateCustomerAd
 use Modules\Customer\Application\UseCases\UpdateCustomerDepartment\UpdateCustomerDepartmentCommand;
 use Modules\Customer\Application\UseCases\UpdateCustomerPosition\UpdateCustomerPositionCommand;
 use Modules\Customer\Application\UseCases\UpdateCustomerProfile\UpdateCustomerProfileCommand;
+use Modules\Customer\Domain\Enums\ContactPointIdentifierKind;
+use Modules\Customer\Domain\Enums\ContactPointScope;
+use Modules\Customer\Domain\Enums\ContactPointStatus;
+use Modules\Customer\Domain\Enums\ContactPointType;
 use Modules\Customer\Domain\Enums\CreditRating;
 use Modules\Customer\Domain\Enums\CustomerHistoryCategory;
 use Modules\Customer\Domain\Enums\CustomerKind;
@@ -286,6 +297,54 @@ final class CustomerCommandMapper
             page: (int) ($input['page'] ?? 1),
             perPage: (int) ($input['per_page'] ?? 25),
         );
+    }
+
+    public static function contactPointListing(AuthenticatedPrincipal $actor, string $customerId): ListCustomerContactPointsCommand
+    {
+        return new ListCustomerContactPointsCommand($actor, $customerId);
+    }
+
+    /** @param array{items: list<array<string, mixed>>} $input */
+    public static function contactPointSet(AuthenticatedPrincipal $actor, string $customerId, array $input): SaveCustomerContactPointsCommand
+    {
+        return new SaveCustomerContactPointsCommand($actor, $customerId, array_map(
+            static fn (array $item): CustomerContactPointDraftDto => new CustomerContactPointDraftDto(
+                id: isset($item['id']) ? (string) $item['id'] : null,
+                type: ContactPointType::from($item['type']),
+                identifierKind: ContactPointIdentifierKind::from($item['identifier_kind']),
+                value: $item['value'],
+                scope: ContactPointScope::from($item['scope']),
+                isDefault: (bool) ($item['is_default'] ?? false),
+                status: ContactPointStatus::from($item['status'] ?? ContactPointStatus::ACTIVE->value),
+                priority: isset($item['priority']) ? (int) $item['priority'] : null,
+                subtype: $item['subtype'] ?? null,
+                workContext: $item['work_context'] ?? null,
+                relationshipId: isset($item['relationship_id']) ? (string) $item['relationship_id'] : null,
+                addressId: isset($item['address_id']) ? (string) $item['address_id'] : null,
+                verifiedManually: (bool) ($item['verified_manually'] ?? false),
+            ),
+            array_values($input['items']),
+        ));
+    }
+
+    public static function industryListing(AuthenticatedPrincipal $actor, string $customerId): ListCustomerIndustriesCommand
+    {
+        return new ListCustomerIndustriesCommand($actor, $customerId);
+    }
+
+    /** @param array{items: list<array<string, mixed>>} $input */
+    public static function industrySet(AuthenticatedPrincipal $actor, string $customerId, array $input): SaveCustomerIndustriesCommand
+    {
+        return new SaveCustomerIndustriesCommand($actor, $customerId, array_map(
+            static fn (array $item): CustomerIndustryDraftDto => new CustomerIndustryDraftDto((string) $item['industry_id'], (bool) $item['is_primary']),
+            array_values($input['items']),
+        ));
+    }
+
+    /** @param array<string, mixed> $input */
+    public static function duplicateLookup(AuthenticatedPrincipal $actor, array $input): FindCustomerDuplicatesCommand
+    {
+        return new FindCustomerDuplicatesCommand($actor, $input['mobile'] ?? null, $input['email'] ?? null);
     }
 
     /** A unix timestamp in seconds; the epoch spelling makes the instant UTC whatever the server clock is. */

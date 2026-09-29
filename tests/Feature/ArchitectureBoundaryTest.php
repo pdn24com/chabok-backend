@@ -139,15 +139,18 @@ final class ArchitectureBoundaryTest extends TestCase
             'CrmTask' => ['CrmTask', 'Foundation', 'Iam'],
             // The link registry resolves each kind of record against the module that owns it, so the
             // archive can refuse a document attached to something nobody can look up.
-            'DocumentStore' => ['DocumentStore', 'Foundation', 'Customer', 'CrmOpportunitie'],
+            // CONTRACT links are resolved against the contract repository of CrmSales.
+            'DocumentStore' => ['DocumentStore', 'Foundation', 'Customer', 'CrmOpportunitie', 'CrmSales'],
             // The financial tab of the customer file: it proves the customer and the opportunity it
             // references through the repository contracts of the modules that own them.
-            'CrmFinance' => ['CrmFinance', 'Foundation', 'Customer', 'CrmOpportunitie'],
+            // An external invoice may name the contract it bills, proven through the CrmSales contract repository.
+            'CrmFinance' => ['CrmFinance', 'Foundation', 'Customer', 'CrmOpportunitie', 'CrmSales'],
             // The board card names its customer, its owner and its next task, and winning a deal is
             // judged against the customer phase and the interaction that proves the acceptance.
             'CrmOpportunitie' => ['CrmOpportunitie', 'Foundation', 'Customer', 'CrmTask', 'Iam'],
             // A sales document is drawn up for a customer against an opportunity, and names both.
-            'CrmSales' => ['CrmSales', 'Foundation', 'Customer', 'CrmOpportunitie', 'Iam'],
+            // A contract lists the files the document archive attached to it, read through DocumentStore.
+            'CrmSales' => ['CrmSales', 'Foundation', 'Customer', 'CrmOpportunitie', 'Iam', 'DocumentStore'],
             // A team never owns a task; it only fills the CrmTask port that names the team a
             // referral was recorded against.
             // A team names its supervisor and its members as users, as every record with an owner does.

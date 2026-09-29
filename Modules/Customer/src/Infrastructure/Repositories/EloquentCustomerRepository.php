@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Modules\Customer\Infrastructure\Repositories;
 
+use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Pagination\LengthAwarePaginator;
 use Modules\Customer\Application\Dto\CustomerListFiltersDto;
 use Modules\Customer\Application\Repositories\CustomerRepositoryInterface;
@@ -77,6 +78,19 @@ final class EloquentCustomerRepository implements CustomerRepositoryInterface
             ->pluck('display_name', 'id')
             ->mapWithKeys(fn (?string $name, int|string $id): array => [(string) $id => $name])
             ->all();
+    }
+
+    public function findSummariesForTenant(string $hqId, array $customerIds): Collection
+    {
+        if ($customerIds === []) {
+            return new Collection;
+        }
+
+        return CustomerRecord::query()
+            ->where('hq_id', $hqId)
+            ->whereIn('customer_id', $customerIds)
+            ->orderByDesc('id')
+            ->get(['id', 'display_name', 'phase', 'kind']);
     }
 
     public function paginateForTenant(string $hqId, CustomerListFiltersDto $filters): LengthAwarePaginator

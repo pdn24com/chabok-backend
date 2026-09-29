@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 use Illuminate\Support\Facades\Route;
+use Modules\CrmSales\Presentation\Http\Controllers\ContractController;
 use Modules\CrmSales\Presentation\Http\Controllers\SalesDocumentController;
 use Modules\CrmSales\Presentation\Http\Controllers\SalesDocumentVersionController;
 
@@ -28,4 +29,13 @@ Route::prefix('api/v1/crm/sales-document-versions/{versionId}')
         Route::post('/issue', [SalesDocumentVersionController::class, 'issue'])->name('crm.sales-document-versions.issue');
         Route::post('/accept', [SalesDocumentVersionController::class, 'accept'])->name('crm.sales-document-versions.accept');
         Route::post('/cancel', [SalesDocumentVersionController::class, 'cancel'])->name('crm.sales-document-versions.cancel');
+    });
+
+// The contract file of a customer. Behind the crm.contract permissions, apart from the sales documents.
+Route::prefix('api/v1/crm/customers/{customerId}/contracts')
+    ->middleware(['api', 'access.auth', 'password.changed'])
+    ->whereNumber('customerId')
+    ->group(function (): void {
+        Route::get('/', [ContractController::class, 'index'])->name('crm.customers.contracts.index');
+        Route::post('/', [ContractController::class, 'store'])->name('crm.customers.contracts.store');
     });

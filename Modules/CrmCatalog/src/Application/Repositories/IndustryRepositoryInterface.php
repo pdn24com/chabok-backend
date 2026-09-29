@@ -15,4 +15,12 @@ interface IndustryRepositoryInterface
 
     /** Guards a customer or catalog item against pointing at a retired or foreign-tenant industry. */
     public function activeExistsInTenant(string $hqId, string $industryId): bool;
+
+    /**
+     * Which of the given industries are active in the tenant, in one query.
+     *
+     * @param  list<string>  $industryIds
+     * @return list<string>
+     */
+    public function activeIdsInTenant(string $hqId, array $industryIds): array;
 }

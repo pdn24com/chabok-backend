@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Modules\DocumentStore\Infrastructure\Persistence\Models;
 
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Modules\DocumentStore\Domain\Enums\DocumentResourceType;
 use Modules\Foundation\Infrastructure\Persistence\HasNumericIdentity;
 
@@ -21,6 +22,11 @@ final class DocumentLinkRecord extends Model
     protected $table = 'document_links';
 
     protected $guarded = ['*'];
+
+    public function document(): BelongsTo
+    {
+        return $this->belongsTo(DocumentRecord::class, 'document_id');
+    }
 
     protected function casts(): array
     {

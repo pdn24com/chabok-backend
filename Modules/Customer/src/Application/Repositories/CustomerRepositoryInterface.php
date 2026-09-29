@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Modules\Customer\Application\Repositories;
 
+use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Pagination\LengthAwarePaginator;
 use Modules\Customer\Application\Dto\CustomerListFiltersDto;
 use Modules\Customer\Infrastructure\Persistence\Models\CustomerRecord;
@@ -42,6 +43,15 @@ interface CustomerRepositoryInterface
      * @return array<string, string|null>
      */
     public function displayNamesFor(string $hqId, array $customerIds): array;
+
+    /**
+     * The name and phase of the given customers of the tenant, newest first, for a caller that lists the
+     * records a lookup matched without loading whole customer files.
+     *
+     * @param  list<string>  $customerIds
+     * @return Collection<int, CustomerRecord>
+     */
+    public function findSummariesForTenant(string $hqId, array $customerIds): Collection;
 
     /** @return LengthAwarePaginator<CustomerRecord> */
     public function paginateForTenant(string $hqId, CustomerListFiltersDto $filters): LengthAwarePaginator;

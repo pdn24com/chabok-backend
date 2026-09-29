@@ -54,6 +54,7 @@ final class FinanceCommandMapper
             issuedOn: self::requiredInstant($input['issued_on']),
             dueOn: self::instant($input['due_on'] ?? null),
             opportunityId: isset($input['opportunity_id']) ? (string) $input['opportunity_id'] : null,
+            contractId: isset($input['contract_id']) ? (string) $input['contract_id'] : null,
         ));
     }
 

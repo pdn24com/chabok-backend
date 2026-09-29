@@ -27,6 +27,8 @@ final class CustomerFinanceLedgerTest extends TestCase
     private const TABLES = [
         'hq_tenants', 'users', 'crm_customers', 'crm_bank_accounts',
         'crm_external_invoices', 'crm_financial_entries', 'crm_financial_allocations',
+        'crm_catalog_categories', 'crm_catalog_personas', 'crm_catalog_sales_models', 'crm_catalog_items',
+        'crm_sales_funnel', 'crm_sales_funnel_steps', 'crm_opportunities', 'crm_sales_documents', 'crm_sales_document_versions', 'crm_contracts',
     ];
 
     private const NULLABLE_MIGRATION = 'Modules/Customer/database/migrations/2026_09_28_000330_make_crm_customers_assignee_nullable.php';
@@ -142,6 +144,28 @@ final class CustomerFinanceLedgerTest extends TestCase
             ->assertStatus(422)
             ->assertJsonPath('field_errors.opportunity_id', ['Select an opportunity of this same customer.']);
         $this->assertDatabaseCount('crm_external_invoices', 0);
+    }
+
+    public function test_an_invoice_may_name_a_contract_of_the_same_customer_and_no_other(): void
+    {
+        $this->authenticate();
+        $this->customer(['id' => 12, 'display_name' => 'دیگری']);
+        DB::table('crm_contracts')->insert([
+            ['id' => 1, 'hq_id' => 1, 'customer_id' => 11, 'reference_no' => 'CN-1', 'status' => 'ACTIVE', 'created_by' => 1],
+            ['id' => 2, 'hq_id' => 1, 'customer_id' => 12, 'reference_no' => 'CN-2', 'status' => 'ACTIVE', 'created_by' => 1],
+        ]);
+
+        $this->postJson($this->endpoint('external-invoices'), $this->invoice(['contract_id' => 1]))
+            ->assertCreated()
+            ->assertJsonPath('data.contract_id', '1');
+
+        $this->postJson($this->endpoint('external-invoices'), $this->invoice(['reference_no' => 'INV-2', 'contract_id' => 2]))
+            ->assertStatus(422)
+            ->assertJsonPath('field_errors.contract_id', ['Select a contract of this same customer.']);
+        $this->postJson($this->endpoint('external-invoices'), $this->invoice(['reference_no' => 'INV-3', 'contract_id' => 404]))
+            ->assertStatus(422)
+            ->assertJsonPath('field_errors.contract_id', ['Select a contract of this same customer.']);
+        $this->assertDatabaseCount('crm_external_invoices', 1);
     }
 
     public function test_the_ledger_is_returned_newest_first_and_can_be_narrowed_to_one_kind(): void

@@ -9,6 +9,7 @@ use Modules\CrmFinance\Application\Contracts\FinanceAccessGuardInterface;
 use Modules\CrmFinance\Application\Repositories\ExternalInvoiceRepositoryInterface;
 use Modules\CrmFinance\Infrastructure\Persistence\Models\ExternalInvoiceRecord;
 use Modules\CrmOpportunitie\Application\Repositories\OpportunityRepositoryInterface;
+use Modules\CrmSales\Application\Repositories\ContractRepositoryInterface;
 use Modules\Customer\Application\Repositories\CustomerRepositoryInterface;
 use Modules\Foundation\Application\Contracts\ClockInterface;
 use Modules\Foundation\Domain\Enums\ApiErrorCode;
@@ -26,6 +27,7 @@ final readonly class CreateCustomerExternalInvoiceHandler
         private FinanceAccessGuardInterface $accessGuard,
         private CustomerRepositoryInterface $customerRepository,
         private OpportunityRepositoryInterface $opportunityRepository,
+        private ContractRepositoryInterface $contractRepository,
         private ExternalInvoiceRepositoryInterface $externalInvoiceRepository,
     ) {}
 
@@ -54,11 +56,16 @@ final readonly class CreateCustomerExternalInvoiceHandler
                     ['opportunity_id' => ['finance.select_opportunity_of_the_same_customer']]);
             }
 
+            if ($input->contractId !== null
+                && ! $this->contractRepository->existsForCustomer($hqId, $command->customerId, $input->contractId)) {
+                throw new ApiException(ApiErrorCode::ValidationError, 422, 'foundation.request_is_invalid',
+                    ['contract_id' => ['contract.select_contract_of_the_same_customer']]);
+            }
+
             return $this->externalInvoiceRepository->create([
                 'hq_id' => $hqId,
                 'customer_id' => $command->customerId,
-                // A contract is named only once the contract file exists; nothing writes it yet.
-                'contract_id' => null,
+                'contract_id' => $input->contractId,
                 'opportunity_id' => $input->opportunityId,
                 'external_system' => $input->externalSystem,
                 'reference_no' => $input->referenceNo,

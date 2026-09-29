@@ -29,6 +29,14 @@ final class EloquentSalesDocumentVersionRepository implements SalesDocumentVersi
             ->first();
     }
 
+    public function existsForCustomer(string $hqId, string $customerId, string $versionId): bool
+    {
+        return SalesDocumentVersionRecord::query()
+            ->where(['hq_id' => $hqId, 'sales_document_version_id' => $versionId])
+            ->whereHas('document', fn ($document) => $document->where(['hq_id' => $hqId, 'customer_id' => $customerId]))
+            ->exists();
+    }
+
     public function update(string $hqId, string $versionId, array $attributes): void
     {
         SalesDocumentVersionRecord::query()

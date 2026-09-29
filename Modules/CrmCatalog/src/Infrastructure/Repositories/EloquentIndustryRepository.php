@@ -34,4 +34,14 @@ final class EloquentIndustryRepository implements IndustryRepositoryInterface
     {
         return IndustryRecord::query()->where(['hq_id' => $hqId, 'id' => $industryId, 'is_active' => true])->exists();
     }
+
+    public function activeIdsInTenant(string $hqId, array $industryIds): array
+    {
+        return IndustryRecord::query()
+            ->where(['hq_id' => $hqId, 'is_active' => true])
+            ->whereIn('id', $industryIds)
+            ->pluck('id')
+            ->map(fn ($id): string => (string) $id)
+            ->all();
+    }
 }

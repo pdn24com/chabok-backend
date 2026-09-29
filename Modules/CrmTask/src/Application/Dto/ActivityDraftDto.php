@@ -34,5 +34,7 @@ final readonly class ActivityDraftDto
         public ?string $location = null,
         public ?string $meetingUrl = null,
         public ?string $documentVersionId = null,
+        /** The colleagues who sat in a meeting; empty for every other kind of interaction. @var list<ActivityParticipantDto> */
+        public array $participants = [],
     ) {}
 }

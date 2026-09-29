@@ -4,8 +4,11 @@ declare(strict_types=1);
 
 use Illuminate\Support\Facades\Route;
 use Modules\Customer\Presentation\Http\Controllers\CustomerAddressController;
+use Modules\Customer\Presentation\Http\Controllers\CustomerContactPointController;
 use Modules\Customer\Presentation\Http\Controllers\CustomerController;
+use Modules\Customer\Presentation\Http\Controllers\CustomerDuplicateController;
 use Modules\Customer\Presentation\Http\Controllers\CustomerHistoryController;
+use Modules\Customer\Presentation\Http\Controllers\CustomerIndustryController;
 use Modules\Customer\Presentation\Http\Controllers\CustomerOrgStructureController;
 
 Route::prefix('api/v1/customers')->middleware(['api', 'access.auth', 'password.changed'])->group(function (): void {
@@ -57,4 +60,28 @@ Route::prefix('api/v1/crm/customers/{customerId}/history')
         Route::get('/{category}', [CustomerHistoryController::class, 'category'])
             ->whereIn('category', ['work', 'finance', 'correspondence', 'tickets', 'operations', 'changes'])
             ->name('crm.customers.history.category');
+    });
+
+// Lead form: who already holds this mobile number or email address. Declared before every {customerId} route
+// of the prefix, so "duplicates" is never read as an ID (the ID segments are whereNumber as well).
+Route::get('api/v1/crm/customers/duplicates', [CustomerDuplicateController::class, 'index'])
+    ->middleware(['api', 'access.auth', 'password.changed'])
+    ->name('crm.customers.duplicates.index');
+
+// Tab "person's channels": the whole contact-point set of a person, replaced in one write.
+Route::prefix('api/v1/crm/customers/{customerId}/contact-points')
+    ->middleware(['api', 'access.auth', 'password.changed'])
+    ->whereNumber('customerId')
+    ->group(function (): void {
+        Route::get('/', [CustomerContactPointController::class, 'index'])->name('crm.customers.contact-points.index');
+        Route::put('/', [CustomerContactPointController::class, 'save'])->name('crm.customers.contact-points.save');
+    });
+
+// The industries of a customer, one of them primary, replaced in one write.
+Route::prefix('api/v1/crm/customers/{customerId}/industries')
+    ->middleware(['api', 'access.auth', 'password.changed'])
+    ->whereNumber('customerId')
+    ->group(function (): void {
+        Route::get('/', [CustomerIndustryController::class, 'index'])->name('crm.customers.industries.index');
+        Route::put('/', [CustomerIndustryController::class, 'save'])->name('crm.customers.industries.save');
     });

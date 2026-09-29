@@ -13,4 +13,7 @@ interface TaskAccessGuardInterface
 
     /** Returns the tenant ID whose tasks the actor may raise, move, act on and finish. */
     public function assertCanManage(AuthenticatedPrincipal $actor): string;
+
+    /** Returns the tenant ID whose customers, opportunities and tasks the actor may record interactions against. */
+    public function assertCanRecordActivity(AuthenticatedPrincipal $actor): string;
 }

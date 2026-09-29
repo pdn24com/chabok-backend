@@ -96,3 +96,68 @@ for a new revision while one is still a draft answers `409`.
 Line items (`crm_sales_lines`) and the discount approval flow are still undecided
 upstream, so a document states one total rather than the rows behind it. `REVIEW`
 exists in the status column but no transition reaches it yet.
+
+## Customer contracts
+
+The contract file (شناسنامه قرارداد) of a customer lives in `crm_contracts`. It is
+served under the customer, apart from the sales documents, behind its own pair of
+permissions: `crm.contract.view` for reading and `crm.contract.manage` for
+recording (tenant scope, `Customer` module entitlement, like sales documents).
+
+```
+GET  /api/v1/crm/customers/{customerId}/contracts
+POST /api/v1/crm/customers/{customerId}/contracts
+```
+
+The list is the whole file of that customer, without paging, newest first
+(`created_at` desc, then id desc). Every item, and the `201` body of the POST, has
+the same shape:
+
+```json
+{
+  "contract_id": "9", "customer_id": "11", "reference_no": "CN-1405-01",
+  "start_date": "2026-10-01", "end_date": "2027-09-30", "amount": 900000000,
+  "commitments": "…", "status": "ACTIVE", "opportunity_id": "3",
+  "proforma_version_id": "1", "documents": [{ "document_id": "1", "title": "…" }],
+  "created_at": "2026-09-29T10:00:00.000000Z"
+}
+```
+
+Body of the POST: `reference_no` (required, at most 120 characters, trimmed),
+`opportunity_id?`, `proforma_version_id?`, `start_date?` and `end_date?` (`Y-m-d`),
+`amount?` (whole rials, `>= 0`), `commitments?` (text) and `status?`.
+
+- **Status is a free label.** The prototype says the status list is not final, so no
+  enum is assumed: the value is a trimmed string matching `^[A-Z][A-Z0-9_]{0,39}$`
+  and defaults to `DRAFT`.
+- **Window.** An `end_date` before `start_date` answers `422` on `end_date`; the same
+  day is a valid one-day window (the table has the same CHECK on MySQL).
+- **Customer.** It must exist in the tenant (`404` otherwise; another tenant's
+  customer is indistinguishable from a missing one) and be in phase `CUSTOMER`
+  (`422` on `customer_id`), the same rule sales documents follow: a contract is signed
+  with a buyer, not with a lead.
+- **References.** `opportunity_id` must be an opportunity of the same customer in
+  the same tenant, and `proforma_version_id` a sales document revision of a document
+  of the same customer (what the MySQL trigger enforces); otherwise `422` on that field.
+- **Reference number.** The schema only indexes it, so it is not unique in general.
+  The one refusal is an exact repeat of `(tenant, customer, reference_no)`, which
+  answers `409` with error code `CONTRACT_REFERENCE_EXISTS`. Another customer may
+  reuse the number. The customer row is locked while the contract is written, so two
+  concurrent posts cannot both pass the check.
+
+### Documents
+
+Files are not uploaded here. They are attached through the document archive,
+`POST /api/v1/crm/documents/{id}/links` with `resource_type: "CONTRACT"` and the
+`contract_id` as `resource_id` (`CONTRACT` joined the archive's link registry, and the
+archive checks the contract exists in the tenant). The contract list reads those links
+back for the whole list with one query on `document_links`, through DocumentStore's
+`DocumentLinkRepositoryInterface`, and prints `documents: [{document_id, title}]`,
+oldest link first.
+
+### External invoices
+
+`POST /api/v1/crm/customers/{customerId}/external-invoices` (CrmFinance) accepts an
+optional `contract_id`, which must be a contract of the same customer and tenant
+(`422` on `contract_id` otherwise). It is checked through this module's
+`ContractRepositoryInterface`.

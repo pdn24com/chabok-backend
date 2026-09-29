@@ -14,4 +14,13 @@ interface DocumentLinkRepositoryInterface
 
     /** True when this document is already attached to the same record, which it is only ever once. */
     public function exists(string $hqId, string $documentId, DocumentResourceType $resourceType, string $resourceId): bool;
+
+    /**
+     * The documents attached to a batch of records of one kind, in one read: resource ID to the files
+     * filed against it, oldest link first. A record with no file has no entry.
+     *
+     * @param  list<string>  $resourceIds
+     * @return array<string, list<array{document_id: string, title: string}>>
+     */
+    public function documentsForResources(string $hqId, DocumentResourceType $resourceType, array $resourceIds): array;
 }

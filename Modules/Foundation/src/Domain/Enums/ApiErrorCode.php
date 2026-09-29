@@ -20,9 +20,11 @@ enum ApiErrorCode: string
     case ResourceNotFound = 'RESOURCE_NOT_FOUND';
     case MethodNotAllowed = 'METHOD_NOT_ALLOWED';
     case Conflict = 'CONFLICT';
+    case MobileOwnedByOtherPerson = 'MOBILE_OWNED_BY_OTHER_PERSON';
     case VersionConflict = 'VERSION_CONFLICT';
     case IdempotencyKeyReused = 'IDEMPOTENCY_KEY_REUSED';
     case AllocationExceedsReceipt = 'ALLOCATION_EXCEEDS_RECEIPT';
+    case ContractReferenceExists = 'CONTRACT_REFERENCE_EXISTS';
     case ConsignmentNotEditable = 'CONSIGNMENT_NOT_EDITABLE';
     case ConsignmentNumberInvalidFormat = 'CONSIGNMENT_NUMBER_INVALID_FORMAT';
     case ConsignmentNumberInvalidLength = 'CONSIGNMENT_NUMBER_INVALID_LENGTH';

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Modules\DocumentStore\Infrastructure\Adapters;
 
 use Modules\CrmOpportunitie\Application\Repositories\OpportunityRepositoryInterface;
+use Modules\CrmSales\Application\Repositories\ContractRepositoryInterface;
 use Modules\Customer\Application\Repositories\CustomerRepositoryInterface;
 use Modules\DocumentStore\Application\Ports\DocumentResourceDirectoryInterface;
 use Modules\DocumentStore\Domain\Enums\DocumentResourceType;
@@ -18,6 +19,7 @@ final readonly class DocumentResourceDirectory implements DocumentResourceDirect
     public function __construct(
         private CustomerRepositoryInterface $customerRepository,
         private OpportunityRepositoryInterface $opportunityRepository,
+        private ContractRepositoryInterface $contractRepository,
     ) {}
 
     public function exists(string $hqId, DocumentResourceType $resourceType, string $resourceId): bool
@@ -25,6 +27,7 @@ final readonly class DocumentResourceDirectory implements DocumentResourceDirect
         return match ($resourceType) {
             DocumentResourceType::CUSTOMER => $this->customerRepository->existsForTenant($hqId, $resourceId),
             DocumentResourceType::OPPORTUNITY => $this->opportunityRepository->existsForTenant($hqId, $resourceId),
+            DocumentResourceType::CONTRACT => $this->contractRepository->existsForTenant($hqId, $resourceId),
         };
     }
 }

@@ -134,7 +134,7 @@ final class DocumentArchiveTest extends TestCase
             'category of another tenant' => [['category_id' => 99], 'category_id'],
             'customer of another tenant' => [['links' => [['resource_type' => 'CUSTOMER', 'resource_id' => 13]]], 'links.0.resource_id'],
             'record that does not exist' => [['links' => [['resource_type' => 'OPPORTUNITY', 'resource_id' => 99]]], 'links.0.resource_id'],
-            'a kind outside the registry' => [['links' => [['resource_type' => 'CONTRACT', 'resource_id' => 1]]], 'links.0.resource_type'],
+            'a kind outside the registry' => [['links' => [['resource_type' => 'CATALOG_ITEM', 'resource_id' => 1]]], 'links.0.resource_type'],
             'the same record twice' => [['links' => [
                 ['resource_type' => 'CUSTOMER', 'resource_id' => 11],
                 ['resource_type' => 'CUSTOMER', 'resource_id' => 11],

@@ -5,15 +5,14 @@ declare(strict_types=1);
 namespace Modules\CrmTask\Application\Validators;
 
 use DateTimeImmutable;
+use Modules\CrmTask\Application\Contracts\ActivityValidatorInterface;
 use Modules\CrmTask\Application\Contracts\TaskValidatorInterface;
-use Modules\CrmTask\Application\Dto\ActivityDraftDto;
 use Modules\CrmTask\Application\Dto\TaskActionDto;
 use Modules\CrmTask\Application\Dto\TaskAssignmentDto;
 use Modules\CrmTask\Application\Dto\TaskDraftDto;
 use Modules\CrmTask\Application\Ports\CustomerDirectoryInterface;
 use Modules\CrmTask\Application\Ports\OpportunityDirectoryInterface;
 use Modules\CrmTask\Application\Ports\TeamDirectoryInterface;
-use Modules\CrmTask\Domain\Enums\ActivityType;
 use Modules\CrmTask\Domain\Enums\TaskAssignmentEventType;
 use Modules\CrmTask\Domain\Enums\TaskStatus;
 use Modules\CrmTask\Infrastructure\Persistence\Models\TaskRecord;
@@ -28,6 +27,7 @@ final readonly class TaskValidator implements TaskValidatorInterface
         private CustomerDirectoryInterface $customerDirectory,
         private OpportunityDirectoryInterface $opportunityDirectory,
         private TeamDirectoryInterface $teamDirectory,
+        private ActivityValidatorInterface $activityValidator,
     ) {}
 
     public function validateDraft(string $hqId, TaskDraftDto $draft): void
@@ -86,7 +86,7 @@ final readonly class TaskValidator implements TaskValidatorInterface
             throw $this->invalid('task.remind_at', 'task.reminder_needs_an_owner');
         }
 
-        $this->assertActivityFitsItsType($hqId, $action->activity);
+        $this->activityValidator->validateEmbedded($hqId, $action->activity);
     }
 
     /** A reminder is a nudge before the deadline; after it, it reminds nobody of anything. */
@@ -125,29 +125,6 @@ final readonly class TaskValidator implements TaskValidatorInterface
     {
         if ($teamId !== null && ! $this->teamDirectory->activeExistsForTenant($hqId, $teamId)) {
             throw $this->invalid($field, 'task.select_an_active_team_of_this_tenant');
-        }
-    }
-
-    /**
-     * Each kind of interaction carries its own detail and nothing else: a call has an outcome, a meeting
-     * has a place, a note has neither. The columns behind the unused fields stay null by design.
-     */
-    private function assertActivityFitsItsType(string $hqId, ActivityDraftDto $activity): void
-    {
-        $callOnly = $activity->callOutcome !== null || $activity->durationMinutes !== null;
-        if ($callOnly && $activity->type !== ActivityType::CALL) {
-            throw $this->invalid('activity.call_outcome', 'task.call_details_belong_to_a_call');
-        }
-        $meetingOnly = $activity->meetingMode !== null || $activity->location !== null || $activity->meetingUrl !== null;
-        if ($meetingOnly && $activity->type !== ActivityType::MEETING) {
-            throw $this->invalid('activity.meeting_mode', 'task.meeting_details_belong_to_a_meeting');
-        }
-        if ($activity->documentVersionId !== null && $activity->type !== ActivityType::DOCUMENT_SENT) {
-            throw $this->invalid('activity.document_version_id', 'task.a_document_belongs_to_a_document_action');
-        }
-        if ($activity->contactCustomerId !== null
-            && ! $this->customerDirectory->existsForTenant($hqId, $activity->contactCustomerId)) {
-            throw $this->invalid('activity.contact_customer_id', 'task.select_a_customer_of_this_tenant');
         }
     }
 

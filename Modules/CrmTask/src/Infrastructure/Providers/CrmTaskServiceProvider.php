@@ -5,13 +5,19 @@ declare(strict_types=1);
 namespace Modules\CrmTask\Infrastructure\Providers;
 
 use Illuminate\Support\ServiceProvider;
+use Modules\CrmTask\Application\Contracts\ActivityValidatorInterface;
 use Modules\CrmTask\Application\Contracts\TaskAccessGuardInterface;
 use Modules\CrmTask\Application\Contracts\TaskValidatorInterface;
+use Modules\CrmTask\Application\Ports\ActivityFilingDirectoryInterface;
+use Modules\CrmTask\Application\Repositories\ActivityParticipantRepositoryInterface;
 use Modules\CrmTask\Application\Repositories\ActivityRepositoryInterface;
 use Modules\CrmTask\Application\Repositories\TaskAssignmentEventRepositoryInterface;
 use Modules\CrmTask\Application\Repositories\TaskRepositoryInterface;
 use Modules\CrmTask\Application\Services\TaskAccessGuard;
+use Modules\CrmTask\Application\Validators\ActivityValidator;
 use Modules\CrmTask\Application\Validators\TaskValidator;
+use Modules\CrmTask\Infrastructure\Adapters\DatabaseActivityFilingDirectory;
+use Modules\CrmTask\Infrastructure\Repositories\EloquentActivityParticipantRepository;
 use Modules\CrmTask\Infrastructure\Repositories\EloquentActivityRepository;
 use Modules\CrmTask\Infrastructure\Repositories\EloquentTaskAssignmentEventRepository;
 use Modules\CrmTask\Infrastructure\Repositories\EloquentTaskRepository;
@@ -23,6 +29,7 @@ final class CrmTaskServiceProvider extends ServiceProvider
         TaskRepositoryInterface::class => EloquentTaskRepository::class,
         TaskAssignmentEventRepositoryInterface::class => EloquentTaskAssignmentEventRepository::class,
         ActivityRepositoryInterface::class => EloquentActivityRepository::class,
+        ActivityParticipantRepositoryInterface::class => EloquentActivityParticipantRepository::class,
     ];
 
     public function register(): void
@@ -32,6 +39,8 @@ final class CrmTaskServiceProvider extends ServiceProvider
         }
         $this->app->bind(TaskAccessGuardInterface::class, TaskAccessGuard::class);
         $this->app->bind(TaskValidatorInterface::class, TaskValidator::class);
+        $this->app->bind(ActivityValidatorInterface::class, ActivityValidator::class);
+        $this->app->bind(ActivityFilingDirectoryInterface::class, DatabaseActivityFilingDirectory::class);
     }
 
     public function boot(): void

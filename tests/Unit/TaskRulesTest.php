@@ -11,9 +11,12 @@ use Modules\CrmTask\Application\Dto\TaskActionChangesDto;
 use Modules\CrmTask\Application\Dto\TaskActionDto;
 use Modules\CrmTask\Application\Dto\TaskAssignmentDto;
 use Modules\CrmTask\Application\Dto\TaskDraftDto;
+use Modules\CrmTask\Application\Ports\ActivityFilingDirectoryInterface;
 use Modules\CrmTask\Application\Ports\CustomerDirectoryInterface;
 use Modules\CrmTask\Application\Ports\OpportunityDirectoryInterface;
 use Modules\CrmTask\Application\Ports\TeamDirectoryInterface;
+use Modules\CrmTask\Application\Repositories\TaskRepositoryInterface;
+use Modules\CrmTask\Application\Validators\ActivityValidator;
 use Modules\CrmTask\Application\Validators\TaskValidator;
 use Modules\CrmTask\Domain\Enums\ActivityType;
 use Modules\CrmTask\Domain\Enums\CallOutcome;
@@ -144,7 +147,7 @@ final class TaskRulesTest extends TestCase
         $this->assertRefused(
             fn () => $this->validator()->validateAction('1', $this->task(), $this->action(
                 type: ActivityType::CALL, location: 'دفتر مرکزی')),
-            'activity.meeting_mode', 'task.meeting_details_belong_to_a_meeting');
+            'activity.location', 'task.meeting_details_belong_to_a_meeting');
     }
 
     public function test_a_call_carries_its_own_outcome_without_complaint(): void
@@ -214,6 +217,13 @@ final class TaskRulesTest extends TestCase
         $teams = Mockery::mock(TeamDirectoryInterface::class);
         $teams->shouldReceive('activeExistsForTenant')->andReturnUsing(fn (string $hqId, string $id): bool => $id === '5');
 
-        return new TaskValidator($users, $customers, $opportunities, $teams);
+        $activities = new ActivityValidator(
+            $users,
+            $customers,
+            Mockery::mock(ActivityFilingDirectoryInterface::class),
+            Mockery::mock(TaskRepositoryInterface::class),
+        );
+
+        return new TaskValidator($users, $customers, $opportunities, $teams, $activities);
     }
 }
