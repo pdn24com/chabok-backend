@@ -6,6 +6,14 @@ namespace Modules\Customer\Presentation\Mappers;
 
 use DateTimeImmutable;
 use DateTimeZone;
+use Modules\Customer\Application\Dto\CompanyRelationshipDraftDto;
+use Modules\Customer\Application\Dto\LeadConversionDto;
+use Modules\Customer\Application\Dto\NewPersonDto;
+use Modules\Customer\Application\UseCases\ChangeCustomerLifecycle\ChangeCustomerLifecycleCommand;
+use Modules\Customer\Application\UseCases\ConvertLead\ConvertLeadCommand;
+use Modules\Customer\Application\UseCases\CreateCompanyRelationship\CreateCompanyRelationshipCommand;
+use Modules\Customer\Application\UseCases\EndCustomerRelationship\EndCustomerRelationshipCommand;
+use Modules\Customer\Application\UseCases\ListCustomerRelationships\ListCustomerRelationshipsCommand;
 use Modules\Customer\Application\Dto\CustomerContactPointDraftDto;
 use Modules\Customer\Application\Dto\CustomerIndustryDraftDto;
 use Modules\Customer\Application\Dto\CustomerAddressChangesDto;
@@ -345,6 +353,55 @@ final class CustomerCommandMapper
     public static function duplicateLookup(AuthenticatedPrincipal $actor, array $input): FindCustomerDuplicatesCommand
     {
         return new FindCustomerDuplicatesCommand($actor, $input['mobile'] ?? null, $input['email'] ?? null);
+    }
+
+    public static function relationshipListing(AuthenticatedPrincipal $actor, string $customerId, bool $activeOnly): ListCustomerRelationshipsCommand
+    {
+        return new ListCustomerRelationshipsCommand($actor, $customerId, $activeOnly);
+    }
+
+    /** @param array<string, mixed> $input */
+    public static function companyRelationship(AuthenticatedPrincipal $actor, string $customerId, array $input): CreateCompanyRelationshipCommand
+    {
+        $newPerson = $input['new_person'] ?? null;
+
+        return new CreateCompanyRelationshipCommand($actor, $customerId, new CompanyRelationshipDraftDto(
+            personCustomerId: isset($input['person_customer_id']) ? (string) $input['person_customer_id'] : null,
+            newPerson: empty($newPerson) ? null : new NewPersonDto($newPerson['first_name'], $newPerson['family_name'], $newPerson['mobile']),
+            positionId: isset($input['position_id']) ? (string) $input['position_id'] : null,
+            roleTitle: $input['role_title'],
+            decisionLevel: $input['decision_level'] ?? null,
+            signingAuthority: $input['signing_authority'] ?? null,
+            validFrom: self::date($input['valid_from'] ?? null),
+            validTo: self::date($input['valid_to'] ?? null),
+            isPrimary: (bool) ($input['is_primary'] ?? false),
+            replacePrimary: (bool) ($input['replace_primary'] ?? false),
+        ));
+    }
+
+    /** @param array<string, mixed> $input */
+    public static function relationshipEnd(AuthenticatedPrincipal $actor, string $relationshipId, array $input): EndCustomerRelationshipCommand
+    {
+        return new EndCustomerRelationshipCommand($actor, $relationshipId, self::date($input['valid_to']));
+    }
+
+    /** @param array<string, mixed> $input */
+    public static function leadConversion(AuthenticatedPrincipal $actor, string $customerId, array $input): ConvertLeadCommand
+    {
+        return new ConvertLeadCommand($actor, $customerId, new LeadConversionDto(
+            firstName: $input['first_name'] ?? null,
+            familyName: $input['family_name'] ?? null,
+            displayName: $input['display_name'] ?? null,
+            customerCode: $input['customer_code'] ?? null,
+            mergeIntoCustomerId: isset($input['merge_into_customer_id']) ? (string) $input['merge_into_customer_id'] : null,
+            confirmMerge: (bool) ($input['confirm_merge'] ?? false),
+        ));
+    }
+
+    /** @param array<string, mixed> $input */
+    public static function lifecycleChange(AuthenticatedPrincipal $actor, string $customerId, array $input): ChangeCustomerLifecycleCommand
+    {
+        return new ChangeCustomerLifecycleCommand($actor, $customerId, CustomerLifecycle::from($input['lifecycle']), $input['reason'] ?? null);
     }
 
     /** A unix timestamp in seconds; the epoch spelling makes the instant UTC whatever the server clock is. */

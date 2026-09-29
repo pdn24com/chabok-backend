@@ -30,6 +30,20 @@ final class EloquentCustomerPositionRepository implements CustomerPositionReposi
         CustomerPositionRecord::query()->where(['hq_id' => $hqId, 'position_id' => $positionId])->update($attributes);
     }
 
+    public function titlesFor(string $hqId, array $positionIds): array
+    {
+        if ($positionIds === []) {
+            return [];
+        }
+
+        return CustomerPositionRecord::query()
+            ->where('hq_id', $hqId)
+            ->whereIn('position_id', $positionIds)
+            ->pluck('title', 'id')
+            ->mapWithKeys(fn (string $title, int|string $id): array => [(string) $id => $title])
+            ->all();
+    }
+
     /** A post belongs to a company through its department, so the owner is checked on that node. */
     private function ofCompany(string $hqId, string $customerId, string $positionId): Builder
     {

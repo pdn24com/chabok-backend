@@ -20,4 +20,12 @@ interface CustomerContactPointValidatorInterface
      * @return list<string>
      */
     public function validate(string $hqId, string $customerId, array $items, array $existingIds): array;
+
+    /**
+     * The one-person-per-mobile rule on its own: refuses with 409 MOBILE_OWNED_BY_OTHER_PERSON, naming
+     * `$field`, when an ACTIVE MOBILE channel of a person other than `$exceptCustomerId` (null for a person
+     * that does not exist yet) holds the normalised number. Like {@see validate()} it must run inside the
+     * writing transaction, because the candidate rows are read for update.
+     */
+    public function assertMobileIsFree(string $hqId, string $normalizedMobile, ?string $exceptCustomerId, string $field): void;
 }

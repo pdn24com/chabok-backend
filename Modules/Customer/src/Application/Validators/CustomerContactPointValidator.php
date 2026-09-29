@@ -138,12 +138,17 @@ final readonly class CustomerContactPointValidator implements CustomerContactPoi
             if ($item->type !== ContactPointType::MOBILE || $item->status !== ContactPointStatus::ACTIVE) {
                 continue;
             }
-            $owners = $this->contactPointRepository->findActiveOwnersOfNormalizedValue(
-                $hqId, ContactPointType::MOBILE->value, $normalized[$index], exceptCustomerId: $customerId, lock: true, limit: 1);
-            if ($owners->isNotEmpty()) {
-                throw new ApiException(ApiErrorCode::MobileOwnedByOtherPerson, 409, 'customer.mobile_is_owned_by_another_person',
-                    ['items.'.$index.'.value' => ['customer.mobile_is_owned_by_another_person']]);
-            }
+            $this->assertMobileIsFree($hqId, $normalized[$index], $customerId, 'items.'.$index.'.value');
+        }
+    }
+
+    public function assertMobileIsFree(string $hqId, string $normalizedMobile, ?string $exceptCustomerId, string $field): void
+    {
+        $owners = $this->contactPointRepository->findActiveOwnersOfNormalizedValue(
+            $hqId, ContactPointType::MOBILE->value, $normalizedMobile, exceptCustomerId: $exceptCustomerId, lock: true, limit: 1);
+        if ($owners->isNotEmpty()) {
+            throw new ApiException(ApiErrorCode::MobileOwnedByOtherPerson, 409, 'customer.mobile_is_owned_by_another_person',
+                [$field => ['customer.mobile_is_owned_by_another_person']]);
         }
     }
 

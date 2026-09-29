@@ -18,4 +18,13 @@ interface CustomerPositionRepositoryInterface
 
     /** @param array<string, mixed> $attributes */
     public function update(string $hqId, string $positionId, array $attributes): void;
+
+    /**
+     * The titles of the given posts of the tenant, keyed by ID, so a caller naming a list of rows reads
+     * them in one query instead of one per row.
+     *
+     * @param  list<string>  $positionIds
+     * @return array<string, string>
+     */
+    public function titlesFor(string $hqId, array $positionIds): array;
 }

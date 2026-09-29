@@ -9,7 +9,9 @@ use Modules\Customer\Presentation\Http\Controllers\CustomerController;
 use Modules\Customer\Presentation\Http\Controllers\CustomerDuplicateController;
 use Modules\Customer\Presentation\Http\Controllers\CustomerHistoryController;
 use Modules\Customer\Presentation\Http\Controllers\CustomerIndustryController;
+use Modules\Customer\Presentation\Http\Controllers\CustomerLeadController;
 use Modules\Customer\Presentation\Http\Controllers\CustomerOrgStructureController;
+use Modules\Customer\Presentation\Http\Controllers\CustomerRelationshipController;
 
 Route::prefix('api/v1/customers')->middleware(['api', 'access.auth', 'password.changed'])->group(function (): void {
     Route::get('/', [CustomerController::class, 'index'])->name('customers.index');
@@ -84,4 +86,28 @@ Route::prefix('api/v1/crm/customers/{customerId}/industries')
     ->group(function (): void {
         Route::get('/', [CustomerIndustryController::class, 'index'])->name('crm.customers.industries.index');
         Route::put('/', [CustomerIndustryController::class, 'save'])->name('crm.customers.industries.save');
+    });
+
+// Relationships between people and companies: listed from either end, created from the company.
+Route::prefix('api/v1/crm/customers/{customerId}/relationships')
+    ->middleware(['api', 'access.auth', 'password.changed'])
+    ->whereNumber('customerId')
+    ->group(function (): void {
+        Route::get('/', [CustomerRelationshipController::class, 'index'])->name('crm.customers.relationships.index');
+        // A new person, their mobile and the relationship are one write, so a repeated request must not repeat it.
+        Route::post('/', [CustomerRelationshipController::class, 'store'])->middleware('idempotent:customer.relationship.create')->name('crm.customers.relationships.store');
+    });
+Route::post('api/v1/crm/relationships/{relationshipId}/end', [CustomerRelationshipController::class, 'end'])
+    ->middleware(['api', 'access.auth', 'password.changed'])
+    ->whereNumber('relationshipId')
+    ->name('crm.relationships.end');
+
+// Lead decisions: convert it into a customer, or close it. The lifecycle call is generic (any phase), and
+// it is the same call the lead-close button makes.
+Route::prefix('api/v1/crm/customers/{customerId}')
+    ->middleware(['api', 'access.auth', 'password.changed'])
+    ->whereNumber('customerId')
+    ->group(function (): void {
+        Route::post('/convert', [CustomerLeadController::class, 'convert'])->name('crm.customers.convert');
+        Route::post('/lifecycle', [CustomerLeadController::class, 'changeLifecycle'])->name('crm.customers.lifecycle.change');
     });

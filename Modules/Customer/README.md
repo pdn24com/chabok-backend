@@ -434,6 +434,265 @@ to other concerns and is never touched by this endpoint. A customer whose row do
 not exist yet reads back every field as `null`, with `updated_at` null too, rather
 than a `404`: the form has somewhere to load from either way.
 
+## Customer contact points
+
+`GET /api/v1/crm/customers/{id}/contact-points` returns the whole channel set of
+a person, default entries first, then by `priority` (unset last) and ID. `PUT`
+on the same path replaces the set. Both need bearer authentication, a completed
+password change and the `Customer` entitlement; the read needs `customer.view`
+and the write `customer.edit`. `{id}` must be numeric. Only a PERSON has
+contact points: a `PUT` for a company answers `422` on `customer_id`. A customer
+of another tenant is reported as `404 RESOURCE_NOT_FOUND`, exactly like one that
+does not exist.
+
+```json
+{
+  "items": [
+    {
+      "id": 8,
+      "type": "MOBILE",
+      "identifier_kind": "PHONE",
+      "value": "0912 000 0123",
+      "scope": "PERSONAL",
+      "is_default": true,
+      "status": "ACTIVE",
+      "priority": 1,
+      "relationship_id": null,
+      "address_id": null,
+      "verified_manually": false
+    }
+  ]
+}
+```
+
+The response is `{ "items": [ ... ] }` with `contact_point_id`, `type`,
+`identifier_kind`, `value`, `normalized_value`, `scope`, `is_default`, `status`,
+`priority`, `subtype`, `work_context`, `relationship_id`, `address_id` and
+`verified_manually_at` on every item.
+
+**Replace semantics.** The body is the complete set the person should hold
+afterwards, at most 50 items; `items` must be present, and an empty list removes
+every channel. An item with an `id` updates that channel (the ID must be one of
+this person's own), an item without one creates a channel, and **every existing
+channel left out of the list is deleted** (nothing references a contact point).
+`verified_manually: true` stamps `verified_manually_at` once and keeps the first
+time on later saves; `false` clears it. The whole write runs in one transaction
+that locks the person's row first, so two replacements run one after the other.
+
+| Input | Validation |
+| --- | --- |
+| `type` | `MOBILE`, `PHONE`, `INSTAGRAM`, `WHATSAPP`, `TELEGRAM`, `BALE`, `EMAIL` or `ADDRESS_REFERENCE` |
+| `identifier_kind` | Must be the kind the type carries: `PHONE` for MOBILE/PHONE/WHATSAPP, `USERNAME` for INSTAGRAM/TELEGRAM/BALE, `EMAIL` for EMAIL, `ADDRESS` for ADDRESS_REFERENCE |
+| `value` | Required string up to 320 characters, kept as typed |
+| `scope` | `PERSONAL` or `WORK` |
+| `is_default`, `status` | Optional; `status` is `ACTIVE` (default) or another `ContactPointStatus` |
+| `priority` | Optional, nullable integer |
+| `relationship_id` | Optional; must be a relationship of the same person, otherwise `422` |
+| `address_id` | Required for `ADDRESS_REFERENCE`, and must be an address of the same person; optional otherwise but checked the same way |
+
+**Normalisation.** `normalized_value` is never accepted from the client; the
+server derives it. MOBILE, PHONE and WHATSAPP go through the `MobileNumber` value
+object (Persian and Arabic digits, spaces, dashes and a leading zero are
+accepted; the result is `+98...` for Iranian numbers); an email is lower-cased
+and must be a valid address; INSTAGRAM, TELEGRAM and BALE handles lose a leading
+`@` and are lower-cased (`[a-z0-9._]`, 2 to 64 characters). An ADDRESS_REFERENCE
+stores the address ID. A value that does not fit answers `422` on
+`items.N.value`.
+
+**Default rule.** At most one *active* channel per type and scope can be the
+default; a second one in the same list is `422` on `items.N.is_default`, and an
+inactive channel cannot be the default. The same channel twice in the list
+(same type and normalised value; for a mobile number whatever the scope) is
+`422 customer.contact_point_is_duplicated`.
+
+**One mobile, one person.** An active MOBILE channel whose number is already an
+active MOBILE channel of *another* customer of the tenant refuses the write with
+`409 MOBILE_OWNED_BY_OTHER_PERSON` naming `items.N.value`; the rows are read for
+update, so a concurrent writer waits instead of slipping the number in. The
+rule guards MOBILE only. `POST /api/v1/customers` (CreateCustomer) does **not**
+apply it: it records the number as given and lets the duplicate check
+(below) warn the operator instead, so two records created that way may share a
+number; the first later write that touches either of them through this
+endpoint is what raises the `409`.
+
+## Customer industries
+
+`GET /api/v1/crm/customers/{id}/industries` returns `{ "items": [ { "industry_id",
+"title", "is_primary" } ] }`, the primary industry first. `PUT` replaces the set.
+The read needs `customer.view`, the write `customer.edit`; a customer of another
+tenant is `404`.
+
+```json
+{ "items": [ { "industry_id": 2, "is_primary": true }, { "industry_id": 5, "is_primary": false } ] }
+```
+
+The body is the complete set, and `items` is required (an empty list clears every
+industry). An industry left out is removed, a new one is added. At most one item
+can be primary (none is allowed, which clears the flag), an industry cannot be
+listed twice, and every industry must be an *active* industry of the tenant, each
+refusal being a `422` naming `items.N.industry_id` or `items.N.is_primary`. The
+primary flag is moved by the same manager `PATCH .../profile` uses for
+`primary_industry_id`, so the two entry points always agree: after a `PUT` the
+profile's `primary_industry_id` is the item flagged primary. The write runs in one
+transaction that locks the customer first.
+
+## Duplicate check
+
+`GET /api/v1/crm/customers/duplicates?mobile=&email=` answers which customers
+already hold a mobile number or an email address, so the lead form can warn before
+it saves. It needs `customer.view`. At least one of the two is required (an empty
+query parameter counts as absent), otherwise `422`; a `mobile` that is not a
+usable number is `422` too. The mobile goes through `MobileNumber`, so
+`0912 000 0123`, `+989120000123` and Persian digits find the same records; the
+email is compared lower-cased. Only *active* contact points count, only customers
+of the caller's tenant are returned, and there are at most 20 of them, newest
+first.
+
+```json
+{ "items": [ { "customer_id": "12", "display_name": "نیما نمونه", "phase": "CUSTOMER", "matched_on": "MOBILE" } ] }
+```
+
+`matched_on` is `MOBILE` or `EMAIL`; a customer found by both is reported as
+`MOBILE`, because the number is the identity the one-person-per-mobile rule
+protects and the email is only a hint. The route is declared before every
+`{customerId}` route, so `duplicates` is never read as an ID.
+
+## Customer relationships
+
+A relationship says that a person holds a role at a company. Both ends are
+`crm_customers` rows: the person side must be a PERSON and the company side a
+COMPANY. Per the repo convention, the routes hang off `/customers/{customerId}`
+where the prototype uses `/companies/{id}`.
+
+| Method and path | Permission |
+| --- | --- |
+| `GET /api/v1/crm/customers/{customerId}/relationships?active=true` | `customer.view` |
+| `POST /api/v1/crm/customers/{customerId}/relationships` | `customer.edit` |
+| `POST /api/v1/crm/relationships/{relationshipId}/end` | `customer.edit` |
+
+**List.** `{customerId}` may be a person or a company; the answer holds every
+relationship in which it is either end, primary first, then newest first. With
+`active=true` only the relationships running today are returned (no end date or
+one not before today, and no start date or one not after today); without it, or
+with `active=false`, everything is returned, ended ones included. The names of
+both ends and the post titles are read in one query each, never per row.
+
+```json
+{
+  "items": [
+    {
+      "relationship_id": "21",
+      "person": { "customer_id": "3", "display_name": "آرمان نمونه" },
+      "company": { "customer_id": "11", "display_name": "پارس‌گستر آریا" },
+      "position": { "position_id": "5", "title": "مدیر خرید" },
+      "role_title": "مدیر خرید",
+      "decision_level": "مدیریت ارشد",
+      "signing_authority": "تا سقف قرارداد",
+      "valid_from": "2026-01-01",
+      "valid_to": null,
+      "is_primary": true
+    }
+  ]
+}
+```
+
+`position` is `null` when no post was chosen; dates are `Y-m-d` and stay `null`
+while unknown.
+
+**Create.** `{customerId}` must be a COMPANY (`422` on `customer_id` otherwise; an
+unknown or foreign company is `404`). The success answer is `201` with the item
+above. The route is idempotent (`Idempotency-Key`, scope
+`customer.relationship.create`), because a new person and their number are
+created with it.
+
+| Input | Validation |
+| --- | --- |
+| `person_customer_id` | Integer; exactly one of this and `new_person` must be sent, otherwise `422`. Must be a PERSON of the tenant |
+| `new_person` | `{ first_name (<=120), family_name (<=120), mobile (<=32) }`; all three required |
+| `position_id` | Optional; must be a post of *this* company's org chart (through its department), otherwise `422` |
+| `role_title` | Required string up to 200 characters |
+| `decision_level` | Optional, up to 80 characters |
+| `signing_authority` | Optional, up to 200 characters |
+| `valid_from`, `valid_to` | Optional `Y-m-d`; `valid_to` before `valid_from` is `422` on `valid_to` (`customer.valid_to_is_before_valid_from`) |
+| `is_primary`, `replace_primary` | Optional booleans |
+
+With `new_person`, one transaction creates the PERSON customer (phase of the
+company, lifecycle `ACTIVE`, display name `"first family"`, the company's assignee
+as owner, the caller as `created_by`), its default MOBILE contact point (scope
+`WORK`, normalised with `MobileNumber`, linked to the new relationship through
+`relationship_id`) and the relationship. If any step fails, none of it is kept.
+When the number is already an active MOBILE channel of another customer the
+request is refused with `409 MOBILE_OWNED_BY_OTHER_PERSON` on `new_person.mobile`,
+the same rule and the same error as the contact-points `PUT` (both call
+`CustomerContactPointValidator::assertMobileIsFree`). An unusable number is `422`.
+
+Conflicts: a person who already holds a relationship with the company that has
+not ended (no end date, or one not before today) gets
+`409 RELATIONSHIP_ALREADY_EXISTS`. The primary rule is "at most one active
+primary per company" (the database holds the slot for an open-ended primary; the
+application also honours a future end date): with `is_primary` and an existing
+active primary, `replace_primary: true` demotes the old one (`is_primary=false`)
+in the same transaction, otherwise the answer is `409 PRIMARY_RELATIONSHIP_EXISTS`.
+An already ended relationship cannot be created as primary (`422` on `is_primary`).
+The company row is locked first, so two concurrent requests cannot both take the
+slot.
+
+**End.** `valid_to` (`Y-m-d`) is required; the server never defaults it to today.
+The relationship gets that end date and always gives up the primary flag, which
+releases the company's primary slot. `valid_to` before the relationship's
+`valid_from` is `422`. A relationship counts as *already ended* when its end date
+lies before today; ending it again is `409 RELATIONSHIP_ALREADY_ENDED`. One whose
+end date is today or later still runs, so its end date may be set again. An
+unknown or foreign relationship is `404`. The answer is the updated item.
+
+## Converting a lead
+
+`POST /api/v1/crm/customers/{id}/convert` turns a LEAD into a CUSTOMER. The
+identity does not change; only `phase`, the name fields and the code that the
+form completed do. It needs `customer.edit`; a customer of another tenant is
+`404`.
+
+| Input | Meaning |
+| --- | --- |
+| `first_name`, `family_name` | Optional; when sent they replace the stored names |
+| `display_name` | Optional; when omitted it is rebuilt as `"first family"` only if a name part actually changed, otherwise kept |
+| `customer_code` | Optional, up to 80 characters; sent empty or omitted keeps the stored code |
+| `merge_into_customer_id`, `confirm_merge` | Product decision O12 is open: a non-null id or `confirm_merge: true` answers `422` (`customer.merging_into_an_existing_customer_is_not_available_yet`) and writes nothing |
+
+The record must be a LEAD (a record that is already a customer is
+`409 CUSTOMER_ALREADY_CONVERTED`) and its lifecycle must be `ACTIVE` (an inactive
+or archived lead is `422` on `customer_id`; reopen it first). After the merge of
+the sent and stored values a PERSON must have `first_name`, `family_name` and a
+`display_name`, a COMPANY a `display_name`; what is missing is `422` per field.
+A code another customer already uses is `409 CUSTOMER_CODE_EXISTS` (checked before
+the write; the unique key remains the last line of defence). `converted_at` is set
+to now, but, like the profile writer, a date of an earlier promotion is kept.
+
+```json
+{ "customer_id": "501", "phase": "CUSTOMER", "converted_at": "2026-09-29T09:00:00.000000Z", "customer_code": "C-1042", "merged_into": null }
+```
+
+## Lifecycle change and closing a lead
+
+`POST /api/v1/crm/customers/{id}/lifecycle` moves a customer to `ACTIVE`,
+`INACTIVE` or `ARCHIVED`. The lead-close button ("close without result") makes
+exactly this call with `INACTIVE`; the endpoint itself is generic and accepts a
+record of any phase. It needs `customer.edit`.
+
+| Input | Validation |
+| --- | --- |
+| `lifecycle` | Required; one of the `CustomerLifecycle` values |
+| `reason` | Required (up to 1000 characters) when the target is `INACTIVE` or `ARCHIVED`; optional when reopening with `ACTIVE` |
+
+A lifecycle equal to the current one is `422` on `lifecycle`. In one transaction
+the customer row is locked, `lifecycle` and `updated_at` are written, and the
+reason is recorded as a `NOTE` in `crm_activities` (`customer_id` set, `body` =
+the trimmed reason, `occurred_at` now, the caller as `created_by`) through CrmTask's
+`ActivityRepositoryInterface`. The answer is
+`{ "customer_id": "501", "lifecycle": "INACTIVE", "activity_id": "3301" }`;
+`activity_id` is `null` when a reopen carried no reason. `PATCH .../profile` can
+still change the lifecycle without a reason; it is left as it was.
+
 ## CRM module conventions
 
 The CRM modules — `Customer`, `CrmFinance`, `CrmCatalog`, `CrmTask` and

@@ -14,6 +14,8 @@ use Modules\Customer\Application\Contracts\CustomerHistoryReaderInterface;
 use Modules\Customer\Application\Contracts\CustomerIndustryValidatorInterface;
 use Modules\Customer\Application\Contracts\CustomerOrgStructureValidatorInterface;
 use Modules\Customer\Application\Contracts\CustomerPrimaryIndustryManagerInterface;
+use Modules\Customer\Application\Contracts\CustomerRelationshipAssemblerInterface;
+use Modules\Customer\Application\Contracts\CustomerRelationshipValidatorInterface;
 use Modules\Customer\Application\Repositories\ContactPointRepositoryInterface;
 use Modules\Customer\Application\Repositories\CustomerAddressRepositoryInterface;
 use Modules\Customer\Application\Repositories\CustomerDepartmentRepositoryInterface;
@@ -26,11 +28,13 @@ use Modules\Customer\Application\Repositories\RelationshipRepositoryInterface;
 use Modules\Customer\Application\Services\CustomerAccessGuard;
 use Modules\Customer\Application\Services\CustomerHistoryReader;
 use Modules\Customer\Application\Services\CustomerPrimaryIndustryManager;
+use Modules\Customer\Application\Services\CustomerRelationshipAssembler;
 use Modules\Customer\Application\Validators\CustomerAddressValidator;
 use Modules\Customer\Application\Validators\CustomerContactPointValidator;
 use Modules\Customer\Application\Validators\CustomerDraftValidator;
 use Modules\Customer\Application\Validators\CustomerIndustryValidator;
 use Modules\Customer\Application\Validators\CustomerOrgStructureValidator;
+use Modules\Customer\Application\Validators\CustomerRelationshipValidator;
 use Modules\Customer\Infrastructure\Adapters\TaskCustomerDirectory;
 use Modules\Customer\Infrastructure\Repositories\EloquentContactPointRepository;
 use Modules\Customer\Infrastructure\Repositories\EloquentCustomerAddressRepository;
@@ -71,6 +75,8 @@ final class CustomerServiceProvider extends ServiceProvider
         $this->app->bind(CustomerHistoryReaderInterface::class, CustomerHistoryReader::class);
         $this->app->bind(CustomerContactPointValidatorInterface::class, CustomerContactPointValidator::class);
         $this->app->bind(CustomerIndustryValidatorInterface::class, CustomerIndustryValidator::class);
+        $this->app->bind(CustomerRelationshipValidatorInterface::class, CustomerRelationshipValidator::class);
+        $this->app->bind(CustomerRelationshipAssemblerInterface::class, CustomerRelationshipAssembler::class);
     }
 
     public function boot(): void

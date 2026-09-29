@@ -11,30 +11,31 @@
 | 🟡 | بخشی پیاده شده یا شکل نهایی با پروتوتایپ فرق دارد (توضیح در ستون یادداشت) |
 | ❌ | هنوز پیاده نشده |
 
-**جمع‌بندی:** پروتوتایپ ۴۱ گروه API در ۵ دسته دارد: **۲۹ گروه ✅**، **۵ گروه 🟡** و **۷ گروه ❌**.
+**جمع‌بندی:** پروتوتایپ ۴۱ گروه API در ۵ دسته دارد: **۴۰ گروه ✅** و **۱ گروه 🟡** (`customer.qualification` که عمداً در `extended-details` ادغام شده است).
 
 | دسته | گروه‌ها | ✅ | 🟡 | ❌ |
 |---|---|---|---|---|
-| پروندهٔ مشتری و سرنخ | ۲۱ | ۱۲ | ۵ | ۴ |
+| پروندهٔ مشتری و سرنخ | ۲۱ | ۲۰ | ۱ | ۰ |
 | فروش (فرصت‌ها و اسناد فروش) | ۶ | ۶ | ۰ | ۰ |
-| کار و تعامل | ۶ | ۵ | ۰ | ۱ |
+| کار و تعامل | ۶ | ۶ | ۰ | ۰ |
 | تیم | ۴ | ۴ | ۰ | ۰ |
-| کاتالوگ و اسناد | ۴ | ۲ | ۰ | ۲ |
+| کاتالوگ و اسناد | ۴ | ۴ | ۰ | ۰ |
 
 ---
 
 ## ۱) پروندهٔ مشتری و سرنخ
 
-### صفحهٔ فهرست مشتریان / سرنخ‌ها 🟡
+### صفحهٔ فهرست مشتریان / سرنخ‌ها ✅
 
 | گروه پروتوتایپ | مسیر پروتوتایپ | مسیر پیاده‌شده | وضعیت | یادداشت |
 |---|---|---|---|---|
 | `customer.list` | `GET /customers` | `GET /api/v1/customers` | ✅ | فیلترها: `page,per_page,display_name,customer_code,phase,kind,lifecycle,assignee_id,updated_at[_from,_to]` |
 | `lead.list` | `GET /customers?phase=LEAD` | `GET /api/v1/customers?phase=LEAD` | ✅ | همان endpoint با فیلتر `phase` |
 | `customer.create` | `POST /customers` | `POST /api/v1/customers` | ✅ | دارای `idempotent:customer.create` |
-| `lead.create` | `POST /customers` | `POST /api/v1/customers` | 🟡 | خودِ ثبت ✅ ولی `GET /customers/duplicates` ❌ |
-| `lead.convert` | `POST /customers/{id}/convert` | — | ❌ | تبدیل سرنخ به مشتری (تخصیص `customer_code`، `converted_at`) |
-| `lead.close` | `POST /customers/{id}/lifecycle` | `PATCH /api/v1/crm/customers/{id}/profile` | 🟡 | تغییر `lifecycle` ممکن است، ولی endpoint اختصاصی «بستن با دلیل» و ثبت `NOTE` در `crm_activities` نیست |
+| `lead.create` | `POST /customers` | `POST /api/v1/customers` | ✅ | |
+| `lead.create` | `GET /customers/duplicates?mobile=&email=` | `GET /api/v1/crm/customers/duplicates?mobile=&email=` | ✅ | تطبیق روی `normalized_value` راه‌های ارتباطی فعال؛ حداکثر ۲۰ مورد |
+| `lead.convert` | `POST /customers/{id}/convert` | `POST /api/v1/crm/customers/{customerId}/convert` | ✅ | ادغام در مشتری موجود (تصمیم باز O12) با `422` رد می‌شود |
+| `lead.close` | `POST /customers/{id}/lifecycle` | `POST /api/v1/crm/customers/{customerId}/lifecycle` | ✅ | دلیل به‌صورت `NOTE` در `crm_activities` ثبت می‌شود |
 
 ### تب «نمای ۳۶۰ درجه» ✅ کامل
 
@@ -42,27 +43,29 @@
 |---|---|---|---|
 | `customer.get` | `GET /customers/{id}` | `GET /api/v1/crm/customers/{customerId}/detail` | ✅ |
 
-### تب «اطلاعات اصلی» 🟡
+### تب «اطلاعات اصلی» ✅
 
 | گروه | مسیر پروتوتایپ | مسیر پیاده‌شده | وضعیت | یادداشت |
 |---|---|---|---|---|
 | `customer.basic` | `PATCH /customers/{id}` | `GET/PATCH /api/v1/crm/customers/{customerId}/profile` | ✅ | خواندن هم اضافه شد |
 | `customer.basic` | `GET /industries?active=true` | `GET /api/v1/crm/industries` | ✅ | |
-| `customer.basic` | `PUT /customers/{id}/industries` | — | ❌ | چند صنعت با یک صنعت اصلی؛ فعلاً فقط `primary_industry_id` روی profile |
+| `customer.basic` | `PUT /customers/{id}/industries` | `GET/PUT /api/v1/crm/customers/{customerId}/industries` | ✅ | چند صنعت با حداکثر یک صنعت اصلی؛ با `primary_industry_id` روی profile هماهنگ است |
 | `customer.address` | `GET/POST /customers/{id}/addresses` | `GET/POST /api/v1/crm/customers/{customerId}/addresses` | ✅ | `GET/PATCH .../addresses/{addressId}` هم اضافه شد |
 | `customer.address` | `GET /geo/provinces`، `/cities` | `GET /api/v1/reference/provinces`، `/reference/cities` | ✅ | ماژول Geography |
 
-### تب «راه‌های ارتباطی» ❌
+### تب «راه‌های ارتباطی» ✅
 
-| گروه | مسیر پروتوتایپ | وضعیت |
-|---|---|---|
-| `customer.contacts` | `GET/PUT /customers/{id}/contact-points` | ❌ |
+| گروه | مسیر پروتوتایپ | مسیر پیاده‌شده | وضعیت | یادداشت |
+|---|---|---|---|---|
+| `customer.contacts` | `GET/PUT /customers/{id}/contact-points` | `GET/PUT /api/v1/crm/customers/{customerId}/contact-points` | ✅ | فقط PERSON؛ PUT کل مجموعه را جایگزین می‌کند؛ `409 MOBILE_OWNED_BY_OTHER_PERSON` |
 
-### تب «افراد مرتبط / روابط» ❌
+### تب «افراد مرتبط / روابط» ✅
 
-| گروه | مسیر پروتوتایپ | وضعیت |
-|---|---|---|
-| `customer.relationships` | `GET /customers/{id}/relationships`، `POST /companies/{companyId}/relationships`، `POST /relationships/{id}/end` | ❌ |
+| گروه | مسیر پروتوتایپ | مسیر پیاده‌شده | وضعیت |
+|---|---|---|---|
+| `customer.relationships` | `GET /customers/{id}/relationships` | `GET /api/v1/crm/customers/{customerId}/relationships` | ✅ |
+| `customer.relationships` | `POST /companies/{companyId}/relationships` | `POST /api/v1/crm/customers/{customerId}/relationships` | ✅ |
+| `customer.relationships` | `POST /relationships/{id}/end` | `POST /api/v1/crm/relationships/{relationshipId}/end` | ✅ |
 
 ### تب «ساختار سازمانی» ✅ کامل
 
@@ -85,13 +88,13 @@
 | `customer.invoices` | `POST /customers/{id}/external-invoices` | `GET/POST /api/v1/crm/customers/{customerId}/external-invoices` | ✅ | خواندن هم اضافه شد؛ `409` روی تکرار `(external_system, reference_no)` |
 | `customer.banks` | `GET/POST /customers/{id}/bank-accounts` | `GET/POST /api/v1/crm/customers/{customerId}/bank-accounts` | ✅ | پاسخ ماسک‌شده؛ یک حساب اصلی فعال |
 
-### تب «مستندات» 🟡
+### تب «مستندات» ✅
 
 | گروه | مسیر پروتوتایپ | مسیر پیاده‌شده | وضعیت | یادداشت |
 |---|---|---|---|---|
 | `customer.documents` | `GET /documents?resource_type=CUSTOMER&resource_id={id}` | `GET /api/v1/crm/documents?resource_type=CUSTOMER&resource_id={id}` | ✅ | |
 | `customer.documents` | `POST /documents/{documentId}/links` | `POST /api/v1/crm/documents/{documentId}/links` | ✅ | |
-| `customer.contracts` | `GET/POST /customers/{id}/contracts` | — | ❌ | شناسنامهٔ قرارداد (`crm_contracts`) در ماژول CrmSales هنوز کد ندارد |
+| `customer.contracts` | `GET/POST /customers/{id}/contracts` | `GET/POST /api/v1/crm/customers/{customerId}/contracts` | ✅ | مقادیر `status` هنوز نهایی نیست (رشتهٔ آزاد)؛ `contract_id` روی فاکتور بیرونی هم پذیرفته می‌شود |
 
 ### تب «سوابق تعامل» 🟡
 
@@ -125,7 +128,7 @@
 
 ---
 
-## ۴) صفحهٔ کارتابل (کار و تعامل) 🟡
+## ۴) صفحهٔ کارتابل (کار و تعامل) ✅ کامل
 
 | گروه | مسیر پروتوتایپ | مسیر پیاده‌شده | وضعیت | یادداشت |
 |---|---|---|---|---|
@@ -134,7 +137,7 @@
 | `task.action` | `POST /tasks/{id}/actions` | `POST /api/v1/tasks/{taskId}/actions` | ✅ | |
 | `task.complete` | `POST /tasks/{id}/complete` | `POST /api/v1/tasks/{taskId}/complete` | ✅ | |
 | `task.assign` | `POST /tasks/{id}/assignments` | `POST /api/v1/tasks/{taskId}/assignments` | ✅ | |
-| `activity.create` | `POST /activities` | — | ❌ | ثبت تعامل مستقل از کار؛ فعلاً فقط از مسیر `tasks/{id}/actions` |
+| `activity.create` | `POST /activities` | `POST /api/v1/crm/activities` | ✅ | مجوز `crm.activity.manage`؛ نیازمند `Idempotency-Key` |
 
 ---
 
@@ -164,32 +167,27 @@
 | `doc.save` | `POST /documents/{id}/archive` | `POST /api/v1/crm/documents/{documentId}/archive` | ✅ |
 
 **رجیستری اتصال (`document_links.resource_type`):** پروتوتایپ پنج نوع دارد — `CUSTOMER`، `OPPORTUNITY`، `CONTRACT`، `SALES_DOCUMENT`، `CATALOG_ITEM`.
-فعلاً فقط **`CUSTOMER` و `OPPORTUNITY`** پذیرفته می‌شوند، چون بقیه read model ندارند و اتصالی که قابل بررسی نباشد ثبت نمی‌شود. افزودن هرکدام = یک `case` روی enum + یک `arm` روی adapter.
+فعلاً **`CUSTOMER`، `OPPORTUNITY` و `CONTRACT`** پذیرفته می‌شوند، چون بقیه read model ندارند و اتصالی که قابل بررسی نباشد ثبت نمی‌شود. افزودن هرکدام = یک `case` روی enum + یک `arm` روی adapter.
 
 ---
 
-## ۷) صفحهٔ کاتالوگ ❌ پیاده نشده
+## ۷) صفحهٔ کاتالوگ ✅ کامل
 
-| گروه | مسیر پروتوتایپ | وضعیت |
-|---|---|---|
-| `catalog.list` | `GET /catalog-items?kind=&status=&category_id=&q=` | ❌ |
-| `catalog.save` | `POST /catalog-items` | ❌ |
-| `catalog.save` | `GET /catalog/categories · /catalog/personas · /catalog/sales-models` | ❌ |
+| گروه | مسیر پروتوتایپ | مسیر پیاده‌شده | وضعیت |
+|---|---|---|---|
+| `catalog.list` | `GET /catalog-items?kind=&status=&category_id=&q=` | `GET /api/v1/crm/catalog-items` | ✅ |
+| `catalog.save` | `POST /catalog-items` | `POST /api/v1/crm/catalog-items` | ✅ |
+| `catalog.save` | `PATCH /catalog-items/{id}` | `PATCH /api/v1/crm/catalog-items/{catalogItemId}` | ✅ |
+| `catalog.save` | `GET /catalog/categories · /catalog/personas · /catalog/sales-models` | `GET /api/v1/crm/catalog/{categories,personas,sales-models}` | ✅ |
+| — | — | `GET /api/v1/crm/catalog-items/{catalogItemId}` | ✅ اضافه بر پروتوتایپ |
 
-جدول‌های `crm_catalog_items` و جدول‌های مرجعش migration دارند ولی ماژول `CrmCatalog` فقط `GET /crm/industries` را سرو می‌کند.
+`unit_id`، `sales_commitment_id`، `after_sales_policy_id`، `sla_template_id` و کانال‌ها تا تصمیم O01 ارسال نمی‌شوند.
 
 ---
 
-## فهرست کارهای باقی‌مانده (به ترتیب پیشنهادی)
+## فهرست کارهای باقی‌مانده
 
-1. **`customer.contacts`** — `GET/PUT /customers/{id}/contact-points` (جدول `crm_contact_points` آماده است)
-2. **`customer.relationships`** — روابط شخص و شرکت (`crm_relationships`، `crm_positions`)
-3. **`customer.contracts`** — شناسنامهٔ قرارداد؛ `contract_id` روی «فاکتور بیرونی» هم منتظر همین است
-4. **`lead.convert` / `lead.close`** — چرخهٔ سرنخ
-5. **`customer.basic → PUT /industries`** — چند صنعت با صنعت اصلی
-6. **`activity.create`** — ثبت تعامل مستقل
-7. **`lead.create → GET /customers/duplicates`** — کنترل تکراری بودن
-8. **`catalog.list` / `catalog.save`** — کل صفحهٔ کاتالوگ
+هر ۸ مورد فهرست قبلی پیاده شد؛ چیزی از گروه‌های پروتوتایپ باقی نمانده است. تصمیم‌های باز محصولی (ادغام سرنخ در مشتری موجود O12، نهایی‌شدن مقادیر `status` قرارداد، کانال‌های کاتالوگ O01) در ستون یادداشت آمده‌اند.
 
 ---
 

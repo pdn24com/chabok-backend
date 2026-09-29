@@ -56,6 +56,16 @@ final class EloquentCustomerRepository implements CustomerRepositoryInterface
         return $this->ofTenant($hqId, $customerId)->exists();
     }
 
+    public function customerCodeTaken(string $hqId, string $customerCode, ?string $exceptCustomerId = null): bool
+    {
+        $query = CustomerRecord::query()->where(['hq_id' => $hqId, 'customer_code' => $customerCode]);
+        if ($exceptCustomerId !== null) {
+            $query->where('customer_id', '!=', $exceptCustomerId);
+        }
+
+        return $query->exists();
+    }
+
     public function isCompany(string $hqId, string $customerId): bool
     {
         return $this->ofTenant($hqId, $customerId)->where('kind', CustomerKind::COMPANY->value)->exists();

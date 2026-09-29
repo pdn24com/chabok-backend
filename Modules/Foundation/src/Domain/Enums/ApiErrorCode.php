@@ -21,6 +21,11 @@ enum ApiErrorCode: string
     case MethodNotAllowed = 'METHOD_NOT_ALLOWED';
     case Conflict = 'CONFLICT';
     case MobileOwnedByOtherPerson = 'MOBILE_OWNED_BY_OTHER_PERSON';
+    case CustomerCodeExists = 'CUSTOMER_CODE_EXISTS';
+    case CustomerAlreadyConverted = 'CUSTOMER_ALREADY_CONVERTED';
+    case PrimaryRelationshipExists = 'PRIMARY_RELATIONSHIP_EXISTS';
+    case RelationshipAlreadyExists = 'RELATIONSHIP_ALREADY_EXISTS';
+    case RelationshipAlreadyEnded = 'RELATIONSHIP_ALREADY_ENDED';
     case VersionConflict = 'VERSION_CONFLICT';
     case IdempotencyKeyReused = 'IDEMPOTENCY_KEY_REUSED';
     case AllocationExceedsReceipt = 'ALLOCATION_EXCEEDS_RECEIPT';

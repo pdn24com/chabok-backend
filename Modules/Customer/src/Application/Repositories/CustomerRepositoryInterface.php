@@ -30,6 +30,9 @@ interface CustomerRepositoryInterface
     /** True when the tenant owns a customer under this ID, without reading anything hanging off it. */
     public function existsForTenant(string $hqId, string $customerId): bool;
 
+    /** True when another customer of the tenant already holds this customer code (the unique key of the tenant). */
+    public function customerCodeTaken(string $hqId, string $customerCode, ?string $exceptCustomerId = null): bool;
+
     public function isCompany(string $hqId, string $customerId): bool;
 
     /** True while the record has been promoted out of the lead phase into a customer of the tenant. */
