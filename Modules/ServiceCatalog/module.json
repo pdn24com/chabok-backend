@@ -1,9 +1,0 @@
-{
-    "name": "ServiceCatalog",
-    "alias": "service-catalog",
-    "description": "Versioned Chabok Service Catalog and eligibility runtime.",
-    "keywords": ["service", "catalog", "eligibility"],
-    "priority": 8,
-    "providers": ["Modules\\ServiceCatalog\\Infrastructure\\Providers\\ServiceCatalogServiceProvider"],
-    "files": []
-}

@@ -1,9 +1,0 @@
-{
-    "name": "CrmOpportunitie",
-    "alias": "crm-opportunitie",
-    "description": "Sales funnel definition and opportunity progression.",
-    "keywords": ["crm", "opportunity", "funnel"],
-    "priority": 15,
-    "providers": ["Modules\\CrmOpportunitie\\Infrastructure\\Providers\\CrmOpportunitieServiceProvider"],
-    "files": []
-}

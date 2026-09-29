@@ -1,9 +1,0 @@
-{
-    "name": "Geography",
-    "alias": "geography",
-    "description": "Version-controlled Iran province and city reference data.",
-    "keywords": ["geography", "reference-data", "iran"],
-    "priority": 8,
-    "providers": ["Modules\\Geography\\Infrastructure\\Providers\\GeographyServiceProvider"],
-    "files": []
-}

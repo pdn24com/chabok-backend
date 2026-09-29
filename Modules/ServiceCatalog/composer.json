@@ -1,8 +1,0 @@
-{
-    "name": "chabok/service-catalog",
-    "description": "Chabok Service Catalog bounded module.",
-    "type": "library",
-    "license": "proprietary",
-    "autoload": {"psr-4": {"Modules\\ServiceCatalog\\": "src/"}},
-    "autoload-dev": {"psr-4": {"Modules\\ServiceCatalog\\Tests\\": "tests/"}}
-}

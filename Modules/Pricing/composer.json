@@ -1,8 +1,0 @@
-{
-    "name": "chabok/pricing",
-    "description": "Chabok Pricing bounded module.",
-    "type": "library",
-    "license": "proprietary",
-    "autoload": {"psr-4": {"Modules\\Pricing\\": "src/"}},
-    "autoload-dev": {"psr-4": {"Modules\\Pricing\\Tests\\": "tests/"}}
-}

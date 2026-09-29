@@ -1,9 +1,0 @@
-{
-    "name": "CrmTask",
-    "alias": "crm-task",
-    "description": "CRM tasks, activities and assignment history.",
-    "keywords": ["crm", "task", "activity"],
-    "priority": 16,
-    "providers": ["Modules\\CrmTask\\Infrastructure\\Providers\\CrmTaskServiceProvider"],
-    "files": []
-}
