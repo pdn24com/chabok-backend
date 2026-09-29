@@ -31,9 +31,14 @@ Create endpoints return **201**, others **200**.
 - TeamStatus: ACTIVE, INACTIVE
 - MembershipStatus: ACTIVE, ENDED
 - BulkMembershipOperation: ADD, END, TRANSFER
+- CustomerKind: PERSON, COMPANY
+- CustomerPhase: LEAD, CUSTOMER
+- CustomerLifecycle: ACTIVE, INACTIVE, ARCHIVED
+- CreditRating: LOW_RISK, MEDIUM_RISK, HIGH_RISK
+- CustomerHistoryCategory: work, finance, correspondence, tickets, operations, changes
 
 ## Permissions (per module; named as middleware/gates)
-crm.industry.view · crm.finance.view / crm.finance.manage · crm.opportunity.view / crm.opportunity.manage · crm.sales_document.view / crm.sales_document.manage · crm.task.view / crm.task.manage · crm.team.view / crm.team.manage (exact view-vs-manage mapping per endpoint: GET = view, POST/PATCH = manage; bulk/end membership = crm.team.manage).
+crm.industry.view · crm.finance.view / crm.finance.manage · crm.opportunity.view / crm.opportunity.manage · crm.sales_document.view / crm.sales_document.manage · crm.task.view / crm.task.manage · crm.team.view / crm.customer.view / crm.customer.manage (financial-details endpoints use the finance permissions instead) · crm.team.manage (exact view-vs-manage mapping per endpoint: GET = view, POST/PATCH = manage; bulk/end membership = crm.team.manage).
 
 ---
 ## Tag: CRM - Catalog
@@ -142,3 +147,67 @@ Body: `BulkMembershipRequest`. Dry run, changes nothing. data: `BulkMembershipRe
 ### POST /crm/memberships/bulk  **[Idempotency-Key]**
 Body: `BulkMembershipRequest { operation* BulkMembershipOperation; user_ids* int[] (1–200); source_team_id int nullable; target_team_id int nullable; replacement_user_id int nullable; confirm_open_tasks bool (must be true if open work is touched) }`. `operation_id` is PROHIBITED (server-issued).
 `BulkMembershipResult { events: [{ membership_event_id, membership_id(string), event_type, operation_id|null }], memberships: TeamMember[], affected_tasks }` (affected_tasks: array/count of open tasks touched — document as `object` loosely)
+
+---
+# Module: Customer (customers, profile, addresses, org structure, history)
+
+## Tag: CRM - Customers
+### GET /customers  (paginated)
+Query: page; per_page(1–100); display_name string ≤200; customer_code ≤80; phase CustomerPhase; kind CustomerKind; lifecycle CustomerLifecycle; assignee_id int; updated_at date `Y-m-d`; updated_at_from date `Y-m-d`; updated_at_to date `Y-m-d` (≥ updated_at_from).
+Item: `CustomerListItem { customer_id, kind, phase, lifecycle, display_name, customer_code, assignee{user_id, display_name}|null, updated_at(ISO) }`
+### POST /customers → 201  **[Idempotency-Key]**
+Body: first_name* ≤120; family_name* ≤120; display_name* ≤200; customer_code ≤80 nullable; kind* CustomerKind; phase* CustomerPhase; mobile* ≤32; industry_id int nullable; assignee_id int nullable; country_code* 2 uppercase letters; province_id & city_id: required if country_code=IR, prohibited otherwise; foreign_city: required and ≤200 if country_code≠IR, prohibited if IR; postal_code string (Iranian 10-digit rule enforced in domain); address_text ≤1000 nullable.
+data: `Customer { customer_id, hq_id, first_name, family_name, display_name, customer_code, kind, phase, lifecycle, mobile, industry_id, assignee_id, created_by, converted_at, created_at, updated_at, address: CustomerAddress|null }`
+
+### GET /crm/customers/{customerId}/detail
+data: `{ customer: CustomerIdentity, default_address: CustomerAddress|null, primary_industry: {industry_id, title}|null, open_tasks: [{task_id, title, status, due_at}], opportunities: [{opportunity_id, title, step:{title, outcome_type}, amount}], missing: string[] (profile gaps) }`
+`CustomerIdentity { customer_id, kind, phase, lifecycle, display_name, customer_code, assignee{user_id, display_name}|null }`
+
+### GET /crm/customers/{customerId}/profile
+data: `CustomerProfile { customer_id, kind, phase, lifecycle, display_name, customer_code, assignee_id, primary_industry{industry_id,title}|null, updated_at }`
+### PATCH /crm/customers/{customerId}/profile
+Body (all optional): kind; phase; lifecycle; display_name ≤200 nullable; customer_code ≤80 nullable; assignee_id int nullable; primary_industry_id int nullable. data: `CustomerProfile`
+
+### GET /crm/customers/{customerId}/extended-details
+### PUT /crm/customers/{customerId}/extended-details
+PUT replaces the whole set (omitted fields are cleared; nothing required). Body: salutation ≤80; birth_date int unix; trade_name ≤200; legal_form ≤120; legal_name ≤200; registration_no ≤80; registration_date int unix; registration_place ≤200; need_summary ≤2000; budget int ≥0; budget_known bool; authority_note ≤2000; need_confirmed bool; timeframe ≤2000; qualification_result ≤40 (all nullable).
+data: `ExtendedDetails { customer_id, salutation, birth_date(unix), trade_name, legal_form, legal_name, registration_no, registration_date(unix), registration_place, need_summary, budget, budget_known, authority_note, need_confirmed, timeframe, qualification_result, evaluated_by{user_id,display_name}|null, evaluated_at(ISO), updated_at(ISO) }`
+
+### GET /crm/customers/{customerId}/financial-details   (finance permission)
+### PUT /crm/customers/{customerId}/financial-details   (finance permission)
+Body: financial_reference_date* int unix; source_note* ≤2000; credit_limit int ≥0 nullable; credit_rating CreditRating nullable; settlement_terms ≤2000; accounting_code ≤80; accounting_title ≤200; revenue, receipts, direct_cost, balance: signed int nullable.
+data: `FinancialDetails { customer_id, credit_limit, credit_rating, settlement_terms, financial_reference_date(unix), source_note, accounting_code, accounting_title, revenue, receipts, direct_cost, balance, updated_at }`
+
+## Tag: CRM - Customer Addresses  (/crm/customers/{customerId}/addresses)
+### GET /  → data: `CustomerAddress[]`
+### GET /{addressId} → data: `CustomerAddress`
+### POST / → 201
+Body: country_code* 2 uppercase letters; purpose* ≤60; address_text* ≤1000; province_id int (only if country=IR; required if city_id sent); city_id int (only if IR); foreign_region ≤200 & foreign_city ≤200 (only if country≠IR); postal_code ≤10; plaque ≤40 (string); unit ≤40 (string); latitude −90..90 and longitude −180..180 (both or neither); is_default bool. (All except first three nullable/optional.)
+### PATCH /{addressId}
+All fields optional (same fields as POST, cross-field rules judged in domain → 422). data: `CustomerAddress`
+`CustomerAddress { customer_address_id, country_code, country?{country_id,name}, purpose, province_id, city_id, province?{province_id,name}, city?{city_id,name}, foreign_region, foreign_city, address_text, postal_code, plaque, unit, latitude, longitude, is_default, created_at, updated_at }`
+
+## Tag: CRM - Customer Org Structure
+### GET /crm/customers/{customerId}/org-structure
+data: `{ company:{customer_id, kind, display_name, customer_code}, departments: Department[] (tree) }`
+`Department { department_id, parent_department_id(string|null), title, cost_center_code, positions: Position[] }`
+`Position { position_id, department_id, title, decision_level, delegation_limit(int|null) }`
+### POST /crm/customers/{customerId}/departments → 201
+Body: title* ≤200; parent_department_id int nullable (null = root); cost_center_code ≤80 nullable. data: `Department`
+### PATCH /crm/customers/{customerId}/departments/{departmentId}
+Body all optional (same fields). data: `Department`
+### POST /crm/customers/{customerId}/departments/{departmentId}/positions → 201
+Body: title* ≤200; decision_level ≤80 nullable; delegation_limit int ≥0 nullable. data: `Position`
+### PATCH /crm/customers/{customerId}/positions/{positionId}
+Body all optional (same fields). data: `Position`
+
+## Tag: CRM - Customer History
+### GET /crm/customers/{customerId}/history
+data: `{ customer_id, categories: [{ category: CustomerHistoryCategory, total(int), unavailable_reason: string|null, preview: HistoryEntry[] }], last_interaction_at(ISO|null), days_since_last_interaction(int|null), open_work_count(int) }`
+### GET /crm/customers/{customerId}/history/timeline  (paginated)
+### GET /crm/customers/{customerId}/history/{category}  (paginated; category ∈ work|finance|correspondence|tickets|operations|changes, else 404)
+Query (both): page; per_page(1–100); search ≤200.
+`HistoryEntry { category, entry_type, entry_id, title, kind, status, actor, amount, occurred_at(ISO) }` (kind/status/actor/amount nullable; actor is a string or object — document loosely)
+
+---
+# Total: 54 endpoints (Customer 21, Catalog 1, Opportunities 5, Sales Documents 7, Finance 7, Tasks 5, Teams 8).
