@@ -301,6 +301,13 @@ final class RecordSchema
             'document_id' => ['documents', 'id'],
             'created_by' => ['users', 'id'],
         ],
+        'crm_activity_participants' => [
+            'hq_id' => ['hq_tenants', 'id'],
+            'activity_id' => ['crm_activities', 'id'],
+            'user_id' => ['users', 'id'],
+            'customer_id' => ['crm_customers', 'id'],
+            'created_by' => ['users', 'id'],
+        ],
         'crm_activities' => [
             'hq_id' => ['hq_tenants', 'id'],
             'customer_id' => ['crm_customers', 'id'],
