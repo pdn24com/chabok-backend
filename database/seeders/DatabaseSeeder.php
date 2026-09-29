@@ -17,6 +17,7 @@ final class DatabaseSeeder extends Seeder
     {
         $this->call(OperationalStatusCatalogSeeder::class);
         $this->call(AuthorizationCatalogSeeder::class);
+        $this->call(AdminUserSeeder::class);
         $this->call(CountrySeeder::class);
         $this->call(IranGeographySeeder::class);
         $this->call(PricingChargeTypeSeeder::class);
