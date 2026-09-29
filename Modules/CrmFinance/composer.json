@@ -1,0 +1,16 @@
+{
+    "name": "chabok/crm-finance",
+    "description": "Chabok CrmFinance bounded module.",
+    "type": "library",
+    "license": "proprietary",
+    "autoload": {
+        "psr-4": {
+            "Modules\\CrmFinance\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Modules\\CrmFinance\\Tests\\": "tests/"
+        }
+    }
+}

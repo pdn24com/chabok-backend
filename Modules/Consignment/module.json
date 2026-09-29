@@ -1,0 +1,11 @@
+{
+    "name": "Consignment",
+    "alias": "consignment",
+    "description": "Tenant-scoped Consignment production vertical slice.",
+    "keywords": ["consignment", "parcel", "pricing"],
+    "priority": 10,
+    "providers": [
+        "Modules\\Consignment\\Infrastructure\\Providers\\ConsignmentServiceProvider"
+    ],
+    "files": []
+}

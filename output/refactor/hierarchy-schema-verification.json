@@ -1,0 +1,10 @@
+{
+  "tables": 88,
+  "unexpected_differences": [],
+  "intentional_changes": [
+    "area_hierarchies.parent_area_id: unsigned integer -> areas.id",
+    "area_hierarchies.child_area_id: unsigned integer -> areas.id",
+    "tenant-preserving composite foreign keys -> areas(hq_id, id)",
+    "areas_hq_internal_id_unique(hq_id, id)"
+  ]
+}

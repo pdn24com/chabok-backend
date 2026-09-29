@@ -1,0 +1,86 @@
+{
+  "db_table": {
+    "all_before": 662,
+    "all_after": 669,
+    "runtime_before": 177,
+    "runtime_after": 0,
+    "runtime_at_start_2026_09_26": 31
+  },
+  "raw_sql": {
+    "all_before": 181,
+    "all_after": 241,
+    "runtime_before": 9,
+    "runtime_after": 7,
+    "runtime_at_start_2026_09_26": 6
+  },
+  "join": {
+    "all_before": 133,
+    "all_after": 7,
+    "runtime_before": 126,
+    "runtime_after": 1,
+    "runtime_at_start_2026_09_26": 2
+  },
+  "to_base": {
+    "all_before": 350,
+    "all_after": 0,
+    "runtime_before": 350,
+    "runtime_after": 0,
+    "runtime_at_start_2026_09_26": 0
+  },
+  "array_argument": {
+    "all_before": 1177,
+    "all_after": 681,
+    "runtime_before": 1123,
+    "runtime_after": 545,
+    "runtime_at_start_2026_09_26": 471
+  },
+  "array_return": {
+    "all_before": 1136,
+    "all_after": 816,
+    "runtime_before": 1085,
+    "runtime_after": 635,
+    "runtime_at_start_2026_09_26": 601
+  },
+  "untyped_result": {
+    "all_before": 310,
+    "all_after": 8,
+    "runtime_before": 310,
+    "runtime_after": 5,
+    "runtime_at_start_2026_09_26": 4
+  },
+  "json": {
+    "all_before": 151,
+    "all_after": 73,
+    "runtime_before": 120,
+    "runtime_after": 29,
+    "runtime_at_start_2026_09_26": 30
+  },
+  "recursive_sql": {
+    "all_before": 3,
+    "all_after": 0,
+    "runtime_before": 3,
+    "runtime_after": 0,
+    "runtime_at_start_2026_09_26": 0
+  },
+  "trigger": {
+    "all_before": 51,
+    "all_after": 92,
+    "runtime_before": 2,
+    "runtime_after": 2,
+    "runtime_at_start_2026_09_26": 2
+  },
+  "interface": {
+    "all_before": 90,
+    "all_after": 185,
+    "runtime_before": 90,
+    "runtime_after": 185,
+    "runtime_at_start_2026_09_26": 77
+  },
+  "enum": {
+    "all_before": 3,
+    "all_after": 71,
+    "runtime_before": 1,
+    "runtime_after": 71,
+    "runtime_at_start_2026_09_26": 66
+  }
+}

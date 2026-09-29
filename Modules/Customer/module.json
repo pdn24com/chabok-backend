@@ -1,0 +1,9 @@
+{
+    "name": "Customer",
+    "alias": "customer",
+    "description": "Tenant-scoped unified lead and customer record.",
+    "keywords": ["customer", "lead", "crm"],
+    "priority": 14,
+    "providers": ["Modules\\Customer\\Infrastructure\\Providers\\CustomerServiceProvider"],
+    "files": []
+}

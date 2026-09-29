@@ -1,0 +1,15 @@
+{
+    "name": "CrmCatalog",
+    "alias": "crm-catalog",
+    "description": "Commercial CRM catalog and its reference data.",
+    "keywords": [
+        "crm",
+        "catalog",
+        "reference-data"
+    ],
+    "priority": 13,
+    "providers": [
+        "Modules\\CrmCatalog\\Infrastructure\\Providers\\CrmCatalogServiceProvider"
+    ],
+    "files": []
+}
