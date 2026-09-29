@@ -40,6 +40,14 @@ final class AuthorizationCatalog
             // The task inbox: reading the queue is not raising, moving or finishing work in it.
             'crm.task.view' => 'Customer',
             'crm.task.manage' => 'Customer',
+            // Contract files hang off a customer but are their own grant: a contract carries money and commitments.
+            'crm.contract.view' => 'Customer',
+            'crm.contract.manage' => 'Customer',
+            // A free-standing interaction (call, meeting, note) recorded without going through a task.
+            'crm.activity.manage' => 'Customer',
+            // The product and service catalog: reading it is not editing what the tenant sells.
+            'crm.catalog.view' => 'Customer',
+            'crm.catalog.manage' => 'Customer',
             'consignment.view' => 'Consignment',
             'consignment.create' => 'Consignment',
             'consignment.edit' => 'Consignment',
@@ -185,6 +193,11 @@ final class AuthorizationCatalog
                 'crm.finance.manage',
                 'crm.task.view',
                 'crm.task.manage',
+                'crm.contract.view',
+                'crm.contract.manage',
+                'crm.activity.manage',
+                'crm.catalog.view',
+                'crm.catalog.manage',
                 'crm.opportunity.view',
                 'crm.opportunity.manage',
                 'crm.team.view',

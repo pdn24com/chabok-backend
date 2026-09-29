@@ -187,6 +187,46 @@ final class RecordSchema
             'address_id' => ['crm_customer_address', 'id'],
             'created_by' => ['users', 'id'],
         ],
+        'crm_relationships' => [
+            'hq_id' => ['hq_tenants', 'id'],
+            'person_customer_id' => ['crm_customers', 'id'],
+            'company_customer_id' => ['crm_customers', 'id'],
+            'position_id' => ['crm_positions', 'id'],
+            'created_by' => ['users', 'id'],
+        ],
+        'crm_contracts' => [
+            'hq_id' => ['hq_tenants', 'id'],
+            'customer_id' => ['crm_customers', 'id'],
+            'opportunity_id' => ['crm_opportunities', 'id'],
+            'proforma_version_id' => ['crm_sales_document_versions', 'id'],
+            'created_by' => ['users', 'id'],
+        ],
+        'crm_catalog_items' => [
+            'hq_id' => ['hq_tenants', 'id'],
+            'category_id' => ['crm_catalog_categories', 'id'],
+            'buyer_persona_id' => ['crm_catalog_personas', 'id'],
+            'sales_model_id' => ['crm_catalog_sales_models', 'id'],
+            'created_by' => ['users', 'id'],
+        ],
+        'crm_catalog_categories' => [
+            'hq_id' => ['hq_tenants', 'id'],
+            'parent_id' => ['crm_catalog_categories', 'id'],
+            'created_by' => ['users', 'id'],
+        ],
+        'crm_catalog_personas' => [
+            'hq_id' => ['hq_tenants', 'id'],
+            'created_by' => ['users', 'id'],
+        ],
+        'crm_catalog_sales_models' => [
+            'hq_id' => ['hq_tenants', 'id'],
+            'created_by' => ['users', 'id'],
+        ],
+        'crm_catalog_item_industry' => [
+            'hq_id' => ['hq_tenants', 'id'],
+            'catalog_item_id' => ['crm_catalog_items', 'id'],
+            'industry_id' => ['crm_industries', 'id'],
+            'created_by' => ['users', 'id'],
+        ],
         'crm_customer_industry' => [
             'hq_id' => ['hq_tenants', 'id'],
             'customer_id' => ['crm_customers', 'id'],
